@@ -819,7 +819,10 @@ std::vector<int> getBlockStatesData(const NbtTagPtr& blockStatesTag, const std::
 
     // 根据调色板中方块状态的数量决定每个状态占用的位数
     size_t numBlockStates = blockPalette.size();
-    int bitsPerState = (numBlockStates <= 16) ? 4 : static_cast<int>(std::ceil(std::log2(numBlockStates)));
+    int bitsPerState = (numBlockStates <= 16) ? 4 : static_cast<int>(std::ceil(std::log2(static_cast<double>(numBlockStates))));
+    // 防御异常数据:位数限制在 [1, 32],避免位移运算未定义行为
+    if (bitsPerState < 1) bitsPerState = 1;
+    if (bitsPerState > 32) bitsPerState = 32;
     int statesPerLong = 64 / bitsPerState;  // 每个 long 能存储的状态数
 
     // 将 payload 数据转换为 long 数组,并根据需要反转字节顺序

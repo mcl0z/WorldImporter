@@ -223,7 +223,12 @@ void createObjFileViaMemoryMapped(const ModelData& data, const std::string& objN
     size_t totalSize = 0;
     // 文件头部分
     totalSize += snprintf(nullptr, 0, "mtllib %s\n", mtlFilePath.c_str());
-    std::string modelName = objName.substr(objName.find_last_of("//") + 1);
+    // 提取模型名称(取路径最后一段;兼容 / 与 \ 分隔符)
+    std::string modelName = objName;
+    size_t sepPos = objName.find_last_of("/\\");
+    if (sepPos != std::string::npos) {
+        modelName = objName.substr(sepPos + 1);
+    }
     totalSize += snprintf(nullptr, 0, "o %s\n\n", modelName.c_str());
 
     // 预计算顶点注释行的长度
@@ -417,11 +422,11 @@ void createObjFile(const ModelData& data, const std::string& objName, const std:
     std::string objFilePath = exeDir + objName + ".obj";
     std::string mtlFilePath = mtlFileName.empty() ? (objName + ".mtl") : (mtlFileName + ".mtl");
 
-    // 提取模型名称
-    std::string name;
-    size_t commentPos = objName.find("//");
-    if (commentPos != std::string::npos) {
-        name = objName.substr(commentPos + 2);
+    // 提取模型名称(取路径最后一段;兼容 / 与 \ 分隔符)
+    std::string name = objName;
+    size_t sepPos = objName.find_last_of("/\\");
+    if (sepPos != std::string::npos) {
+        name = objName.substr(sepPos + 1);
     }
 
     // 使用流缓冲区进行拼接,减少IO操作次数

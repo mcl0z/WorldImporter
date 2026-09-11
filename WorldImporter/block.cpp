@@ -597,8 +597,9 @@ void LoadAndCacheBlockData(int chunkX, int chunkZ) {
         int regionX, regionZ;
         chunkToRegion(chunkX, chunkZ, regionX, regionZ);
 
-        // 获取区域数据
-        const auto& regionData = GetRegionFromCache(regionX, regionZ);
+        // 获取区域数据(shared_ptr 保证解析期间数据有效,不受缓存清空影响)
+        auto regionDataPtr = GetRegionFromCache(regionX, regionZ);
+        const auto& regionData = *regionDataPtr;
 
         // 获取区块数据
         std::vector<char> chunkData = GetChunkNBTData(regionData, chunkX, chunkZ);
