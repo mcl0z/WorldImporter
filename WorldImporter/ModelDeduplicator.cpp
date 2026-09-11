@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <map>
+#include <unordered_map>
 #include <tuple>
 #include <climits>
 #include <sstream>
@@ -483,8 +484,16 @@ void ModelDeduplicator::GreedyMesh(ModelData& data) {
     });
     auto t3_end = Clock::now();
     std::cerr << "GreedyMesh Step3 sort vert pairs: " << Ms(t3_end - t3_start).count() << " ms\n";
+    // 顶点键 → 索引的补充映射:仅用于量化键未命中时追加的新顶点。
+    // 不能向有序数组 vertKVPairs 中间插入(O(n)),否则未命中较多时复杂度会平方放大。
+    std::unordered_map<VertexKey, int> extraVertexKeys;
+
     // Lookup lambda
     auto lookupVertexIndex = [&](const VertexKey &vk) {
+        // 先查补充映射(通常为空,仅在浮点边界差异时增长)
+        auto extraIt = extraVertexKeys.find(vk);
+        if (extraIt != extraVertexKeys.end()) return extraIt->second;
+
         auto it = std::lower_bound(vertKVPairs.begin(), vertKVPairs.end(), vk,
             [](auto &a, const VertexKey &b) {
                 if (a.first.x != b.x) return a.first.x < b.x;
@@ -493,13 +502,13 @@ void ModelDeduplicator::GreedyMesh(ModelData& data) {
             });
         if (it != vertKVPairs.end() && it->first.x == vk.x && it->first.y == vk.y && it->first.z == vk.z)
             return it->second;
-        // 量化键未命中(仅可能出现在浮点边界差异):追加为新顶点并返回其索引,
+        // 量化键未命中(仅可能出现在浮点边界差异):追加为新顶点并记录到补充映射,
         // 避免静默返回 0 造成几何错位。此处为串行调用,无需加锁。
         int newIdx = static_cast<int>(data.vertices.size() / 3);
         data.vertices.push_back(static_cast<float>(vk.x) / 10000.0f);
         data.vertices.push_back(static_cast<float>(vk.y) / 10000.0f);
         data.vertices.push_back(static_cast<float>(vk.z) / 10000.0f);
-        vertKVPairs.insert(it, { vk, newIdx }); // 插入到原位置以维持有序性
+        extraVertexKeys.emplace(vk, newIdx);
         return newIdx;
     };
 
