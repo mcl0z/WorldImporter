@@ -23,6 +23,17 @@
 #include <functional> // 新增: 用于 std::function
 #undef max
 #undef min
+// 顶点量化:统一使用四舍五入(std::round)。
+// 历史实现中不同阶段分别采用 std::round 与 int(v*10000+0.5f),
+// 负数舍入结果不一致,会导致贪心合面反查顶点键时命中失败。
+inline VertexKey MakeVertexKey(float x, float y, float z) {
+    return VertexKey{
+        static_cast<int>(std::round(x * 10000.0f)),
+        static_cast<int>(std::round(y * 10000.0f)),
+        static_cast<int>(std::round(z * 10000.0f))
+    };
+}
+
 // 2x2矩阵结构体,用于UV坐标变换
 struct Matrix2x2 {
     float m[2][2];
@@ -109,12 +120,8 @@ void ModelDeduplicator::DeduplicateVertices(ModelData& data) {
                 float y = data.vertices[3*i + 1];
                 float z = data.vertices[3*i + 2];
                 
-                // 确保精确的量化，使用相同的舍入方法
-                int rx = static_cast<int>(std::round(x * 10000.0f));
-                int ry = static_cast<int>(std::round(y * 10000.0f));
-                int rz = static_cast<int>(std::round(z * 10000.0f));
-                
-                keys[i] = { VertexKey{rx, ry, rz}, static_cast<int>(i) };
+                // 确保精确的量化，使用统一的舍入方法
+                keys[i] = { MakeVertexKey(x, y, z), static_cast<int>(i) };
             }
         });
     }
@@ -461,10 +468,7 @@ void ModelDeduplicator::GreedyMesh(ModelData& data) {
                     float x = data.vertices[3*vi];
                     float y = data.vertices[3*vi + 1];
                     float z = data.vertices[3*vi + 2];
-                    int rx = static_cast<int>(x * 10000 + 0.5f);
-                    int ry = static_cast<int>(y * 10000 + 0.5f);
-                    int rz = static_cast<int>(z * 10000 + 0.5f);
-                    vertKVPairs[vi] = { VertexKey{rx, ry, rz}, (int)vi };
+                    vertKVPairs[vi] = { MakeVertexKey(x, y, z), (int)vi };
                 }
             });
         }
@@ -489,7 +493,14 @@ void ModelDeduplicator::GreedyMesh(ModelData& data) {
             });
         if (it != vertKVPairs.end() && it->first.x == vk.x && it->first.y == vk.y && it->first.z == vk.z)
             return it->second;
-        return 0;
+        // 量化键未命中(仅可能出现在浮点边界差异):追加为新顶点并返回其索引,
+        // 避免静默返回 0 造成几何错位。此处为串行调用,无需加锁。
+        int newIdx = static_cast<int>(data.vertices.size() / 3);
+        data.vertices.push_back(static_cast<float>(vk.x) / 10000.0f);
+        data.vertices.push_back(static_cast<float>(vk.y) / 10000.0f);
+        data.vertices.push_back(static_cast<float>(vk.z) / 10000.0f);
+        vertKVPairs.insert(it, { vk, newIdx }); // 插入到原位置以维持有序性
+        return newIdx;
     };
 
     // 4. UV 连续性检查 (Lambda定义)
@@ -792,9 +803,8 @@ void ModelDeduplicator::GreedyMesh(ModelData& data) {
                 Vector3 pos_final{P0_group_base.x + w2d*T1_group_base.x + h2d*T2_group_base.x,
                                   P0_group_base.y + w2d*T1_group_base.y + h2d*T2_group_base.y,
                                   P0_group_base.z + w2d*T1_group_base.z + h2d*T2_group_base.z};
-                int rx_final=int(pos_final.x*10000+0.5f), ry_final=int(pos_final.y*10000+0.5f), rz_final=int(pos_final.z*10000+0.5f);
                 {
-                    VertexKey vk{rx_final, ry_final, rz_final};
+                    VertexKey vk = MakeVertexKey(pos_final.x, pos_final.y, pos_final.z);
                     int mappedIdx = lookupVertexIndex(vk);
                     vidx_final[k_final] = mappedIdx;
                     nf.vertexIndices[k_final] = mappedIdx;

@@ -100,9 +100,8 @@ void RegionModelExporter::ExportModels(const string& outputName) {
         return chunkSet.size();
     };
 
-    // 用于跟踪已处理的区块,避免重复生成生物群系数据
+    // 用于跟踪已处理的区块,避免重复生成生物群系数据(仅在批次加载阶段串行使用)
     std::unordered_set<std::pair<int, int>, pair_hash> processedBiomeChunks;
-    std::mutex biomeMutex;
 
     // 模型处理阶段
     ModelData finalMergedModel;
@@ -231,6 +230,33 @@ void RegionModelExporter::ExportModels(const string& outputName) {
             tasksInCurrentBatch += group.tasks.size();
         }
 
+        // 预生成批次内所有区块的生物群系地图(串行执行)。
+        // 旧实现在模型线程内懒加载区块并写群系数据,与其它模型线程
+        // 无锁读取 sectionCache/群系表形成数据竞争,这里统一提前到加载阶段。
+        {
+            std::unordered_set<std::pair<int, int>, pair_hash> batchChunks;
+            for (const auto& group : groupsInBatch) {
+                for (const auto& task : group.tasks) {
+                    batchChunks.emplace(task.chunkX, task.chunkZ);
+                }
+            }
+            for (const auto& ck : batchChunks) {
+                if (processedBiomeChunks.find(ck) != processedBiomeChunks.end()) continue;
+                // 确保区块数据已加载(填充高度图),再生成生物群系地图
+                {
+                    std::shared_lock<std::shared_mutex> sc_lk(sectionCacheMutex);
+                    auto k0 = std::make_tuple(ck.first, ck.second, 0);
+                    bool needLoad = sectionCache.find(k0) == sectionCache.end();
+                    sc_lk.unlock();
+                    if (needLoad) {
+                        LoadAndCacheBlockData(ck.first, ck.second);
+                    }
+                }
+                Biome::GenerateBiomeMap(ck.first * 16, ck.second * 16, ck.first * 16 + 15, ck.second * 16 + 15);
+                processedBiomeChunks.insert(ck);
+            }
+        }
+
         // 重置当前批次的完成任务计数
         std::atomic<size_t> batchCompletedTasks{0};
 
@@ -266,32 +292,6 @@ void RegionModelExporter::ExportModels(const string& outputName) {
 
                         // 合并组内所有区块模型
                         for (const auto& task : group.tasks) {
-                            // 为当前区块生成生物群系地图数据 (如果尚未生成)
-                            std::pair<int, int> chunkKey = {task.chunkX, task.chunkZ};
-                            {
-                                std::lock_guard<std::mutex> lock(biomeMutex);
-                                if (processedBiomeChunks.find(chunkKey) == processedBiomeChunks.end()) {
-                                    // 计算当前区块的方块坐标范围
-                                    int blockXStart = task.chunkX * 16;
-                                    int blockXEnd = blockXStart + 15;
-                                    int blockZStart = task.chunkZ * 16;
-                                    int blockZEnd = blockZStart + 15;
-                                    // 确保区块数据已加载(填充高度图),再生成生物群系地图
-                                    {
-                                        std::shared_lock<std::shared_mutex> sc_lk(sectionCacheMutex);
-                                        auto k0 = std::make_tuple(task.chunkX, task.chunkZ, 0);
-                                        bool needLoad = sectionCache.find(k0) == sectionCache.end();
-                                        sc_lk.unlock();
-                                        if (needLoad) {
-                                            LoadAndCacheBlockData(task.chunkX, task.chunkZ);
-                                        }
-                                    }
-                                    // 生成该区块的生物群系地图数据
-                                    Biome::GenerateBiomeMap(blockXStart, blockZStart, blockXEnd, blockZEnd);
-                                    processedBiomeChunks.insert(chunkKey);
-                                }
-                            }
-
                             // processModel 返回可移动对象；提前 reserve 随即会被移动赋值
                             // 丢弃，旧代码每个 section 都做了三次无效分配。
                             ModelData chunkModel = processModel(task);

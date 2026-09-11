@@ -58,8 +58,10 @@ bool ReadChunkNbt(const std::vector<char>& region, size_t slot, NbtTagPtr& root)
         if (!DecompressData(packed, raw)) return false;
     } else if (compression == 3) {
         raw = std::move(packed);
+    } else if (compression == 1) {
+        if (!DecompressGzip(packed, raw)) return false;
     } else {
-        // 现代实体区域通常为 zlib。gzip/外部流留作降级跳过。
+        // 未知压缩类型,跳过该区块
         return false;
     }
     try {

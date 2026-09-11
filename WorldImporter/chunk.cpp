@@ -42,6 +42,12 @@ unsigned CalculateChunkOffset(const std::vector<char>& fileData, int x, int z) {
  * @return unsigned 区块数据长度(字节)
  */
 unsigned ExtractChunkLength(const std::vector<char>& fileData, unsigned offset) {
+    // 先校验边界,避免损坏文件造成越界读取
+    if (static_cast<uint64_t>(offset) + 4 > fileData.size()) {
+        cerr << "错误: 长度字段超出文件边界." << endl;
+        return 0;
+    }
+
     // 读取4字节长度值(大端字节序)
     unsigned byte1 = (unsigned char)fileData[offset];
     unsigned byte2 = (unsigned char)fileData[offset + 1];
@@ -81,14 +87,36 @@ std::vector<char> GetChunkNBTData(const std::vector<char>& fileData, int x, int 
     
     // 根据 length 和 offset 检查整个区块数据是否在文件范围内
     uint64_t endOffset = static_cast<uint64_t>(offset) + 4 + length;
-    if (endOffset > fileData.size()) {
+    if (length == 0 || endOffset > fileData.size()) {
         cerr << "错误: 区块数据超出了文件边界." << endl;
         return {};
     }
+
+    // 第4字节为压缩类型:1=gzip, 2=zlib(Minecraft默认), 3=未压缩。
+    // 旧实现忽略该字节,遇到非 zlib 区块会直接解压失败丢数据。
+    unsigned char compressionType = static_cast<unsigned char>(fileData[offset + 4]);
     unsigned startOffset = offset + 5; // 跳过4字节长度+1字节压缩类型
     vector<char> chunkData(fileData.begin() + startOffset, fileData.begin() + endOffset);
     vector<char> decompressedData;
-    if (DecompressData(chunkData, decompressedData)) {
+
+    bool decompressed = false;
+    switch (compressionType) {
+    case 1: // gzip
+        decompressed = DecompressGzip(chunkData, decompressedData);
+        break;
+    case 2: // zlib
+        decompressed = DecompressData(chunkData, decompressedData);
+        break;
+    case 3: // 未压缩
+        decompressedData = std::move(chunkData);
+        decompressed = true;
+        break;
+    default:
+        cerr << "错误: 未知的区块压缩类型: " << static_cast<int>(compressionType) << endl;
+        return {};
+    }
+
+    if (decompressed) {
         return decompressedData;
     } else {
         cerr << "错误: 解压失败." << endl;

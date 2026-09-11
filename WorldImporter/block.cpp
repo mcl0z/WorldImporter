@@ -166,14 +166,22 @@ void ProcessSection(int chunkX, int chunkZ, int sectionY, const NbtTagPtr& secti
     if (bio) {
         // 旧版格式(1.18~1.19)：biomes 是 INT_ARRAY，64 个 biome registry ID
         if (bio->type == TagType::INT_ARRAY) {
-            const int* ids = reinterpret_cast<const int*>(bio->payload.data());
-            size_t count = bio->payload.size() / sizeof(int);
+            // NBT 数组按大端字节序保存,必须逐元素转换;
+            // 旧实现用 reinterpret_cast<const int*> 直接取数,在小端机器上
+            // 会得到字节颠倒的 biome ID(1.18~1.19 群系颜色错乱)。
+            const auto& payload = bio->payload;
+            size_t count = payload.size() / 4;
             biomeData.resize(64, 0);
             for (size_t i = 0; i < count && i < 64; ++i) {
-                int rawId = ids[i];
+                const size_t base = i * 4;
+                uint32_t rawId = (static_cast<uint32_t>(static_cast<uint8_t>(payload[base])) << 24) |
+                    (static_cast<uint32_t>(static_cast<uint8_t>(payload[base + 1])) << 16) |
+                    (static_cast<uint32_t>(static_cast<uint8_t>(payload[base + 2])) << 8) |
+                    static_cast<uint32_t>(static_cast<uint8_t>(payload[base + 3]));
+                int biomeId = static_cast<int32_t>(rawId);
                 // 用 ID 生成占位名，确保 biome 被注册
                 std::string name = "minecraft:legacy_biome_";
-                name += std::to_string(rawId);
+                name += std::to_string(biomeId);
                 biomeData[i] = Biome::GetId(name);
             }
         }
@@ -665,6 +673,9 @@ void LoadAndCacheBlockData(int chunkX, int chunkZ) {
 // 方块ID查询相关函数
 // --------------------------------------------------------------------------------
 // 获取方块ID
+// 注意:该函数是模型阶段的高频只读路径,不带锁。
+// 依赖调用约定:模型线程运行期间 sectionCache 不会被写入
+// (区块加载/卸载均在批次加载阶段串行完成),见 RegionModelExporter::ExportModels。
 int GetBlockId(int blockX, int blockY, int blockZ) {
     int chunkX, chunkZ;
     blockToChunk(blockX, blockZ, chunkX, chunkZ);

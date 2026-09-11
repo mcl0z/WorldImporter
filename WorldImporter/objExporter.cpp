@@ -107,6 +107,15 @@ inline int calculateIntLength(int value) {
 }
 // 快速计算浮点数转换为 "%.6f" 格式后的字符串长度(数学估算)
 inline int calculateFloatStringLength(float value) {
+    // 非有限值(NaN/Inf):与 fast_ftoa 一致,统一按 "0" 计长
+    if (!std::isfinite(value)) {
+        return 1;
+    }
+    // 超出定点缩放安全范围:与 fast_ftoa 的 snprintf("%.6f") 兜底保持一致
+    if (std::fabs(value) >= 1.0e12f) {
+        char buffer[64];
+        return snprintf(buffer, sizeof(buffer), "%.6f", static_cast<double>(value));
+    }
     if (value == floor(value)) {  // 整数
         return calculateIntLength(static_cast<int>(value));
     }
@@ -165,6 +174,16 @@ inline char* fast_itoa(int value, char* ptr) {
 
 // 快速浮点转字符串(固定6位小数)
 inline char* fast_ftoa(float value, char* ptr) {
+    // 非有限值(NaN/Inf):统一写 0,避开 floor()/整数转换的未定义行为
+    if (!std::isfinite(value)) {
+        *ptr++ = '0';
+        return ptr;
+    }
+    // 超出定点缩放安全范围:走 snprintf 兜底,避免 int64 溢出
+    if (std::fabs(value) >= 1.0e12f) {
+        int written = snprintf(ptr, 64, "%.6f", static_cast<double>(value));
+        return ptr + (written > 0 ? written : 0);
+    }
     if (value == floor(value)) {  // 检查是否是整数
         return fast_itoa(static_cast<int>(value), ptr);
     }
@@ -175,11 +194,6 @@ inline char* fast_ftoa(float value, char* ptr) {
         if (negative) {
             *ptr++ = '-';
             value = -value;
-        }
-
-        if (std::isinf(value)) {
-            memcpy(ptr, "inf", 3);
-            return ptr + 3;
         }
 
         int64_t scaled = static_cast<int64_t>(std::round(value * scale));
