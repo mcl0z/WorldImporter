@@ -224,8 +224,9 @@ void ChunkGenerator::ProcessBlockForModel(ModelData& chunkModel, int x, int y, i
     if (bracketPos != std::string::npos) {
         curBaseName = curBaseName.substr(0, bracketPos);
     }
-    auto isCtmConnected = [&](FaceType dir) -> bool {
-        if (!useCtm) return false;
+    auto isSameTransparentNeighbor = [&](FaceType dir) -> bool {
+        // 仅用于「玻璃类方块」的同类内部面剔除（玻璃/染色玻璃/玻璃板等）。
+        // 注意：不能对半砖、楼梯、栅栏等部分方块生效，否则会错误剔除侧面。
         int nx = x, ny = y, nz = z;
         if (dir == FaceType::DOWN) ny--;
         else if (dir == FaceType::UP) ny++;
@@ -238,6 +239,10 @@ void ChunkGenerator::ProcessBlockForModel(ModelData& chunkModel, int x, int y, i
         Block nb = GetBlockById(nid);
         return nb.GetNameAndNameSpaceWithoutState() == curBaseName;
     };
+    // 玻璃类方块（含模组命名如 stained_glass / framed_glass / *_pane）
+    const bool selfGlassLike =
+        curBaseName.find("glass") != std::string::npos ||
+        curBaseName.find("pane") != std::string::npos;
 
     // 遍历所有面
     for (size_t faceIdx = 0; faceIdx < blockModel.faces.size(); ++faceIdx) {
@@ -258,8 +263,10 @@ void ChunkGenerator::ProcessBlockForModel(ModelData& chunkModel, int x, int y, i
                 if (!neighbors[neighborIdx]) { // 如果邻居存在(非空气),跳过该面
                     continue;
                 }
-                // 邻居被当作 air,但实际是 CTM 连接的同类方块,剔除内部面
-                if (isCtmConnected(dir)) {
+                // 邻居被当作 air（透明/非实心）时，只有「同类连接方块」的
+                // 内部面才可剔除。旧代码把 useCtm 当成直接剔除条件，命中任意
+                // CTM 规则后会删掉该块全部 cullface（玻璃/水整块消失）。
+                if ((useCtm || selfGlassLike) && isSameTransparentNeighbor(dir)) {
                     continue;
                 }
             }
@@ -330,9 +337,15 @@ ModelData ChunkGenerator::GenerateChunkModel(int chunkX, int sectionY, int chunk
     // 旧逻辑会由当前区块第一个完成的 Section 导出全部实体，导致范围外的
     // 模组方块泄漏到结果中，同时让导出结果受线程调度影响。
     auto chunkKey = std::make_pair(chunkX, chunkZ);
-    auto entityIt = EntityBlockCache.find(chunkKey);
-    if (entityIt != EntityBlockCache.end()) {
-        const auto& entityBlocks = entityIt->second;
+    // 复制 shared_ptr 列表后再生成模型，避免持锁执行昂贵操作；即使未来恢复
+    // 异步加载/卸载，也不会与 EntityBlockCache 的写入发生竞态。
+    std::vector<std::shared_ptr<EntityBlock>> entityBlocks;
+    {
+        std::shared_lock<std::shared_mutex> entityLock(entityBlockCacheMutex);
+        auto entityIt = EntityBlockCache.find(chunkKey);
+        if (entityIt != EntityBlockCache.end()) entityBlocks = entityIt->second;
+    }
+    if (!entityBlocks.empty()) {
         for (const auto& entity : entityBlocks) {
             if (entity == nullptr) continue;
             if (entity->x < xStart || entity->x > xEnd ||

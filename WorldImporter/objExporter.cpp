@@ -105,42 +105,16 @@ inline int calculateIntLength(int value) {
     }
     return length;
 }
-// 快速计算浮点数转换为 "%.6f" 格式后的字符串长度(数学估算)
+// 快速整数转字符串(带符号)的前置声明
+inline char* fast_itoa(int value, char* ptr);
+// 快速浮点转字符串的前置声明；长度计算直接复用同一实现，
+// 避免数学估算在 9.9999996 -> 10.000000 进位时少算 1 字节并写穿堆缓冲区。
+inline char* fast_ftoa(float value, char* ptr);
+
+// 计算浮点数实际写出长度（与 fast_ftoa 严格一致）
 inline int calculateFloatStringLength(float value) {
-    // 非有限值(NaN/Inf):与 fast_ftoa 一致,统一按 "0" 计长
-    if (!std::isfinite(value)) {
-        return 1;
-    }
-    // 超出定点缩放安全范围:与 fast_ftoa 的 snprintf("%.6f") 兜底保持一致
-    if (std::fabs(value) >= 1.0e12f) {
-        char buffer[64];
-        return snprintf(buffer, sizeof(buffer), "%.6f", static_cast<double>(value));
-    }
-    if (value == floor(value)) {  // 整数
-        return calculateIntLength(static_cast<int>(value));
-    }
-    else {
-        const bool negative = value < 0.0f;
-        const double absValue = std::abs(static_cast<double>(value));
-
-        // 处理特殊情况:0.0
-        if (absValue < 1e-7) {
-            return negative ? 9 : 8; // "-0.000000" 或 "0.000000"
-        }
-
-        // 计算整数部分位数
-        int integerDigits;
-        if (absValue < 1.0) {
-            integerDigits = 1; // 例如 0.123456 -> "0.123456"
-        }
-        else {
-            integerDigits = static_cast<int>(std::floor(std::log10(absValue))) + 1;
-        }
-
-        // 总长度 = 符号位 + 整数部分 + 小数点 + 6位小数
-        return (negative ? 1 : 0) + integerDigits + 1 + 6;
-    }
-
+    char buffer[128];
+    return static_cast<int>(fast_ftoa(value, buffer) - buffer);
 }
 // 快速整数转字符串(正数版)
 inline char* fast_itoa_positive(uint32_t value, char* ptr) {
@@ -285,7 +259,8 @@ void createObjFileViaMemoryMapped(const ModelData& data, const std::string& objN
     std::vector<size_t> usemtlLengths(data.materials.size());
 #pragma omp parallel for
     for (int matIndex = 0; matIndex < data.materials.size(); ++matIndex) {
-        usemtlLengths[matIndex] = 8 + data.materials[matIndex].name.size() + 1; // "usemtl " + name + "\n"
+        // "usemtl "(7) + name + "\n"(1)
+        usemtlLengths[matIndex] = 8 + data.materials[matIndex].name.size();
     }
 
 #pragma omp parallel for reduction(+:totalSize)
@@ -357,6 +332,12 @@ void createObjFileViaMemoryMapped(const ModelData& data, const std::string& objN
             }
             *ptr++ = '\n';
         }
+    }
+
+    const size_t writtenSize = static_cast<size_t>(ptr - buffer.data());
+    if (writtenSize != totalSize) {
+        throw std::runtime_error("OBJ缓冲长度计算不一致: estimated=" +
+            std::to_string(totalSize) + ", actual=" + std::to_string(writtenSize));
     }
 
     // 使用跨平台方式写入文件

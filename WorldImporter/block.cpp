@@ -739,15 +739,10 @@ int GetBlockIdWithNeighbors(int blockX, int blockY, int blockZ, bool* neighborIs
             if (hasFluidData) {
                 bool isSameFluid = neighborBlock.HasFluid() &&
                     currentBlock.fluidName == neighborBlock.fluidName;
-                // Only render water side faces next to true air blocks.
-                // Solid/transparent/mod blocks (even if absent from the solids
-                // table) hide the water side, avoiding a visible water sheet
-                // hugging full blocks.
-                std::string neighborBase = neighborBlock.GetNameAndNameSpaceWithoutState();
-                bool isTrueAir = (neighborBase == "minecraft:air" ||
-                                  neighborBase == "minecraft:cave_air" ||
-                                  neighborBase == "minecraft:void_air");
-                neighborIsAir[i] = !isSameFluid && (isTrueAir || neighborBlock.HasFluid());
+                // 同种流体隐藏内部面；其它不遮挡方块（空气、玻璃、半砖、植物等）
+                // 应保留水面。旧逻辑仅把三种真空气视为空，导致水上有半砖/植物/
+                // 透明块时整个顶部被剔除。solidBlocks 仅表示完整遮挡体。
+                neighborIsAir[i] = !isSameFluid && (neighborBlock.air || neighborBlock.HasFluid());
             }
             else {
                 neighborIsAir[i] = neighborBlock.air;

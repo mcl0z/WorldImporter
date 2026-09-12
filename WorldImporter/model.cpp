@@ -585,19 +585,11 @@ nlohmann::json MergeModelJson(const nlohmann::json& parentModelJson, const nlohm
         }
     }
 
-    // 合并 "elements"
-    if (parentModelJson.contains("elements")) {
-        if (currentModelJson.contains("elements")) {
-            // 两者都有elements，合并数组
-            mergedModelJson["elements"] = currentModelJson["elements"];
-            // 将父模型中的elements添加到子模型elements后面
-            for (const auto& element : parentModelJson["elements"]) {
-                mergedModelJson["elements"].push_back(element);
-            }
-        } else {
-            // 子模型没有elements，使用父模型的
-            mergedModelJson["elements"] = parentModelJson["elements"];
-        }
+    // Minecraft 模型继承语义：子模型一旦声明 elements，就完整替换父模型
+    // 的 elements，而不是追加。旧实现把两者拼接，会让自定义 top/bottom slab
+    // 同时生成两套几何；重合面随后被偏移/去重，表现为半砖缺面或上下错位。
+    if (!currentModelJson.contains("elements") && parentModelJson.contains("elements")) {
+        mergedModelJson["elements"] = parentModelJson["elements"];
     }
 
     // 合并 "display"

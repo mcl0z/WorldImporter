@@ -328,6 +328,12 @@ void ProcessBlockstate(const std::string& namespaceName, const std::vector<std::
             baseBlockId = match.str(1);
             condition = match.str(2);
 
+            // getBlockPalette 把 Properties 序列化为 "key:value,key:value"，
+            // 而 variant/when 条件使用 "key=value"。归一化分隔符，否则
+            // 条件解析失败 → 所有 variant 都命中 → 随机选中错误模型
+            // （表现为半砖上下错位、缺面等）。
+            std::replace(condition.begin(), condition.end(), ':', '=');
+
             static const std::regex conditionRegex(R"((\w+)=([^,]+))");
             auto conditionsBegin = std::sregex_iterator(condition.begin(), condition.end(), conditionRegex);
             auto conditionsEnd = std::sregex_iterator();

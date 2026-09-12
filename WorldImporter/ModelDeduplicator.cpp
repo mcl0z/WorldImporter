@@ -19,6 +19,27 @@
 #include <iostream> // 新增: 用于错误输出
 #include <iterator> // 新增: 用于 std::make_move_iterator
 #include <atomic> // 新增: 用于 std::atomic_bool
+
+/* 并发预算与去重线程数 */
+namespace {
+    std::atomic<int> g_modelThreadBudget{1};
+}
+
+void SetModelThreadBudget(int threads) {
+    g_modelThreadBudget.store(threads > 1 ? threads : 1, std::memory_order_relaxed);
+}
+
+// 去重内部的并行度:外层多线程时按预算分摊核数,避免线程数量爆炸。
+static unsigned int DedupThreadCount() {
+    unsigned int hc = std::thread::hardware_concurrency();
+    if (hc == 0) hc = 1;
+    int budget = g_modelThreadBudget.load(std::memory_order_relaxed);
+    // 外层已有多个长期存活的模型线程时，内部去重保持串行。
+    // 旧逻辑按 hc/budget 继续反复创建短命线程，4×4 线程频繁退出会在
+    // MinGW/UCRT TLS 清理路径触发 0xC0000374，且线程创建开销抵消收益。
+    if (budget > 1) return 1;
+    return hc;
+}
 #include <thread> // 新增: 用于 std::thread::hardware_concurrency()
 #include <chrono> // 新增: 用于性能计时
 #include <functional> // 新增: 用于 std::function
@@ -106,7 +127,7 @@ void ModelDeduplicator::DeduplicateVertices(ModelData& data) {
     std::vector<KeyAndIndex> keys(vertCount);
 
     // 并行计算顶点键
-    unsigned int numThreads = std::thread::hardware_concurrency();
+    unsigned int numThreads = DedupThreadCount();
     if (numThreads == 0) numThreads = 1;
     std::vector<std::thread> threads;
     threads.reserve(numThreads);
@@ -281,12 +302,18 @@ void ModelDeduplicator::DeduplicateFaces(ModelData& data) {
         freq[key]++;
     }
 
-    // 第二次遍历:过滤只出现一次的面
+    // 第二次遍历:每个重合面键保留首个面。
+    // 旧代码仅保留 freq==1，两个完全重合的面会被「全部删除」；玻璃、
+    // 玻璃板、多元素模型及水面等经常出现这类重复，导致随机缺面甚至整块消失。
+    // ChunkGenerator 已在方块邻居层剔除真正的内部面，此处只能安全地去重，
+    // 不能把所有副本都删除。
+    std::unordered_set<FaceKey, FaceKeyHasher> kept;
+    kept.reserve(freq.size());
     std::vector<Face> newFaces;
     newFaces.reserve(data.faces.size());
 
     for (size_t i = 0; i < keys.size(); i++) {
-        if (freq[keys[i]] == 1) {
+        if (kept.insert(keys[i]).second) {
             newFaces.push_back(data.faces[i]);
         }
     }
@@ -331,7 +358,7 @@ void ModelDeduplicator::GreedyMesh(ModelData& data) {
     // 1. 计算所有面的法线 (并行化)
     std::vector<Vector3> faceNormals(faceCount);
     {
-        unsigned int numThreads = std::thread::hardware_concurrency();
+        unsigned int numThreads = DedupThreadCount();
         if (numThreads == 0) numThreads = 1;
         std::vector<std::thread> threads;
         threads.reserve(numThreads);
@@ -371,7 +398,7 @@ void ModelDeduplicator::GreedyMesh(ModelData& data) {
     // 使用批次填充以减少同步成本
     const size_t BATCH_SIZE = 1024; // 每批次处理的面数
     std::vector<std::vector<std::pair<EdgeKey,int>>> threadBatches;
-    unsigned int numThreads2 = std::thread::hardware_concurrency(); if (numThreads2 == 0) numThreads2 = 1;
+    unsigned int numThreads2 = DedupThreadCount(); if (numThreads2 == 0) numThreads2 = 1;
     threadBatches.resize(numThreads2);
     
     std::vector<std::thread> fillThreads; fillThreads.reserve(numThreads2);
@@ -456,7 +483,7 @@ void ModelDeduplicator::GreedyMesh(ModelData& data) {
     int vertCount = data.vertices.size() / 3;
     std::vector<std::pair<VertexKey,int>> vertKVPairs(vertCount);
     {
-        unsigned int numThreads = std::thread::hardware_concurrency();
+        unsigned int numThreads = DedupThreadCount();
         if (numThreads == 0) numThreads = 1;
         std::vector<std::thread> threads;
         threads.reserve(numThreads);

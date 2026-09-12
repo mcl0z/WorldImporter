@@ -43,13 +43,9 @@ float getCornerHeight(float currentHeight, float NWHeight, float NHeight, float 
         return 16.0f;
     }
 
-    // 与不透明方块(固体,高度为-2)相邻的角落升到满高。
-    // MC 原版中水贴住方块时水面会爬到方块顶部,若不抬升,
-    // 方块底面/侧面与水面之间会留下约 0.11 格的空气缝隙。
-    if (NWHeight == -1.0f || NHeight == -1.0f || WHeight == -1.0f) {
-        return 16.0f;
-    }
-
+    // 空气(-1)和固体(-2)不参与流体高度平均；只有同种流体上方仍有
+    // 流体时（FULL_FLUID_LEVEL）才是满高。旧实现遇到任一空气邻居就
+    // 返回满高，使岸边水面错误上移到整格高度。
     constexpr float sourceHeight = 128.0f / 9.0f;
     if (std::fabs(currentHeight - sourceHeight) < 1e-5f) {
         res += currentHeight * 11.0f;
@@ -210,8 +206,9 @@ ModelData GenerateFluidModel(const std::array<int, 10>& fluidLevels, const std::
     // 顶面 (y+)
     model.faces[1].vertexIndices = { 4, 7, 6, 5 };
     model.faces[1].uvIndices = { 4, 7, 6, 5 };
-    // 根据上方方块决定顶面是否剔除
-    model.faces[1].faceDirection = (aboveLevel == -1) ? DO_NOT_CULL : UP;
+    // 顶面统一交给邻居遮挡判定：同种流体/完整实体会剔除，空气、玻璃、
+    // 半砖、植物等非完整遮挡方块会保留，避免水面顶部偶发消失。
+    model.faces[1].faceDirection = UP;
     model.faces[1].materialIndex = 1; // flow材质
     
     // 北面 (z-)

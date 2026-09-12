@@ -265,6 +265,8 @@ void RegionModelExporter::ExportModels(const string& outputName) {
         const unsigned numThreads = std::max<unsigned>(1,
             std::min<unsigned>(static_cast<unsigned>(config.modelThreads),
                                static_cast<unsigned>(std::max<size_t>(1, groupsInBatch.size()))));
+        // 通知去重层限制内部并行度,避免线程数量爆炸
+        SetModelThreadBudget(static_cast<int>(numThreads));
         std::atomic<size_t> groupIndex{0};
         std::vector<std::thread> threads;
         threads.reserve(numThreads);

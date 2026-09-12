@@ -9,6 +9,8 @@
 #include "include/stb_image_write.h"
 
 #include <Windows.h>
+#undef min
+#undef max
 #include <iostream>
 #include <fstream>
 #include <sstream>

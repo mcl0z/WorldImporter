@@ -428,19 +428,15 @@ int Biome::GetBiomeColor(int blockX, int blockY, int blockZ, BiomeColorType colo
             int sectionY;
             blockYToSectionY(blockY, sectionY);
 
-            // 创建缓存键
-            auto blockKey = std::make_tuple(chunkX, chunkZ, sectionY);
+            // sectionCache 使用 AdjustSectionY(sectionY) 作为键；必须与
+            // ProcessSection/ GetBlockId 保持一致，否则这里会误判区块未加载，
+            // 在模型线程中触发 LoadAndCacheBlockData，造成并发写缓存和堆损坏。
+            int adjustedSectionY = AdjustSectionY(sectionY);
+            auto blockKey = std::make_tuple(chunkX, chunkZ, adjustedSectionY);
 
-            // 检查 SectionCache 中是否存在对应的区块数据,否则加载
-            // 注意: 必须加锁访问 sectionCache, 且不能用 operator[] 插入(多线程并发写 unordered_map 会崩溃)
-            {
-                std::shared_lock<std::shared_mutex> sc_lock(sectionCacheMutex);
-                if (sectionCache.find(blockKey) == sectionCache.end()) {
-                    sc_lock.unlock();
-                    LoadAndCacheBlockData(chunkX, chunkZ);
-                }
-            }
-
+            // 模型阶段批次及一圈边界已完整预加载。此处只读，缺失时使用默认色；
+            // 绝不能在模型线程里惰性 LoadAndCacheBlockData，否则会与 GetBlockId/
+            // GetSkyLight 的高频无锁读取并发写 sectionCache，触发堆损坏。
             std::shared_lock<std::shared_mutex> sc_lock(sectionCacheMutex);
             auto secIt = sectionCache.find(blockKey);
             if (secIt == sectionCache.end()) continue;
