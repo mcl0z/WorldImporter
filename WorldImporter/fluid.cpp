@@ -295,7 +295,7 @@ ModelData GenerateFluidModel(const FluidModelParams& params, const std::string& 
         int material; // 0=still, 1=flow
     };
     const FaceDef faceDefs[6] = {
-        { { 0, 3, 2, 1 },   { 0, 1, 2, 3 },   FaceType::DOWN,  0 }, // 底面 still
+        { { 0, 1, 2, 3 },   { 0, 3, 2, 1 },   FaceType::DOWN,  0 }, // Outward -Y; reverse UVs with vertices.
         { { 4, 7, 6, 5 },   { 4, 5, 6, 7 },   FaceType::UP,    useFlowTop ? 1 : 0 }, // 顶面
         { { 8, 11, 10, 9 }, { 8, 9, 10, 11 }, FaceType::NORTH, 1 },
         { { 12, 13, 14, 15 }, { 12, 13, 14, 15 }, FaceType::SOUTH, 1 },

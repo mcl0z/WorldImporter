@@ -79,7 +79,9 @@ std::vector<char> GetChunkNBTData(const std::vector<char>& fileData, int x, int 
     int localX = mod32(x);  // 转换为区域内相对坐标(0-31)
     int localZ = mod32(z);
     unsigned offset = CalculateChunkOffset(fileData, localX, localZ);
-    
+    // Invalid/truncated region or absent chunk: do not index the location table.
+    if (offset == 0) return {};
+
     const unsigned sectorCount = static_cast<unsigned char>(
         fileData[4 * (localX + localZ * 32) + 3]);
     if (offset < 8192 || sectorCount == 0 || offset > fileData.size() ||

@@ -58,6 +58,10 @@ int main() {
         check(GetChunkNBTData(region(raw, 99), 0, 0).empty(), "unknown compression");
         check(GetChunkNBTData(region(raw, 130), 0, 0).empty(), "external chunk rejected explicitly");
         check(GetChunkNBTData({}, 0, 0).empty(), "empty region");
+        for (size_t size : {size_t(1), size_t(3), size_t(4095), size_t(8191)}) {
+            check(GetChunkNBTData(std::vector<char>(size), -1, -1).empty(),
+                  "truncated location table at last slot");
+        }
         check(GetChunkNBTData(std::vector<char>(8192), 0, 0).empty(), "absent chunk");
         auto b = region(z, 2);
         put32(b, 0, 0xffffff01);
