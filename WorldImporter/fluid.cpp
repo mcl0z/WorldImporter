@@ -316,14 +316,14 @@ ModelData GenerateFluidModel(const FluidModelParams& params, const std::string& 
 
     // ---- 材质 ----
     Material stillMaterial;
-    stillMaterial.name = namespace_name + ":" + base_id + "_still";
+    stillMaterial.name = namespace_name + ":" + base_id + "#still~" + MaterialTextureBasename(stillTexturePath);
     stillMaterial.texturePath = "textures/" + namespace_name + "/" + stillTexturePath + ".png";
     stillMaterial.tintIndex = (base_id.find("water") != string::npos) ? 2 : -1;
     stillMaterial.type = stillType;
     stillMaterial.aspectRatio = stillAspectRatio;
 
     Material flowMaterial;
-    flowMaterial.name = namespace_name + ":" + base_id + "_flow";
+    flowMaterial.name = namespace_name + ":" + base_id + "#flow~" + MaterialTextureBasename(flowTexturePath);
     flowMaterial.texturePath = "textures/" + namespace_name + "/" + flowTexturePath + ".png";
     flowMaterial.tintIndex = (base_id.find("water") != string::npos) ? 2 : -1;
     flowMaterial.type = flowType;
@@ -406,14 +406,16 @@ void AssignFluidMaterials(ModelData& model, const std::string& fluidId) {
     float flowAspectRatio = 1.0f;
 
     Material stillFluid;
-    stillFluid.name = nsPrefix + fluidInfo.folder + "/" + pureName + fluidInfo.still_texture;
+    stillFluid.name = nsPrefix + pureName + "#still~" +
+        MaterialTextureBasename(fluidInfo.folder + "/" + pureName + fluidInfo.still_texture);
     stillFluid.texturePath = "textures/" + ns + "/" + fluidInfo.folder + "/" + pureName + fluidInfo.still_texture + ".png";
     stillFluid.tintIndex = (pureName.find("water") != std::string::npos) ? 2 : -1;
     stillFluid.type = DetectMaterialType(ns, fluidInfo.folder + "/" + pureName + fluidInfo.still_texture, stillAspectRatio);
     stillFluid.aspectRatio = stillAspectRatio;
 
     Material flowFluid;
-    flowFluid.name = nsPrefix + fluidInfo.folder + "/" + pureName + fluidInfo.flow_texture;
+    flowFluid.name = nsPrefix + pureName + "#flow~" +
+        MaterialTextureBasename(fluidInfo.folder + "/" + pureName + fluidInfo.flow_texture);
     flowFluid.texturePath = "textures/" + ns + "/" + fluidInfo.folder + "/" + pureName + fluidInfo.flow_texture + ".png";
     flowFluid.tintIndex = (pureName.find("water") != std::string::npos) ? 2 : -1;
     flowFluid.type = DetectMaterialType(ns, fluidInfo.folder + "/" + pureName + fluidInfo.flow_texture, flowAspectRatio);

@@ -538,9 +538,14 @@ ModelData SpecialBlock::GenerateLightBlockModel(const string& texturePath) {
         0.0f, 1.0f, 1.0f, 1.0f, 1.0f, 0.0f, 0.0f, 0.0f
     };
 
-    // 创建材质
+    // 创建材质（名字以方块 id 为主：minecraft:light#light_block_<level>）
     Material material;
-    material.name = texturePath;
+    {
+        std::string leaf = texturePath;
+        size_t slash = leaf.find_last_of('/');
+        if (slash != std::string::npos) leaf = leaf.substr(slash + 1);
+        material.name = "minecraft:light#" + leaf;
+    }
     material.texturePath = "None";
     material.tintIndex = -1;  // 设置默认tint索引
     cubeModel.materials = { material };
@@ -631,8 +636,8 @@ ModelData SpecialBlock::GenerateBedModel(const string& blockName) {
         }
     }
 
-    // 构建材质路径
-    string textureName = ns + ":entity/bed/" + color;
+    // 材质名以方块 id 为主（如 minecraft:red_bed）；贴图仍用实体床贴图
+    string textureName = ns + ":" + blockID;
     string textureFileDir = "textures";
     string savedTexturePath;
     if (!SaveTextureToFile(ns, "entity/bed/" + color, textureFileDir)) {

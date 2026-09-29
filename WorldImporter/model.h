@@ -36,6 +36,7 @@ enum  FaceType{
 struct Material {
     std::string name;       // 材质名称
     std::string texturePath;// 纹理路径
+    std::string textureKey; // 模型 textures 中的贴图键(如 all/side/top)，用于按方块 id 重命名
     int8_t  tintIndex;      // tint 索引
     TintResult tint;        // 解析后的 tint 结果（None 表示不上色）
     bool tintLocked = false;// tint 已由 CTM 规则(tintIndex/tintBlock)锁定, 不再参与重解析
@@ -183,6 +184,14 @@ static std::unordered_map<std::string, nlohmann::json> parentModelCache;
 ModelData ProcessModelJson(const std::string& namespaceName,
     const std::string& blockId,
     int rotationX, int rotationY,bool uvlock, int randomIndex = 0, const std::string& blockstateName="");
+
+// 按方块 id 重命名模型中的材质（方块id 或 方块id#贴图键~贴图名，详见 model.cpp）
+void RenameBlockMaterials(ModelData& model,
+    const std::string& namespaceName,
+    const std::string& baseBlockId);
+
+// 取贴图路径的文件名部分并去掉扩展名（textures/minecraft/block/oak_log.png -> oak_log）
+std::string MaterialTextureBasename(const std::string& texturePath);
 
 // 模型合并
 ModelData MergeModelData(const ModelData& data1, const ModelData& data2);

@@ -485,6 +485,10 @@ void ProcessBlockstate(const std::string& namespaceName, const std::vector<std::
                             }
 
                         }
+                        // 以方块 id 为主重命名材质（每个方块独立材质）
+                        for (auto& wm : weightedModels) {
+                            RenameBlockMaterials(wm.model, namespaceName, baseBlockId);
+                        }
                         // 存入缓存
                         {
                             std::unique_lock<std::shared_mutex> lock(blockstateCachesMutex); // 使用 unique_lock 进行写操作
@@ -505,7 +509,7 @@ void ProcessBlockstate(const std::string& namespaceName, const std::vector<std::
                             }
 
                             mergedModel = ProcessModelJson(modelNamespace, modelId, rotationX, rotationY, uvlock, 0, blockstateName);
-                           
+                            RenameBlockMaterials(mergedModel, namespaceName, baseBlockId);
                             {
                                 std::unique_lock<std::shared_mutex> lock(blockstateCachesMutex); // 使用 unique_lock 进行写操作
                                 BlockModelCache[namespaceName][blockId] = mergedModel;
@@ -607,6 +611,12 @@ void ProcessBlockstate(const std::string& namespaceName, const std::vector<std::
                         multipartModelsList.push_back(multipartModels);
                     }
                 }
+                // 以方块 id 为主重命名材质（每个方块独立材质）
+                for (auto& group : multipartModelsList) {
+                    for (auto& wm : group) {
+                        RenameBlockMaterials(wm.model, namespaceName, baseBlockId);
+                    }
+                }
                 // 存入 MultipartModelCache
                 {
                     std::unique_lock<std::shared_mutex> lock(blockstateCachesMutex); // 使用 unique_lock 进行写操作
@@ -657,6 +667,8 @@ void ProcessBlockstate(const std::string& namespaceName, const std::vector<std::
                         mergedModel = MergeModelData(mergedModel, selectedModels[i]);
                     }
                 }
+                // 以方块 id 为主重命名材质（每个方块独立材质）
+                RenameBlockMaterials(mergedModel, namespaceName, baseBlockId);
                 {
                     std::unique_lock<std::shared_mutex> lock(blockstateCachesMutex); // 使用 unique_lock 进行写操作
                     BlockModelCache[namespaceName][blockId] = mergedModel;

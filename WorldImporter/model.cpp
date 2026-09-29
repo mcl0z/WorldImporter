@@ -733,6 +733,7 @@ void processTextures(const nlohmann::json& modelJson, ModelData& data,
                 Material newMaterial;
                 newMaterial.name = fullMaterialName;
                 newMaterial.texturePath = textureSavePath;
+                newMaterial.textureKey = textureKey;
                 newMaterial.tintIndex = -1;  // 默认值
                 
                 // 检测材质类型和长宽比(如果为动态材质)
@@ -744,12 +745,86 @@ void processTextures(const nlohmann::json& modelJson, ModelData& data,
                 data.materials.push_back(newMaterial);
                 processedMaterials[fullMaterialName] = materialIndex;
             }
+            else {
+                // 同一贴图可能有多个键(如 top/bottom 同图)：保留字典序最小的键，命名结果稳定
+                Material& existing = data.materials[processedMaterials[fullMaterialName]];
+                if (existing.textureKey.empty() || textureKey < existing.textureKey) {
+                    existing.textureKey = textureKey;
+                }
+            }
 
             // 记录材质键到索引的映射
             textureKeyToMaterialIndex[textureKey] = processedMaterials[fullMaterialName];
         }
     }
 }
+//---------------- 材质重命名 ----------------
+// 材质名 -> 贴图路径 的全局注册表：同一张图复用同一个名字；不同图重名时
+// 使用更长候选名降级，保证"名字 -> 贴图"唯一。多线程处理方块状态时需要加锁。
+static std::mutex g_materialNameMutex;
+static std::unordered_map<std::string, std::string> g_materialNameToTexture;
+
+namespace {
+std::string TryRegisterMaterialName(const std::string& candidate, const std::string& texturePath) {
+    if (candidate.empty()) return {};
+    std::lock_guard<std::mutex> lock(g_materialNameMutex);
+    auto it = g_materialNameToTexture.find(candidate);
+    if (it == g_materialNameToTexture.end()) {
+        g_materialNameToTexture.emplace(candidate, texturePath);
+        return candidate;
+    }
+    return (it->second == texturePath) ? candidate : std::string();
+}
+
+// textures/minecraft/block/oak_log.png -> minecraft/block/oak_log
+std::string MaterialTextureRelPath(const std::string& texturePath) {
+    const std::string prefix = "textures/";
+    std::string path = texturePath;
+    if (path.rfind(prefix, 0) == 0) path = path.substr(prefix.size());
+    size_t dot = path.find_last_of('.');
+    if (dot != std::string::npos) path = path.substr(0, dot);
+    return path;
+}
+}
+
+std::string MaterialTextureBasename(const std::string& texturePath) {
+    size_t slash = texturePath.find_last_of('/');
+    std::string leaf = (slash == std::string::npos) ? texturePath : texturePath.substr(slash + 1);
+    size_t dot = leaf.find_last_of('.');
+    if (dot != std::string::npos) leaf = leaf.substr(0, dot);
+    return leaf;
+}
+
+void RenameBlockMaterials(ModelData& model, const std::string& namespaceName, const std::string& baseBlockId) {
+    if (model.materials.empty() || baseBlockId.empty()) return;
+    const bool singleMaterial = (model.materials.size() == 1);
+    const std::string prefix = namespaceName + ":" + baseBlockId;
+    for (auto& material : model.materials) {
+        // 只处理来自模型 textures 的材质；占位/特殊材质(无贴图键)保持原名
+        if (material.textureKey.empty()) continue;
+
+        std::string resolved;
+        // 1. 单材质且贴图就是 block/<方块id>：直接用方块 id（名字最简且稳定）
+        if (singleMaterial &&
+            material.texturePath == "textures/" + namespaceName + "/block/" + baseBlockId + ".png") {
+            resolved = TryRegisterMaterialName(prefix, material.texturePath);
+        }
+        if (resolved.empty()) {
+            const std::string base = prefix + "#" + material.textureKey;
+            // 2. 方块id#贴图键~贴图文件名（名字只由 方块/键/贴图 决定，与处理顺序无关）
+            resolved = TryRegisterMaterialName(base + "~" + MaterialTextureBasename(material.texturePath),
+                material.texturePath);
+            // 3. 方块id#贴图键~相对路径（同一键下不同目录同名文件的兜底）
+            if (resolved.empty()) {
+                resolved = TryRegisterMaterialName(base + "~" + MaterialTextureRelPath(material.texturePath),
+                    material.texturePath);
+            }
+        }
+
+        if (!resolved.empty()) material.name = resolved;
+    }
+}
+
 //---------------- 几何数据处理 ----------------
 void processElements(const nlohmann::json& modelJson, ModelData& data,
     const std::unordered_map<std::string, int>& textureKeyToMaterialIndex)
