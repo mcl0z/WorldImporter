@@ -636,6 +636,24 @@ nlohmann::json GetModelJson(const std::string& namespaceName, const std::string&
 
 //———————————将JSON数据转为结构体的方法———————————————
 //---------------- 材质处理 ----------------
+// 选择材质的贴图键：忽略 particle(仅粒子效果引用, 常与某个面共图)，其余取字典序
+// 最小的键，保证命名结果稳定（如 cactus 侧面的键取 side 而不是 particle）。
+static void UpdateMaterialTextureKey(Material& material, const std::string& textureKey) {
+    if (textureKey.empty()) return;
+    if (material.textureKey.empty()) {
+        material.textureKey = textureKey;
+        return;
+    }
+    const bool currentParticle = (material.textureKey == "particle");
+    const bool nextParticle = (textureKey == "particle");
+    if (currentParticle && !nextParticle) {
+        material.textureKey = textureKey;
+    }
+    else if (!nextParticle && textureKey < material.textureKey) {
+        material.textureKey = textureKey;
+    }
+}
+
 void processTextures(const nlohmann::json& modelJson, ModelData& data,
     std::unordered_map<std::string, int>& textureKeyToMaterialIndex) {
 
@@ -746,11 +764,8 @@ void processTextures(const nlohmann::json& modelJson, ModelData& data,
                 processedMaterials[fullMaterialName] = materialIndex;
             }
             else {
-                // 同一贴图可能有多个键(如 top/bottom 同图)：保留字典序最小的键，命名结果稳定
-                Material& existing = data.materials[processedMaterials[fullMaterialName]];
-                if (existing.textureKey.empty() || textureKey < existing.textureKey) {
-                    existing.textureKey = textureKey;
-                }
+                // 同一贴图可能有多个键(如 top/particle 同图)：忽略 particle 后取最小键
+                UpdateMaterialTextureKey(data.materials[processedMaterials[fullMaterialName]], textureKey);
             }
 
             // 记录材质键到索引的映射
