@@ -440,11 +440,17 @@ void RegionModelExporter::ExportModels(const string& outputName) {
             fullModelTints[mat.name] = mat.tint;
         CreateTintJsonFile(fullModelTints);
         }
+        { CrafterLog::StageTimer t("写入 overlay.json");
+        CreateOverlayJsonFile();
+        }
     }
     else if (!uniqueMaterials.empty()) {
         { CrafterLog::StageTimer t("写入共享 mtl");
         monitor.SetStatus(TaskStatus::EXPORTING_MODELS, "CreateSharedMtlFile");
         CreateSharedMtlFile(uniqueMaterials, outputName, uniqueTints);
+        }
+        { CrafterLog::StageTimer t("写入 overlay.json");
+        CreateOverlayJsonFile();
         }
     }
 

@@ -69,6 +69,14 @@ struct Face {
     int8_t tintIndex = -1;            // 面级 tintindex（-1 表示不染色）
 };
 
+// 共面叠加层配对(如草方块侧面的 overlay 元素):
+// overlayFace 与 baseFace 同位置且最终 UV 一致。导出时若底层存活则删除叠加面,
+// 并把叠加层材质/贴图/tint 登记进 overlay.json,由 Blender 侧材质节点实现叠加。
+struct OverlayPair {
+    int baseFace = -1;
+    int overlayFace = -1;
+};
+
 // 修改 ModelData,使用统一 Face 结构体替换原有的 faces、uvFaces、materialIndices 和 faceDirections
 struct ModelData {
     // 顶点数据(x,y,z顺序存储)
@@ -80,6 +88,9 @@ struct ModelData {
 
     // 材质系统(保持原优化方案)
     std::vector<Material> materials;      // 每个材质包含名称、纹理路径和 tint 索引
+
+    // 共面叠加层配对(见 OverlayPair)
+    std::vector<OverlayPair> overlayPairs;
 };
 
 // 自定义顶点键:用整数表示,精度保留到小数点后6位

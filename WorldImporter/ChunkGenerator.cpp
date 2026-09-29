@@ -410,6 +410,53 @@ void ChunkGenerator::ProcessBlockForModel(ModelData& chunkModel, int x, int y, i
         }
     }
 
+    // ---- 共面叠加层(草侧这类)解析: 底层存活时删除叠加面, 并把
+    // base 材质 -> 叠加层(全名/贴图/tint) 登记给 overlay.json,
+    // 由 Blender 侧材质节点实现叠加; 底层被剔除时保留叠加面作几何回退。
+    if (!blockModel.overlayPairs.empty()) {
+        std::unordered_set<int> validFaceSet(validFaceIndices.begin(), validFaceIndices.end());
+        std::unordered_set<int> overlayFacesToDrop;
+        std::unordered_map<std::string, std::vector<OverlayLayerInfo>> blockOverlays;
+        const int faceCount = static_cast<int>(blockModel.faces.size());
+        const int materialCount = static_cast<int>(blockModel.materials.size());
+
+        for (const auto& pair : blockModel.overlayPairs) {
+            if (pair.baseFace < 0 || pair.overlayFace < 0 ||
+                pair.baseFace >= faceCount || pair.overlayFace >= faceCount) {
+                continue;
+            }
+            const bool baseValid = validFaceSet.count(pair.baseFace) != 0;
+            const bool overlayValid = validFaceSet.count(pair.overlayFace) != 0;
+            if (!baseValid || !overlayValid) continue; // 底层不在时叠加面保留为几何
+
+            overlayFacesToDrop.insert(pair.overlayFace);
+            const int baseMatIdx = blockModel.faces[pair.baseFace].materialIndex;
+            const int overlayMatIdx = blockModel.faces[pair.overlayFace].materialIndex;
+            if (baseMatIdx < 0 || baseMatIdx >= materialCount ||
+                overlayMatIdx < 0 || overlayMatIdx >= materialCount) {
+                continue;
+            }
+            const Material& baseMat = blockModel.materials[baseMatIdx];
+            const Material& overlayMat = blockModel.materials[overlayMatIdx];
+            if (baseMat.name == overlayMat.name) continue;
+            blockOverlays[baseMat.name].push_back(
+                { overlayMat.name, overlayMat.texturePath, overlayMat.tint });
+        }
+
+        if (!overlayFacesToDrop.empty()) {
+            std::vector<int> remaining;
+            remaining.reserve(validFaceIndices.size());
+            for (int faceIdx : validFaceIndices) {
+                if (!overlayFacesToDrop.count(faceIdx)) remaining.push_back(faceIdx);
+            }
+            validFaceIndices.swap(remaining);
+        }
+        for (const auto& entry : blockOverlays) {
+            RegisterOverlaySequence(entry.first, entry.second);
+        }
+        blockModel.overlayPairs.clear();
+    }
+
     // 重建面数据(使用新的Face结构体)
     ModelData filteredModel;
     filteredModel.faces.reserve(validFaceIndices.size());
