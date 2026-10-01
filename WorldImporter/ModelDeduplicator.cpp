@@ -1,5 +1,6 @@
 // ModelDeduplicator.cpp
 #include "ModelDeduplicator.h"
+#include <execution>
 #include <algorithm>
 #include <cmath>
 #include <map>
@@ -152,12 +153,22 @@ void ModelDeduplicator::DeduplicateVertices(ModelData& data) {
     auto t1 = Clock::now();
     std::cerr << "计算顶点键: " << Ms(t1 - t0).count() << " ms\n";
 
-    // 使用稳定排序，相同键的情况下保持原顺序
-    std::stable_sort(keys.begin(), keys.end(), [](const KeyAndIndex &a, const KeyAndIndex &b) {
+    // Explicit original-index tie-break preserves stable_sort's representative
+    // exactly while allowing the large final mesh sort to run across cores.
+    auto keyLess = [](const KeyAndIndex &a, const KeyAndIndex &b) {
         if (a.key.x != b.key.x) return a.key.x < b.key.x;
         if (a.key.y != b.key.y) return a.key.y < b.key.y;
-        return a.key.z < b.key.z;
-    });
+        if (a.key.z != b.key.z) return a.key.z < b.key.z;
+        return a.oldIndex < b.oldIndex;
+    };
+    if (numThreads > 1 && keys.size() >= 262144)
+        std::sort(std::execution::par, keys.begin(), keys.end(), keyLess);
+    else
+        std::stable_sort(keys.begin(), keys.end(), [](const KeyAndIndex& a, const KeyAndIndex& b) {
+            if (a.key.x != b.key.x) return a.key.x < b.key.x;
+            if (a.key.y != b.key.y) return a.key.y < b.key.y;
+            return a.key.z < b.key.z;
+        });
 
     auto t2 = Clock::now();
     std::cerr << "排序顶点键: " << Ms(t2 - t1).count() << " ms\n";
@@ -677,8 +688,12 @@ void ModelDeduplicator::GreedyMesh(ModelData& data) {
     std::cerr << "GreedyMesh Step5 grouping (UF): " << Ms(t5_end - t5_start).count() << " ms\n";
 
     // 6. 处理每个可合并组 (串行化)
-    struct MergedResult { std::vector<Face> faces; std::vector<float> uvCoords; };
-    auto processGroup = [&](std::vector<int> grp_indices)->MergedResult {
+    struct MergedResult {
+        std::vector<Face> faces;
+        std::vector<float> uvCoords;
+        std::vector<Vector3> positions;
+    };
+    auto processGroup = [&](const std::vector<int>& grp_indices)->MergedResult {
         MergedResult res;
         if (grp_indices.empty()) return res;
 
@@ -941,10 +956,10 @@ void ModelDeduplicator::GreedyMesh(ModelData& data) {
                                   P0_group_base.y + w2d*T1_group_base.y + h2d*T2_group_base.y,
                                   P0_group_base.z + w2d*T1_group_base.z + h2d*T2_group_base.z};
                 {
-                    VertexKey vk = MakeVertexKey(pos_final.x, pos_final.y, pos_final.z);
-                    int mappedIdx = lookupVertexIndex(vk);
-                    vidx_final[k_final] = mappedIdx;
-                    nf.vertexIndices[k_final] = mappedIdx;
+                    // Workers only calculate geometry. Vertex cache mutation is
+                    // deferred to ordered publication after all workers join.
+                    res.positions.push_back(pos_final);
+                    nf.vertexIndices[k_final] = 0;
                 }
             }
             res.faces.push_back(nf);
@@ -983,8 +998,34 @@ void ModelDeduplicator::GreedyMesh(ModelData& data) {
         return res;
     };
 
-    // 7. 串行处理所有组，保证正确性
+    // Independent groups have immutable inputs. Parallelize expensive merging,
+    // then publish vertices/faces/UVs in the same order as the serial algorithm.
     auto t7_start = Clock::now();
+    const unsigned mergeThreads = faceCount >= 10000
+        ? std::min<unsigned>(DedupThreadCount(), static_cast<unsigned>(groups.size())) : 1;
+    std::vector<MergedResult> mergedGroups(mergeThreads > 1 ? groups.size() : 0);
+    if (mergeThreads > 1) {
+        std::atomic<size_t> nextGroup{0};
+        std::exception_ptr error;
+        std::mutex errorMutex;
+        std::vector<std::thread> workers;
+        for (unsigned t = 0; t < mergeThreads; ++t) {
+            workers.emplace_back([&] {
+                try {
+                    for (;;) {
+                        const size_t i = nextGroup.fetch_add(1, std::memory_order_relaxed);
+                        if (i >= groups.size()) break;
+                        if (groups[i].size() > 1) mergedGroups[i] = processGroup(groups[i]);
+                    }
+                } catch (...) {
+                    std::lock_guard<std::mutex> lock(errorMutex);
+                    if (!error) error = std::current_exception();
+                }
+            });
+        }
+        for (auto& worker : workers) worker.join();
+        if (error) std::rethrow_exception(error);
+    }
     {
         // 注意：不再按组大小排序，保持原顺序
         
@@ -996,10 +1037,17 @@ void ModelDeduplicator::GreedyMesh(ModelData& data) {
         data.uvCoordinates.reserve(data.uvCoordinates.size() + faceCount * 8); // 为每个面准备充足UV空间
         
         // 逐个处理每个组
-        for (const auto& grp : groups) {
+        for (size_t groupNo = 0; groupNo < groups.size(); ++groupNo) {
+            const auto& grp = groups[groupNo];
             if (grp.size() > 1) {
-                // 处理需要合并的组
-                MergedResult mr = processGroup(grp);
+                MergedResult mr = mergeThreads > 1
+                    ? std::move(mergedGroups[groupNo]) : processGroup(grp);
+                for (size_t i = 0; i < mr.faces.size(); ++i) {
+                    for (int k = 0; k < 4; ++k) {
+                        const auto& pos = mr.positions[i * 4 + k];
+                        mr.faces[i].vertexIndices[k] = lookupVertexIndex(MakeVertexKey(pos.x, pos.y, pos.z));
+                    }
+                }
                 
                 // 给所有新生成的面设置UV索引
                 for (size_t i = 0; i < mr.faces.size(); ++i) {

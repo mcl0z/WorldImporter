@@ -140,24 +140,27 @@ void ProcessSection(int chunkX, int chunkZ, int sectionY, const NbtTagPtr& secti
             }
         }
 
+        // Resolve each local palette entry once, not 4096 string hashes while
+        // holding the global palette lock. Unused entries remain unregistered.
+        std::vector<int> paletteToGlobal(blockPalette.size(), -1);
         for (int relativeId : blockData) {
             if (relativeId < 0 || relativeId >= static_cast<int>(blockPalette.size())) {
                 globalBlockData.push_back(0);
                 continue;
             }
-
-            const std::string& blockName = blockPalette[relativeId];
-            auto it = globalBlockMap.find(blockName);
-            if (it != globalBlockMap.end()) {
-                globalBlockData.push_back(it->second);
+            int& mapped = paletteToGlobal[relativeId];
+            if (mapped < 0) {
+                const std::string& blockName = blockPalette[relativeId];
+                auto it = globalBlockMap.find(blockName);
+                if (it != globalBlockMap.end()) {
+                    mapped = it->second;
+                } else {
+                    mapped = static_cast<int>(globalBlockPalette.size());
+                    globalBlockPalette.emplace_back(blockName);
+                    globalBlockMap.emplace(blockName, mapped);
+                }
             }
-            else {
-                int idx = static_cast<int>(globalBlockPalette.size());
-                globalBlockPalette.emplace_back(blockName); // 新方块添加到全局调色板
-                globalBlockMap[blockName] = idx;
-                globalBlockData.push_back(idx);
-
-            }
+            globalBlockData.push_back(mapped);
         }
     } // 锁在此释放
 
@@ -751,7 +754,7 @@ int GetHeightMapY(int blockX, int blockZ, const std::string& heightMapType) {
         auto hmi = heightMapCache.find(std::make_pair(chunkX, chunkZ));
         bool needLoad = (hmi == heightMapCache.end()) ||
                         (hmi->second.find(heightMapType) == hmi->second.end());
-        if (needLoad) {
+        if (needLoad && !globalPaletteFrozen.load(std::memory_order_acquire)) {
             hm_lk.unlock();
             // 仅在区块尚未加载时触发加载,避免递归
             {

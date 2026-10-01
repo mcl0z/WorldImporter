@@ -661,6 +661,17 @@ static bool LoadCtmTilePngBytesWithFallback(const std::string& ns, const std::st
 
 static bool GetMcmetaCtmTexture(const std::string& ns, const std::string& texturePath,
     std::string& outNs, std::string& outPath) {
+    struct CachedMetadata { bool found; std::string ns, path; };
+    thread_local std::unordered_map<std::string, CachedMetadata> localMetadata;
+    const std::string key = ns + ":" + texturePath;
+    auto local = localMetadata.find(key);
+    if (local != localMetadata.end()) {
+        if (local->second.found) { outNs = local->second.ns; outPath = local->second.path; }
+        return local->second.found;
+    }
+    // Assets are immutable after initialization. Cache negative lookups too:
+    // nearly every non-CTM face used to contend on the global metadata lock.
+    auto [cached, inserted] = localMetadata.emplace(key, CachedMetadata{false, {}, {}});
     nlohmann::json metadata;
     {
         std::shared_lock<std::shared_mutex> lock(GlobalCache::cacheMutex);
@@ -682,6 +693,7 @@ static bool GetMcmetaCtmTexture(const std::string& ns, const std::string& textur
     size_t colon = texture.find(':');
     outNs = colon == std::string::npos ? ns : texture.substr(0, colon);
     outPath = colon == std::string::npos ? texture : texture.substr(colon + 1);
+    cached->second = CachedMetadata{true, outNs, outPath};
     return true;
 }
 

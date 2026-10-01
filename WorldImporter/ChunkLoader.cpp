@@ -45,43 +45,43 @@ void ChunkLoader::LoadChunks(int chunkXStart, int chunkXEnd, int chunkZStart, in
 void ChunkLoader::UnloadChunks(int chunkXStart, int chunkXEnd, int chunkZStart, int chunkZEnd,
     int sectionYStart, int sectionYEnd,
     const std::unordered_set<std::pair<int, int>, pair_hash>& retain_expanded_chunks) {
-    // 卸载指定范围的区块和分段
-    std::vector<std::future<void>> futures;
-    for (int chunkX = chunkXStart; chunkX <= chunkXEnd; ++chunkX) {
-        for (int chunkZ = chunkZStart; chunkZ <= chunkZEnd; ++chunkZ) {
-            futures.push_back(std::async(std::launch::async, [=, &retain_expanded_chunks]() {
-                // 如果区块在保留集合中，则跳过卸载
-                if (retain_expanded_chunks.count({chunkX, chunkZ})) {
-                    return;
-                }
-
-                // 清理 g_chunkSectionInfoMap (使用原始 sectionY)
-                for (int sectionY = sectionYStart; sectionY <= sectionYEnd; ++sectionY) {
-                    auto g_map_key = std::make_tuple(chunkX, sectionY, chunkZ);
-                    {
-                        std::unique_lock<std::shared_mutex> lock(g_chunkSectionInfoMapMutex);
-                        g_chunkSectionInfoMap.erase(g_map_key);
-                    }
-                }
-
-                // 清理 sectionCache 中与该 (chunkX, chunkZ) 相关的所有条目
-                ClearSectionCacheForChunk(chunkX, chunkZ);
-
-                // 卸载与区块相关的实体方块及高度图缓存
-                // 确保这些操作在 sectionY 循环之外，并使用正确的互斥锁
-                {
-                    std::unique_lock<std::shared_mutex> lock(entityBlockCacheMutex); // 使用 entityBlockCacheMutex
-                    EntityBlockCache.erase(std::make_pair(chunkX, chunkZ));
-                }
-                {
-                    std::unique_lock<std::shared_mutex> lock(heightMapCacheMutex); // 使用 heightMapCacheMutex
-                    heightMapCache.erase(std::make_pair(chunkX, chunkZ));
-                }
-            }));
+    // Model workers have joined. One pass per map replaces one short-lived
+    // thread per chunk and O(chunks * cachedSections) scans under a shared lock.
+    auto removeChunk = [&](int x, int z) {
+        return x >= chunkXStart && x <= chunkXEnd &&
+            z >= chunkZStart && z <= chunkZEnd &&
+            !retain_expanded_chunks.count({x, z});
+    };
+    {
+        std::unique_lock<std::shared_mutex> lock(g_chunkSectionInfoMapMutex);
+        for (auto it = g_chunkSectionInfoMap.begin(); it != g_chunkSectionInfoMap.end();) {
+            const auto& [x, y, z] = it->first;
+            if (removeChunk(x, z) && y >= sectionYStart && y <= sectionYEnd)
+                it = g_chunkSectionInfoMap.erase(it);
+            else ++it;
         }
     }
-    for (auto& f : futures) {
-        f.get();
+    {
+        std::unique_lock<std::shared_mutex> lock(sectionCacheMutex);
+        for (auto it = sectionCache.begin(); it != sectionCache.end();) {
+            if (removeChunk(std::get<0>(it->first), std::get<1>(it->first)))
+                it = sectionCache.erase(it);
+            else ++it;
+        }
+    }
+    {
+        std::unique_lock<std::shared_mutex> lock(entityBlockCacheMutex);
+        for (auto it = EntityBlockCache.begin(); it != EntityBlockCache.end();) {
+            if (removeChunk(it->first.first, it->first.second)) it = EntityBlockCache.erase(it);
+            else ++it;
+        }
+    }
+    {
+        std::unique_lock<std::shared_mutex> lock(heightMapCacheMutex);
+        for (auto it = heightMapCache.begin(); it != heightMapCache.end();) {
+            if (removeChunk(it->first.first, it->first.second)) it = heightMapCache.erase(it);
+            else ++it;
+        }
     }
 }
 

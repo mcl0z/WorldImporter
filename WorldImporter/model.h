@@ -209,7 +209,10 @@ ModelData MergeModelData(const ModelData& data1, const ModelData& data2);
 
 ModelData MergeFluidModelData(const ModelData& data1, const ModelData& data2);
 
-void MergeModelsDirectly(ModelData& data1, const ModelData& data2);
+// Optional destination-owned lookup for repeated appends; reset it whenever
+// the destination materials are replaced/reordered.
+void MergeModelsDirectly(ModelData& data1, const ModelData& data2,
+    std::unordered_map<std::string, int>* materialLookup = nullptr);
 
 // 使用C++20的span来改进参数传递(避免复制)
 void ApplyPositionOffset(ModelData& model, int x, int y, int z);

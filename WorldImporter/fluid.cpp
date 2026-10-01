@@ -15,7 +15,7 @@ using namespace std;
 std::unordered_map<std::string, FluidInfo> fluidDefinitions;
 // 模型缓存
 static std::unordered_map<size_t, ModelData> fluidModelCache;
-static std::mutex fluidModelCacheMutex;
+static std::shared_mutex fluidModelCacheMutex;
 
 // --------------------------------------------------------------------------------
 // 原版高度规则
@@ -121,11 +121,13 @@ ModelData GenerateFluidModel(const FluidModelParams& params, const std::string& 
     key ^= std::hash<bool>{}(params.downCanRender) + 0x9e3779b9 + (key << 6) + (key >> 2);
     key ^= std::hash<bool>{}(params.topCanRender) + 0x9e3779b9 + (key << 6) + (key >> 2);
 
-    std::lock_guard<std::mutex> lock(fluidModelCacheMutex);
-    auto cacheIt = fluidModelCache.find(key);
-    if (cacheIt != fluidModelCache.end()) {
-        return cacheIt->second;
+    {
+        std::shared_lock<std::shared_mutex> lock(fluidModelCacheMutex);
+        auto cacheIt = fluidModelCache.find(key);
+        if (cacheIt != fluidModelCache.end()) return cacheIt->second;
     }
+    // Geometry generation/metadata lookup must not serialize all water blocks.
+    // Duplicate concurrent misses are harmless; publish the completed model.
 
     // ---- 角高（原版 calculateAverageHeight；单位：格）----
     // 角顺序：西北、东北、东南、西南；侧面顺序：北、南、西、东
@@ -331,11 +333,22 @@ ModelData GenerateFluidModel(const FluidModelParams& params, const std::string& 
 
     model.materials = { stillMaterial, flowMaterial };
 
-    fluidModelCache[key] = model;
+    {
+        std::unique_lock<std::shared_mutex> lock(fluidModelCacheMutex);
+        fluidModelCache.emplace(key, model);
+    }
     return model;
 }
 
 void AssignFluidMaterials(ModelData& model, const std::string& fluidId) {
+    // Definitions and texture metadata are immutable after initialization.
+    // Cache the two material templates per worker, not per water voxel.
+    thread_local std::unordered_map<std::string, std::vector<Material>> templates;
+    auto cached = templates.find(fluidId);
+    if (cached != templates.end()) {
+        model.materials = cached->second;
+        return;
+    }
     if (fluidId.find("minecraft:water") != string::npos) {
         for (auto& material : model.materials) {
             material.tintIndex = 2;
@@ -422,4 +435,5 @@ void AssignFluidMaterials(ModelData& model, const std::string& fluidId) {
     flowFluid.aspectRatio = flowAspectRatio;
 
     model.materials = { stillFluid, flowFluid };
+    templates.emplace(fluidId, model.materials);
 }

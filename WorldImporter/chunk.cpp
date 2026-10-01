@@ -94,7 +94,8 @@ std::vector<char> GetChunkNBTData(const std::vector<char>& fileData, int x, int 
     
     // 根据 length 和 offset 检查整个区块数据是否在文件范围内
     uint64_t endOffset = static_cast<uint64_t>(offset) + 4 + length;
-    if (length <= 1 || endOffset > fileData.size()) {
+    if (length <= 1 || endOffset > fileData.size() ||
+        static_cast<uint64_t>(length) + 4 > static_cast<uint64_t>(sectorCount) * 4096) {
         cerr << "错误: 区块数据超出了文件边界." << endl;
         return {};
     }
