@@ -39,6 +39,15 @@ bool SaveTextureToFile(const std::string& namespaceName, const std::string& bloc
 // 从PNG数据中读取图像尺寸
 bool GetPNGDimensions(const std::vector<unsigned char>& pngData, int& width, int& height);
 
+// 解码纹理为 RGBA 像素：优先读 GlobalCache 内存缓存，失败时回退到程序目录下已导出的 PNG。
+// texturePath 形如 "block/stone"（不含 "textures/" 前缀与 ".png" 后缀）。
+bool LoadTexturePixels(const std::string& namespaceName, const std::string& texturePath,
+    std::vector<unsigned char>& outPixels, int& outWidth, int& outHeight);
+
+// 判断纹理是否"全不透明"（alpha 全部 >= 250）。结果按 ns:path 进程内缓存。
+// 用于运行时遮挡表：玻璃/树叶等含透明像素的纹理不算遮挡体。
+bool IsTextureFullyOpaque(const std::string& namespaceName, const std::string& texturePath);
+
 // 检测材质类型（修改后，支持获取长宽比）
 MaterialType DetectMaterialType(const std::string& namespaceName, const std::string& texturePath);
 MaterialType DetectMaterialType(const std::string& namespaceName, const std::string& texturePath, float& outAspectRatio);

@@ -17,6 +17,7 @@
 // --- 项目头文件 ---
 #include "config.h"
 #include "block.h"
+#include "Occlusion.h"
 #include "RegionCache.h"
 #include "model.h"
 #include "EntityBlock.h"
@@ -701,17 +702,11 @@ int GetBlockId(int blockX, int blockY, int blockZ) {
     return (yzx < blockData.size()) ? blockData[yzx] : 0;
 }
 
-// 获取方块ID时同时获取相邻方块的air状态,返回当前方块ID
-int GetBlockIdWithNeighbors(int blockX, int blockY, int blockZ, bool* neighborIsAir, int* fluidLevels) {
+// 获取方块ID时同时获取六个方向"邻居是否不遮挡"（true = 该方向的面应渲染），返回当前方块ID。
+// 遮挡判定来自运行时自建遮挡表（Occlusion.h），等价于原版 canOcclude()；水面单独走
+// 原版 FluidRenderer 的逐面规则（见 ChunkGenerator）。
+int GetBlockIdWithNeighbors(int blockX, int blockY, int blockZ, bool* neighborIsAir) {
     int currentId = GetBlockId(blockX, blockY, blockZ);
-    // Frozen palette entries stay alive throughout this phase. Read their
-    // fields directly instead of copying names/properties for every neighbor.
-    const bool frozen = globalPaletteFrozen.load(std::memory_order_acquire);
-    const Block fallback = frozen ? Block("minecraft:air", true) : GetBlockById(currentId);
-    const Block& currentBlock = frozen && currentId >= 0 &&
-        static_cast<size_t>(currentId) < globalBlockPalette.size()
-        ? globalBlockPalette[currentId] : fallback;
-    bool hasFluidData = currentBlock.HasFluid();
 
     // 统一处理 neighborIsAir 数组(6个方向)
     if (neighborIsAir != nullptr) {
@@ -741,53 +736,7 @@ int GetBlockIdWithNeighbors(int blockX, int blockY, int blockZ, bool* neighborIs
             }
 
             int neighborId = GetBlockId(nx, ny, nz);
-            if (frozen && neighborId >= 0 &&
-                static_cast<size_t>(neighborId) < globalBlockPalette.size()) {
-                const Block& neighborBlock = globalBlockPalette[neighborId];
-                if (hasFluidData) {
-                    const bool sameFluid = neighborBlock.HasFluid() &&
-                        currentBlock.fluidName == neighborBlock.fluidName;
-                    neighborIsAir[i] = !sameFluid && (neighborBlock.air || neighborBlock.HasFluid());
-                } else {
-                    neighborIsAir[i] = neighborBlock.air;
-                }
-                continue;
-            }
-            Block neighborBlock = GetBlockById(neighborId);
-
-            if (hasFluidData) {
-                bool isSameFluid = neighborBlock.HasFluid() &&
-                    currentBlock.fluidName == neighborBlock.fluidName;
-                // 同种流体隐藏内部面；其它不遮挡方块（空气、玻璃、半砖、植物等）
-                // 应保留水面。旧逻辑仅把三种真空气视为空，导致水上有半砖/植物/
-                // 透明块时整个顶部被剔除。solidBlocks 仅表示完整遮挡体。
-                neighborIsAir[i] = !isSameFluid && (neighborBlock.air || neighborBlock.HasFluid());
-            }
-            else {
-                neighborIsAir[i] = neighborBlock.air;
-            }
-        }
-    }
-
-    // 处理 fluidLevels 数组,仅在存在流体数据且数组不为空时进行
-    if (hasFluidData && fluidLevels != nullptr) {
-        // 中心块的流体等级
-        fluidLevels[0] = GetLevel(blockX, blockY, blockZ, currentBlock.fluidName);
-        static const std::array<std::tuple<int, int, int>, 9> levelDirections = { {
-            {0, 0, -1},   // 北
-            {0, 0, 1},    // 南
-            {1, 0, 0},    // 东
-            {-1, 0, 0},   // 西
-            {1, 0, -1},   // 东北
-            {-1, 0, -1},  // 西北
-            {1, 0, 1},    // 东南
-            {-1, 0, 1},   // 西南
-            {0, 1, 0}     // 上
-        } };
-        for (size_t i = 0; i < levelDirections.size(); ++i) {
-            int dx, dy, dz;
-            std::tie(dx, dy, dz) = levelDirections[i];
-            fluidLevels[i + 1] = GetLevel(blockX + dx, blockY + dy, blockZ + dz, currentBlock.fluidName);
+            neighborIsAir[i] = !GetBlockOcclusion(neighborId).occludes;
         }
     }
 
@@ -805,7 +754,7 @@ int GetHeightMapY(int blockX, int blockZ, const std::string& heightMapType) {
         auto hmi = heightMapCache.find(std::make_pair(chunkX, chunkZ));
         bool needLoad = (hmi == heightMapCache.end()) ||
                         (hmi->second.find(heightMapType) == hmi->second.end());
-        if (needLoad) {
+        if (needLoad && !globalPaletteFrozen.load(std::memory_order_acquire)) {
             hm_lk.unlock();
             // 仅在区块尚未加载时触发加载,避免递归
             {
@@ -843,30 +792,6 @@ int GetHeightMapY(int blockX, int blockZ, const std::string& heightMapType) {
     int result = (index < 256 && index < typeIter->second.size()) ? typeIter->second[index] : -1;
     // lock 在此处自动解锁
     return result;
-}
-
-int GetLevel(int blockX, int blockY, int blockZ, const std::string& expectedFluidName) {
-    int currentId = GetBlockId(blockX, blockY, blockZ);
-    Block currentBlock = GetBlockById(currentId);
-    if (currentBlock.HasFluid() &&
-        (expectedFluidName.empty() || currentBlock.fluidName == expectedFluidName)) {
-        // 检查上方方块
-        int upperId = GetBlockId(blockX, blockY + 1, blockZ);
-        Block upperBlock = GetBlockById(upperId);
-        if (upperBlock.HasFluid() && upperBlock.fluidName == currentBlock.fluidName) {
-            return FULL_FLUID_LEVEL;
-        }
-        else {
-            return currentBlock.level; // 当前流体level
-        }
-    }
-
-    // Any non-air block (opaque or transparent, even if not in solids table)
-    // presses the water surface to full height. Otherwise a ~0.11 block air gap
-    // appears between the water top and the block bottom.
-    std::string baseName = currentBlock.GetNameAndNameSpaceWithoutState();
-    bool isAirBlock = (baseName == "minecraft:air" || baseName == "minecraft:cave_air" || baseName == "minecraft:void_air");
-    return isAirBlock ? -1 : -2;
 }
 
 int GetSkyLight(int blockX, int blockY, int blockZ) {

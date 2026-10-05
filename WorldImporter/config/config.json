@@ -20,6 +20,7 @@
     "exportLightBlockOnly": false,
     "lightBlockSize": 0.05,
     "allowDoubleFace": false,
+    "overlayLayerStep": 0.003,
     "exportFullModel": true,
     "partitionSize": 4,
     "maxTasksPerBatch": 32768,

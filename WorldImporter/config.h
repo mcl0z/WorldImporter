@@ -30,7 +30,6 @@ struct Config {
     std::vector<std::string> resourcepacksPaths; // 资源包路径
     std::unordered_set<std::string> lod1Blocks; // LOD1级别使用原始模型的方块列表
     std::string selectedDimension; // 当前选择的维度ID
-    std::string solidBlocksFile;  // 固体方块列表文件路径
     std::string fluidsFile; //流体列表文件路径
     int minX, minY, minZ, maxX, maxY, maxZ; // 坐标范围
     int chunkXStart, chunkXEnd, chunkZStart, chunkZEnd; // 区块坐标范围
@@ -45,6 +44,7 @@ struct Config {
     bool exportLightBlockOnly;//仅导出光源方块
     float lightBlockSize; //光源方块半径大小
     bool allowDoubleFace;//允许重叠面
+    float overlayLayerStep; //共面叠加层(原版 overlay / CTM overlay)的逐层外移步长, 避免 Blender 下 z-fighting
     bool activeLOD; //使用LOD
     bool isLODAutoCenter; //是否自动计算LOD中心坐标
     int LODCenterX; //LOD中心坐标X
@@ -78,7 +78,6 @@ struct Config {
         modsPath(""),
         resourcepacksPaths({}),
         selectedDimension("minecraft:overworld"),
-        solidBlocksFile("config\\jsons\\solids.json"),
         fluidsFile("config\\jsons\\fluids.json"),
         minX(0), minY(0), minZ(0), maxX(0), maxY(0), maxZ(0),
         status(0),
@@ -91,6 +90,7 @@ struct Config {
         exportLightBlockOnly(false),
         lightBlockSize(0.05f),
         allowDoubleFace(false),
+        overlayLayerStep(0.003f),
         isLODAutoCenter(true),
         LODCenterX(0),
         LODCenterZ(0),

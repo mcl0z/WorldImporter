@@ -148,8 +148,10 @@ struct Block {
             }
         }
 
-        // 原有空气判断逻辑
-        air = (solidBlocks.find(baseName) == solidBlocks.end());
+        // 真正的"空气"判定：仅三种空气方块。是否遮挡由运行时自建的遮挡表决定
+        // (见 Occlusion.h)，不再依赖手工维护的固体方块名单。
+        air = (baseName == "minecraft:air" || baseName == "minecraft:cave_air" ||
+               baseName == "minecraft:void_air");
 
 
     }
@@ -462,14 +464,12 @@ void UpdateSkyLightNeighborFlags();
 
 int GetBlockId(int blockX, int blockY, int blockZ);
 
-// 获取方块ID时同时获取相邻方块的air状态,返回当前方块ID
-int GetBlockIdWithNeighbors(int blockX, int blockY, int blockZ,bool* neighborIsAir = nullptr,int* fluidLevels = nullptr);
+// 获取方块ID时同时获取六个方向"邻居是否不遮挡"（true = 该方向的面应渲染），返回当前方块ID
+int GetBlockIdWithNeighbors(int blockX, int blockY, int blockZ, bool* neighborIsAir = nullptr);
 
 int GetSkyLight(int blockX, int blockY, int blockZ);
 
 int GetBlockLight(int blockX, int blockY, int blockZ);
-
-int GetLevel(int blockX, int blockY, int blockZ, const std::string& fluidName = "");
 
 int GetHeightMapY(int blockX, int blockZ, const std::string& heightMapType);
 

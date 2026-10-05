@@ -50,6 +50,10 @@ nlohmann::json GetBlockstateJson(const std::string& namespaceName,const std::str
 
 ModelData GetRandomModelFromCache(const std::string& namespaceName, const std::string& blockId);
 
+// 获取该 block state 的全部模型（普通模型=1 个；加权 variant=全部变体；
+// multipart=按第 0 组选中的合并结果）。供运行时遮挡表做保守判定使用。
+std::vector<ModelData> GetAllModelsFromCache(const std::string& namespaceName, const std::string& blockId);
+
 
 
 #endif // BLOCKSTATE_H

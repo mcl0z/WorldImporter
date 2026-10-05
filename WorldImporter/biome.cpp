@@ -146,7 +146,8 @@ int GetBiomeId(int blockX, int blockY, int blockZ) {
     // 注意: 必须加锁访问 sectionCache, 且不能用 operator[] 插入(多线程并发写 unordered_map 会崩溃)
     {
         std::shared_lock<std::shared_mutex> sc_lock(sectionCacheMutex);
-        if (sectionCache.find(blockKey) == sectionCache.end()) {
+        if (!globalPaletteFrozen.load(std::memory_order_acquire) &&
+            sectionCache.find(blockKey) == sectionCache.end()) {
             sc_lock.unlock();
             LoadAndCacheBlockData(chunkX, chunkZ);
         }

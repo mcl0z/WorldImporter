@@ -6,12 +6,15 @@
 #include "include/stb_image.h"
 #include "biome.h"
 #include "model.h"
+#include "blocktint.h"
 #include "Fluid.h"
 #include "LODManager.h"
 #include "CTM.h"
 #include "CreateCT.h"
 #include "texture.h"
+#include "Occlusion.h"
 #include <iomanip>
+#include <cmath>
 #include <sstream>
 #include <regex>
 #include <tuple>
@@ -110,17 +113,44 @@ static bool IsFullCubeModel(const ModelData& model) {
     return true;
 }
 
+// --------------------------------------------------------------------------------
+// 原版流体渲染辅助（FluidRenderer）
+// --------------------------------------------------------------------------------
+namespace {
+
+// 方向索引与 FaceType 一致：UP=0, DOWN=1, NORTH=2, SOUTH=3, WEST=4, EAST=5
+enum : int {
+    FLUID_DIR_UP = 0, FLUID_DIR_DOWN = 1, FLUID_DIR_NORTH = 2,
+    FLUID_DIR_SOUTH = 3, FLUID_DIR_WEST = 4, FLUID_DIR_EAST = 5
+};
+
+inline bool IsSameFluidName(const Block& block, const std::string& fluidName) {
+    return block.HasFluid() && block.fluidName == fluidName;
+}
+
+// 原版 Vec3#normalize：长度过小视为零向量
+inline void NormalizeFlow(float& flowX, float& flowZ) {
+    const float len = std::sqrt(flowX * flowX + flowZ * flowZ);
+    if (len < 1.0e-4f) {
+        flowX = 0.0f;
+        flowZ = 0.0f;
+        return;
+    }
+    flowX /= len;
+    flowZ /= len;
+}
+
+} // namespace
+
 void ChunkGenerator::ProcessBlockForModel(ModelData& chunkModel, int x, int y, int z,
     std::unordered_map<std::string, int>* materialLookup) {
-    std::array<bool, 6> neighbors; // 邻居是否为空气
-    std::array<int, 10> fluidLevels; // 流体液位
+    std::array<bool, 6> neighbors; // 邻居是否不遮挡（true = 该方向的面应渲染）
 
-    // Most sections contain large air volumes. Do not look up six neighbors,
-    // fluid data or model strings for those cells.
+    // Skip air before doing neighbor/occlusion work.
     int id = GetBlockId(x, y, z);
     Block currentBlock = GetBlockById(id);
     if (currentBlock.name == "minecraft:air") return;
-    GetBlockIdWithNeighbors(x, y, z, neighbors.data(), fluidLevels.data());
+    GetBlockIdWithNeighbors(x, y, z, neighbors.data());
     const PreparedBlockName* prepared = globalPaletteFrozen.load(std::memory_order_acquire) &&
         id >= 0 && static_cast<size_t>(id) < preparedBlockNames.size()
         ? &preparedBlockNames[id] : nullptr;
@@ -175,27 +205,130 @@ void ChunkGenerator::ProcessBlockForModel(ModelData& chunkModel, int x, int y, i
         for (auto& face : blockModel.faces) face.faceDirection = FaceType::DO_NOT_CULL;
     }
     else if (currentBlock.HasFluid()) {
-        blockModel = GetRandomModelFromCache(ns, blockName);
+        // ============================ 原版流体渲染路径 ============================
+        // 高度/角高/UV/贴图选择与逐面剔除完全按原版 FluidRenderer 实现。
+        const std::string& fluidName = currentBlock.fluidName;
 
-        if (blockModel.vertices.empty()) {
-            liquidModel = GenerateFluidModel(fluidLevels, currentBlock.fluidName);
-            AssignFluidMaterials(liquidModel, currentBlock.fluidName);
+        // 原版 FluidRenderer#getHeight（单位：格）：
+        //   邻居同种流体 -> 上方仍是同种流体 ? 1.0 : ownHeight(液位)
+        //   非流体       -> solidLike ? -1.0 : 0.0
+        auto renderHeight = [&](int bx, int by, int bz) -> float {
+            int nid = GetBlockId(bx, by, bz);
+            Block nb = GetBlockById(nid);
+            if (IsSameFluidName(nb, fluidName)) {
+                int upId = GetBlockId(bx, by + 1, bz);
+                Block up = GetBlockById(upId);
+                if (IsSameFluidName(up, fluidName)) return 1.0f;
+                return GetFluidOwnHeight(nb.level);
+            }
+            return GetBlockOcclusion(nid).solidLike ? -1.0f : 0.0f;
+        };
+
+        FluidModelParams params;
+        params.selfHeight = renderHeight(x, y, z);
+        params.sideHeight[0] = renderHeight(x, y, z - 1); // 北
+        params.sideHeight[1] = renderHeight(x, y, z + 1); // 南
+        params.sideHeight[2] = renderHeight(x - 1, y, z); // 西
+        params.sideHeight[3] = renderHeight(x + 1, y, z); // 东
+        params.cornerHeight[0] = renderHeight(x - 1, y, z - 1); // 西北
+        params.cornerHeight[1] = renderHeight(x + 1, y, z - 1); // 东北
+        params.cornerHeight[2] = renderHeight(x + 1, y, z + 1); // 东南
+        params.cornerHeight[3] = renderHeight(x - 1, y, z + 1); // 西南
+        params.falling = currentBlock.level >= 8;
+
+        // ---- 原版 FlowingFluid#getFlow（水平分量；falling 的 -6Y 不改变角度与"是否为零"）----
+        {
+            const float selfOwn = GetFluidOwnHeight(currentBlock.level);
+            static const int dirs[4][3] = { {0, 0, -1}, {0, 0, 1}, {-1, 0, 0}, {1, 0, 0} };
+            for (const auto& d : dirs) {
+                const int nx = x + d[0];
+                const int nz = z + d[2];
+                const int nid = GetBlockId(nx, y, nz);
+                Block nb = GetBlockById(nid);
+                const bool isAir = nb.air;
+                const bool same = IsSameFluidName(nb, fluidName);
+                if (!(isAir || same)) continue; // affectsFlow
+
+                float calc = 0.0f;
+                if (same) {
+                    const float nh = GetFluidOwnHeight(nb.level);
+                    if (nh != 0.0f) calc = selfOwn - nh;
+                }
+                else {
+                    // 邻居为空气：看其下方是否仍有同种流体（原版）
+                    const int bid = GetBlockId(nx, y - 1, nz);
+                    Block below = GetBlockById(bid);
+                    const bool belowSame = IsSameFluidName(below, fluidName);
+                    const float belowH = belowSame ? GetFluidOwnHeight(below.level) : 0.0f;
+                    if (!GetBlockOcclusion(nid).solidLike && (below.air || belowSame) && belowH > 0.0f) {
+                        calc = 8.0f / 9.0f;
+                    }
+                }
+                if (calc != 0.0f) {
+                    params.flowX += calc * static_cast<float>(d[0]);
+                    params.flowZ += calc * static_cast<float>(d[2]);
+                }
+            }
+            NormalizeFlow(params.flowX, params.flowZ);
+        }
+
+        // ---- 原版逐面渲染判定 ----
+        const int upId = GetBlockId(x, y + 1, z);
+        const int downId = GetBlockId(x, y - 1, z);
+        Block upBlock = GetBlockById(upId);
+        Block downBlock = GetBlockById(downId);
+
+        // 自身遮挡（原版 FluidRenderer#isFaceOccludedBySelf）：含水方块的水贴合方块形状，
+        // 方块自身在同一平面上的面并集完整覆盖该方向时，水的那一面不渲染。顶面按原版不做自遮挡。
+        const BlockOcclusion& selfOcc = GetBlockOcclusion(id);
+
+        // 顶面：上方同种流体不渲染（原版 renderUp 只判同种流体）
+        params.keepFace[1] = !IsSameFluidName(upBlock, fluidName);
+        // 底面：自身遮挡 / 邻居同种流体 / 邻居是完整遮挡体时不渲染
+        params.keepFace[0] = !IsSameFluidName(downBlock, fluidName) &&
+            !selfOcc.selfFaceFull[FLUID_DIR_DOWN] &&
+            !GetBlockOcclusion(downId).occludes;
+
+        // 侧面：北、南、西、东
+        static const int sideDirs[4][3] = { {0, 0, -1}, {0, 0, 1}, {-1, 0, 0}, {1, 0, 0} };
+        static const int sideDirIndices[4] = { FLUID_DIR_NORTH, FLUID_DIR_SOUTH, FLUID_DIR_WEST, FLUID_DIR_EAST };
+        for (int i = 0; i < 4; ++i) {
+            const int nx = x + sideDirs[i][0];
+            const int nz = z + sideDirs[i][2];
+            const int nid = GetBlockId(nx, y, nz);
+            Block nb = GetBlockById(nid);
+            params.keepFace[2 + i] = !IsSameFluidName(nb, fluidName) &&
+                !selfOcc.selfFaceFull[sideDirIndices[i]] &&
+                !GetBlockOcclusion(nid).occludes;
+        }
+
+        // 顶面原版优化：四个角高全满且上方是完整遮挡体时剔除
+        if (params.keepFace[1]) {
+            float corners[4]; // NW, NE, SE, SW
+            ComputeFluidCornerHeights(params, corners);
+            const float minH = std::min(std::min(corners[0], corners[1]), std::min(corners[2], corners[3]));
+            if (minH >= 1.0f && GetBlockOcclusion(upId).occludes) {
+                params.keepFace[1] = false;
+            }
+        }
+        params.downCanRender = params.keepFace[0];
+        params.topCanRender = params.keepFace[1];
+
+        liquidModel = GenerateFluidModel(params, fluidName);
+        AssignFluidMaterials(liquidModel, fluidName);
+
+        ModelData waterloggedBlockModel = GetRandomModelFromCache(ns, blockName);
+        if (waterloggedBlockModel.vertices.empty()) {
             blockModel = liquidModel;
         }
-        else
-        {
-            liquidModel = GenerateFluidModel(fluidLevels, currentBlock.fluidName);
-            AssignFluidMaterials(liquidModel, currentBlock.fluidName);
-
-            // 只对有流体方向的面设置为不剔除
-            for (auto& face : blockModel.faces)
+        else {
+            // 水方块自身带模型（含水方块等）：保留原有 DO_NOT_CULL 处理，再与流体模型合并
+            for (auto& face : waterloggedBlockModel.faces)
             {
                 FaceType dir = face.faceDirection;
                 if (dir != FaceType::DO_NOT_CULL) {
                     auto it = neighborIndexMap.find(dir);
                     if (it != neighborIndexMap.end()) {
-                        int neighborIdx = it->second;
-                        // 检查相邻方向是否有流体
                         int nx = x, ny = y, nz = z;
                         if (dir == FaceType::DOWN) ny--;
                         else if (dir == FaceType::UP) ny++;
@@ -203,10 +336,9 @@ void ChunkGenerator::ProcessBlockForModel(ModelData& chunkModel, int x, int y, i
                         else if (dir == FaceType::SOUTH) nz++;
                         else if (dir == FaceType::WEST) nx--;
                         else if (dir == FaceType::EAST) nx++;
-                        
+
                         int neighborId = GetBlockId(nx, ny, nz);
                         Block neighborBlock = GetBlockById(neighborId);
-                        // 如果邻居是流体或含有流体，则不剔除
                         if (neighborBlock.HasFluid()) {
                             face.faceDirection = FaceType::DO_NOT_CULL;
                         }
@@ -214,7 +346,7 @@ void ChunkGenerator::ProcessBlockForModel(ModelData& chunkModel, int x, int y, i
                 }
             }
 
-            blockModel = MergeFluidModelData(blockModel, liquidModel);
+            blockModel = MergeFluidModelData(waterloggedBlockModel, liquidModel);
         }
     }
     else
@@ -238,6 +370,9 @@ void ChunkGenerator::ProcessBlockForModel(ModelData& chunkModel, int x, int y, i
         ApplyCtmToBlockModel(blockModel, ns, blockName, x, y, z);
         useCtm = true;
     }
+
+    // 解析 tint 并按需拆分材质（必须在 CTM 之后、面剔除之前）
+    ApplyTintToBlockModel(blockModel, currentBlock.name);
 
     // 剔除被遮挡的面
     std::vector<int> validFaceIndices;
@@ -286,18 +421,65 @@ void ChunkGenerator::ProcessBlockForModel(ModelData& chunkModel, int x, int y, i
             auto it = neighborIndexMap.find(dir);
             if (it != neighborIndexMap.end()) {
                 int neighborIdx = it->second;
-                if (!neighbors[neighborIdx]) { // 如果邻居存在(非空气),跳过该面
+                if (!neighbors[neighborIdx]) { // 邻居为完整遮挡体,跳过该面
                     continue;
                 }
                 // 邻居被当作 air（透明/非实心）时，只有「同类连接方块」的
                 // 内部面才可剔除。旧代码把 useCtm 当成直接剔除条件，命中任意
                 // CTM 规则后会删掉该块全部 cullface（玻璃/水整块消失）。
-                if ((useCtm || selfGlassLike) && isSameTransparentNeighbor(dir)) {
+                if (selfGlassLike && isSameTransparentNeighbor(dir)) {
                     continue;
                 }
             }
             validFaceIndices.push_back(faceIdx);
         }
+    }
+
+    // ---- 共面叠加层(草侧这类)解析: 底层存活时删除叠加面, 并把
+    // base 材质 -> 叠加层(全名/贴图/tint) 登记给 overlay.json,
+    // 由 Blender 侧材质节点实现叠加; 底层被剔除时保留叠加面作几何回退。
+    if (!blockModel.overlayPairs.empty()) {
+        std::unordered_set<int> validFaceSet(validFaceIndices.begin(), validFaceIndices.end());
+        std::unordered_set<int> overlayFacesToDrop;
+        std::unordered_map<std::string, std::vector<OverlayLayerInfo>> blockOverlays;
+        const int faceCount = static_cast<int>(blockModel.faces.size());
+        const int materialCount = static_cast<int>(blockModel.materials.size());
+
+        for (const auto& pair : blockModel.overlayPairs) {
+            if (pair.baseFace < 0 || pair.overlayFace < 0 ||
+                pair.baseFace >= faceCount || pair.overlayFace >= faceCount) {
+                continue;
+            }
+            const bool baseValid = validFaceSet.count(pair.baseFace) != 0;
+            const bool overlayValid = validFaceSet.count(pair.overlayFace) != 0;
+            if (!baseValid || !overlayValid) continue; // 底层不在时叠加面保留为几何
+
+            overlayFacesToDrop.insert(pair.overlayFace);
+            const int baseMatIdx = blockModel.faces[pair.baseFace].materialIndex;
+            const int overlayMatIdx = blockModel.faces[pair.overlayFace].materialIndex;
+            if (baseMatIdx < 0 || baseMatIdx >= materialCount ||
+                overlayMatIdx < 0 || overlayMatIdx >= materialCount) {
+                continue;
+            }
+            const Material& baseMat = blockModel.materials[baseMatIdx];
+            const Material& overlayMat = blockModel.materials[overlayMatIdx];
+            if (baseMat.name == overlayMat.name) continue;
+            blockOverlays[baseMat.name].push_back(
+                { overlayMat.name, overlayMat.texturePath, overlayMat.tint });
+        }
+
+        if (!overlayFacesToDrop.empty()) {
+            std::vector<int> remaining;
+            remaining.reserve(validFaceIndices.size());
+            for (int faceIdx : validFaceIndices) {
+                if (!overlayFacesToDrop.count(faceIdx)) remaining.push_back(faceIdx);
+            }
+            validFaceIndices.swap(remaining);
+        }
+        for (const auto& entry : blockOverlays) {
+            RegisterOverlaySequence(entry.first, entry.second);
+        }
+        blockModel.overlayPairs.clear();
     }
 
     // Hidden blocks contribute no geometry. Previously their unused vertices,
@@ -322,6 +504,20 @@ void ChunkGenerator::ProcessBlockForModel(ModelData& chunkModel, int x, int y, i
 }
 
 ModelData ChunkGenerator::GenerateChunkModel(int chunkX, int sectionY, int chunkZ) {
+    // Missing/air-only sections used to visit every voxel and repeatedly probe
+    // seven section hashes. Caches are frozen while model workers are running.
+    auto section = sectionCache.find({chunkX, chunkZ, AdjustSectionY(sectionY)});
+    if (section == sectionCache.end() || std::all_of(section->second.blockData.begin(),
+        section->second.blockData.end(), [](int id) { return id == 0; })) {
+        bool hasEntity = false;
+        std::shared_lock<std::shared_mutex> lock(entityBlockCacheMutex);
+        auto entities = EntityBlockCache.find({chunkX, chunkZ});
+        if (entities != EntityBlockCache.end()) {
+            for (const auto& entity : entities->second)
+                if (entity && (entity->y >> 4) == sectionY) { hasEntity = true; break; }
+        }
+        if (!hasEntity) return ModelData{};
+    }
     // Reuse the material index across thousands of block appends.
     ModelData chunkModel;
     std::unordered_map<std::string, int> materialLookup;

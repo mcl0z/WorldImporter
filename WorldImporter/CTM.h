@@ -66,7 +66,10 @@ struct CtmRule {
     std::vector<std::string> connectBlocks; // overlay 邻居方块过滤
     std::vector<std::string> connectTiles;  // overlay 邻居贴图过滤
     std::string layer;                  // overlay 图层
-    int tintIndex = -1;                 // overlay 色调索引
+    int tintIndex = -1;                 // tintIndex 数字值(命名值见 tintIndexName)
+    std::string tintIndexName;          // tintIndex 非数字时的原名, 如 grass / stone
+    std::string tintBlock;              // tintBlock 完整方块 id(含命名空间), 空=用当前方块
+    bool hasTint = false;               // properties 是否显式声明了 tintIndex / tintBlock
     std::unordered_map<int, int> ctmOverrides; // ctm.N 自定义替换
     std::string resourceCondition;      // Continuity 资源条件
     std::string propertiesPath;         // properties 文件相对路径,用于调试

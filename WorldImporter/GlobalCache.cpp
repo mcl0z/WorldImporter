@@ -40,7 +40,6 @@ extern "C" {
 #endif
 
 // 全局变量定义
-std::unordered_set<std::string> solidBlocks;  // 固体方块集合
 std::unordered_set<std::string> fluidBlocks;  // 流体方块集合
 
 // ========= 全局缓存命名空间 =========

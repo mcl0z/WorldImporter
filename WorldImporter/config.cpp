@@ -44,6 +44,8 @@ Config LoadConfig(const std::string& configFile) {
     config.exportLightBlockOnly = j.value("exportLightBlockOnly", config.exportLightBlockOnly);
     config.lightBlockSize = j.value("lightBlockSize", config.lightBlockSize);
     config.allowDoubleFace = j.value("allowDoubleFace", config.allowDoubleFace);
+    // 叠加层外移步长: 过小会在 Eevee 下 z-fighting, 过大在近景会看到层间错位
+    config.overlayLayerStep = std::clamp(j.value("overlayLayerStep", config.overlayLayerStep), 0.0002f, 0.05f);
     config.isLODAutoCenter = j.value("isLODAutoCenter", config.isLODAutoCenter);
     config.LODCenterX = j.value("LODCenterX", config.LODCenterX);
     config.LODCenterZ = j.value("LODCenterZ", config.LODCenterZ);

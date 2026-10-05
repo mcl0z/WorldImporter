@@ -38,25 +38,6 @@ void SetGlobalLocale() {
     }
 }
 
-void LoadSolidBlocks(const std::string& filepath) {
-    std::ifstream file(filepath);
-    if (!file.is_open()) {
-        throw std::runtime_error("Failed to open solid_blocks file: " + filepath);
-    }
-
-    nlohmann::json j;
-    file >> j;
-
-    if (j.contains("solid_blocks")) {
-        for (auto& block : j["solid_blocks"]) {
-            solidBlocks.insert(block.get<std::string>());
-        }
-    }
-    else {
-        throw std::runtime_error("solid_blocks file missing 'solid_blocks' array");
-    }
-}
-
 void LoadFluidBlocks(const std::string& filepath) {
     std::ifstream file(filepath);
     if (!file.is_open()) {

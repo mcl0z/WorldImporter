@@ -14,6 +14,7 @@
 #include <sstream>
 #include <mutex>
 #include <unordered_map>
+#include <unordered_set>
 
 // ========= 注册表 (ns, 贴图路径, CTType) =========
 // 数据来源: Create AllSpriteShifts (mc1.20.1)
@@ -284,6 +285,7 @@ static CTContext BuildContext(const FaceDirs& d, int x, int y, int z,
 // ========= 保存 connected 贴图 =========
 static std::mutex g_ctPngMutex;
 static std::unordered_map<std::string, std::string> g_ctPngCache; // key -> texturePath
+static std::unordered_set<std::string> g_ctPbrDone;               // 已处理过 PBR 变体的 key
 
 static void EnsureDir(const std::string& path) {
     std::wstring wpath = string_to_wstring(path);
@@ -357,6 +359,35 @@ static std::string GetOrSaveConnectedTexture(const std::string& ns,
         }
         std::string rel = "textures/" + ns + "/" + texturePath + "_connected.png";
         g_ctPngCache[ns + ":" + connected] = rel;
+
+        // PBR 变体: 资源包提供 <path>_connected_n/_s/_a 就一并拷出, 没有就跳过(只做一次)
+        if (g_ctPbrDone.insert(ns + ":" + connected).second) {
+            const char* pbrSuffixes[3] = { "_n", "_s", "_a" };
+            for (const char* suffix : pbrSuffixes) {
+                std::vector<unsigned char> pbrData;
+                {
+                    std::shared_lock<std::shared_mutex> cacheLock(GlobalCache::cacheMutex);
+                    std::string pbrName = connected + suffix;
+                    auto pbrIdxIt = GlobalCache::textureIndex.find("textures:" + ns + ":" + pbrName);
+                    if (pbrIdxIt != GlobalCache::textureIndex.end()) {
+                        auto pbrTexIt = GlobalCache::textures.find(pbrIdxIt->second);
+                        if (pbrTexIt != GlobalCache::textures.end()) pbrData = pbrTexIt->second;
+                    }
+                    if (pbrData.empty()) {
+                        for (const auto& modId : GlobalCache::jarOrder) {
+                            auto pbrTexIt = GlobalCache::textures.find(modId + ":" + ns + ":" + pbrName);
+                            if (pbrTexIt != GlobalCache::textures.end()) { pbrData = pbrTexIt->second; break; }
+                        }
+                    }
+                }
+                if (pbrData.empty()) continue;
+                std::ofstream pbrOut(dir + "_connected" + suffix + ".png", std::ios::binary);
+                if (pbrOut.is_open()) {
+                    pbrOut.write(reinterpret_cast<const char*>(pbrData.data()), pbrData.size());
+                    pbrOut.close();
+                }
+            }
+        }
         return rel;
     }
 }
@@ -412,7 +443,8 @@ bool ApplyCreateCTToBlockModel(ModelData& model, const std::string& ns,
         if (connectedRel.empty()) continue;
 
         // 材质: 每个"原材质名"对应一个 connected 材质 (tint 沿用原材质)
-        std::string ctMatKey = matNs + ":" + texturePath + "_connected";
+        // 名字形如 "create:block/brass_casing@create_ct", 插件按 @ 前的 base 分类
+        std::string ctMatKey = matNs + ":" + texturePath + "@create_ct";
         int ctMatIdx;
         auto it = ctMatIndex.find(ctMatKey);
         if (it != ctMatIndex.end()) {

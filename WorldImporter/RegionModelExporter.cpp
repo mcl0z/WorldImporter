@@ -21,6 +21,7 @@
 #include <shared_mutex>
 #include "block.h"
 #include "TaskMonitor.h"
+#include "Occlusion.h"
 using namespace std;
 using namespace std::chrono;  // 新增:方便使用 chrono
 
@@ -106,7 +107,7 @@ void RegionModelExporter::ExportModels(const string& outputName) {
     // 模型处理阶段
     ModelData finalMergedModel;
     std::unordered_map<string, string> uniqueMaterials;
-    std::unordered_map<string, int8_t> uniqueTints;
+    std::unordered_map<string, TintResult> uniqueTints;
 
     // 计算所有批次的总任务数
     size_t totalTasksAllBatches = 0;
@@ -148,6 +149,7 @@ void RegionModelExporter::ExportModels(const string& outputName) {
     };
 
     std::mutex finalModelMutex;
+    std::unordered_map<std::string, int> finalMaterialLookup;
     std::mutex materialsMutex;
     std::mutex progressMutex;
 
@@ -158,18 +160,18 @@ void RegionModelExporter::ExportModels(const string& outputName) {
             finalMergedModel = std::move(model);
         }
         else {
-            MergeModelsDirectly(finalMergedModel, model);
+            MergeModelsDirectly(finalMergedModel, model, &finalMaterialLookup);
         }
         };
 
     // 线程安全的材质记录
     auto recordMaterials = [&](const std::unordered_map<string, string>& newMaterials,
-                                const std::unordered_map<string, int8_t>& newTints) {
+                                const std::unordered_map<string, TintResult>& newTints) {
         std::lock_guard<std::mutex> lock(materialsMutex);
         for (const auto& nm : newMaterials)
             uniqueMaterials.emplace(nm.first, nm.second);
         for (const auto& nt : newTints)
-            if (nt.second != -1) uniqueTints.emplace(nt.first, nt.second);
+            uniqueTints.emplace(nt.first, nt.second);
     };
 
     // 按批次处理区块组
@@ -192,6 +194,9 @@ void RegionModelExporter::ExportModels(const string& outputName) {
         }
     }
 
+    // 运行时遮挡表的增量构建进度（按全局调色板下标）
+    size_t lastOcclusionBuilt = 0;
+
     for (size_t current_batch_idx = 0; current_batch_idx < ChunkGroupAllocator::g_chunkBatches.size(); ++current_batch_idx) {
         const auto& batch = ChunkGroupAllocator::g_chunkBatches[current_batch_idx];
         batchId = current_batch_idx + 1;
@@ -210,12 +215,19 @@ void RegionModelExporter::ExportModels(const string& outputName) {
         size_t beforeLoad = CountLoadedChunks();
         globalPaletteFrozen.store(false, std::memory_order_release);
         blockstateCachesFrozen.store(false, std::memory_order_release);
+        { CrafterLog::StageTimer timer("批次数据加载");
         ChunkLoader::LoadChunks(bExpXStart, bExpXEnd, bExpZStart, bExpZEnd,
                                 sectionYStart, sectionYEnd);
+        }
         globalPaletteFrozen.store(true, std::memory_order_release);
         blockstateCachesFrozen.store(true, std::memory_order_release);
         ChunkGenerator::PrepareBlockNames();
         size_t afterLoad = CountLoadedChunks();
+
+        // 模型解析完成后、进入多线程模型阶段前，增量构建运行时遮挡表
+        // （每唯一 block state 一次几何+纹理判定，之后查询为 O(1)）
+        BuildBlockOcclusionTable(lastOcclusionBuilt);
+        lastOcclusionBuilt = globalBlockPalette.size();
         size_t newlyLoaded = (afterLoad > beforeLoad) ? (afterLoad - beforeLoad) : 0;
 
         // 处理天空光照邻居标志(在模型线程前执行,避免写冲突)
@@ -235,6 +247,7 @@ void RegionModelExporter::ExportModels(const string& outputName) {
         // 旧实现在模型线程内懒加载区块并写群系数据,与其它模型线程
         // 无锁读取 sectionCache/群系表形成数据竞争,这里统一提前到加载阶段。
         {
+            CrafterLog::StageTimer timer("批次群系计算");
             std::unordered_set<std::pair<int, int>, pair_hash> batchChunks;
             for (const auto& group : groupsInBatch) {
                 for (const auto& task : group.tasks) {
@@ -243,16 +256,10 @@ void RegionModelExporter::ExportModels(const string& outputName) {
             }
             for (const auto& ck : batchChunks) {
                 if (processedBiomeChunks.find(ck) != processedBiomeChunks.end()) continue;
-                // 确保区块数据已加载(填充高度图),再生成生物群系地图
-                {
-                    std::shared_lock<std::shared_mutex> sc_lk(sectionCacheMutex);
-                    auto k0 = std::make_tuple(ck.first, ck.second, 0);
-                    bool needLoad = sectionCache.find(k0) == sectionCache.end();
-                    sc_lk.unlock();
-                    if (needLoad) {
-                        LoadAndCacheBlockData(ck.first, ck.second);
-                    }
-                }
+                // LoadChunks completed this phase. A missing section/heightmap
+                // is legitimate (empty/sparse/absent chunk), not a reload request.
+                // Lazy reloads here reparsed the same chunk hundreds of times
+                // and could mutate a palette already frozen for readers.
                 Biome::GenerateBiomeMap(ck.first * 16, ck.second * 16, ck.first * 16 + 15, ck.second * 16 + 15);
                 processedBiomeChunks.insert(ck);
             }
@@ -266,19 +273,44 @@ void RegionModelExporter::ExportModels(const string& outputName) {
         // limited by the number of independently schedulable groups.
         const unsigned numThreads = std::max<unsigned>(1,
             std::min<unsigned>(static_cast<unsigned>(config.modelThreads),
-                               static_cast<unsigned>(std::max<size_t>(1, groupsInBatch.size()))));
+                               static_cast<unsigned>(std::max<size_t>(1,
+                                   config.exportFullModel ? tasksInCurrentBatch : groupsInBatch.size()))));
         // 通知去重层限制内部并行度,避免线程数量爆炸
         SetModelThreadBudget(static_cast<int>(numThreads));
         std::atomic<size_t> groupIndex{0};
         // Full exports merge in task order after joining. Completion-order
         // merging made coincident-face selection/GreedyMesh depend on timing.
-        std::vector<ModelData> completedModels(config.exportFullModel ? groupsInBatch.size() : 0);
+        // Full-file output does not need group-local meshes: schedule section
+        // tasks globally so empty/complex/water sections cannot strand workers.
+        std::vector<const ChunkTask*> flatTasks;
+        if (config.exportFullModel) {
+            flatTasks.reserve(tasksInCurrentBatch);
+            for (const auto& group : groupsInBatch)
+                for (const auto& task : group.tasks) flatTasks.push_back(&task);
+        }
+        std::vector<ModelData> completedModels(flatTasks.size());
         std::vector<std::thread> threads;
         threads.reserve(numThreads);
 
+        auto workerStart = std::chrono::steady_clock::now();
         for (unsigned i = 0; i < numThreads; ++i) {
             threads.emplace_back([&]() {
                 try {
+                    if (config.exportFullModel) {
+                        for (;;) {
+                            const size_t idx = groupIndex.fetch_add(1, std::memory_order_relaxed);
+                            if (idx >= flatTasks.size()) break;
+                            completedModels[idx] = processModel(*flatTasks[idx]);
+                            const size_t batchDone = batchCompletedTasks.fetch_add(1) + 1;
+                            const size_t done = globalCompletedTasks.fetch_add(1) + 1;
+                            if (done % 100 == 0 || done == totalTasksAllBatches) {
+                                std::lock_guard<std::mutex> progressLock(progressMutex);
+                                monitor.UpdateProgress("总体进度", done, totalTasksAllBatches);
+                                monitor.UpdateProgress("批次进度", batchDone, tasksInCurrentBatch);
+                            }
+                        }
+                        return;
+                    }
                     while (true) {
                         size_t idx = groupIndex.fetch_add(1);
                         if (idx >= groupsInBatch.size()) break;
@@ -291,7 +323,7 @@ void RegionModelExporter::ExportModels(const string& outputName) {
                         groupModel.faces.reserve(8192 * reserveTasks);
                         groupModel.uvCoordinates.reserve(4096 * reserveTasks);
                         std::unordered_map<string, string> localMaterials;
-                        std::unordered_map<string, int8_t> localTints;
+                        std::unordered_map<string, TintResult> localTints;
 
                         // 记录当前组内需要处理的任务数
                         size_t tasksInCurrentGroup = group.tasks.size();
@@ -336,7 +368,7 @@ void RegionModelExporter::ExportModels(const string& outputName) {
                         }
                         if (groupModel.vertices.empty()) continue;
                         for (const auto& mat : groupModel.materials)
-                            if (mat.tintIndex != -1) localTints[mat.name] = mat.tintIndex;
+                            localTints[mat.name] = mat.tint;
                         if (config.exportFullModel) {
                             completedModels[idx] = std::move(groupModel);
                         } else {
@@ -376,7 +408,10 @@ void RegionModelExporter::ExportModels(const string& outputName) {
             if (t.joinable()) t.join();
         }
 
+        std::cout << "[perf] 模型工作线程耗时 " << std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - workerStart).count() << " ms" << std::endl;
         if (config.exportFullModel) {
+            CrafterLog::StageTimer timer("批次模型合并");
             for (auto& model : completedModels) {
                 if (model.vertices.empty()) continue;
                 mergeToFinalModel(std::move(model));
@@ -441,11 +476,24 @@ void RegionModelExporter::ExportModels(const string& outputName) {
         monitor.SetStatus(TaskStatus::EXPORTING_MODELS, "CreateModelFiles");
         CreateModelFiles(finalMergedModel, outputName);
         }
+        // 全模型路径同样输出 tint.json
+        { CrafterLog::StageTimer t("写入 tint.json");
+        std::unordered_map<string, TintResult> fullModelTints;
+        for (const auto& mat : finalMergedModel.materials)
+            fullModelTints[mat.name] = mat.tint;
+        CreateTintJsonFile(fullModelTints);
+        }
+        { CrafterLog::StageTimer t("写入 overlay.json");
+        CreateOverlayJsonFile();
+        }
     }
     else if (!uniqueMaterials.empty()) {
         { CrafterLog::StageTimer t("写入共享 mtl");
         monitor.SetStatus(TaskStatus::EXPORTING_MODELS, "CreateSharedMtlFile");
         CreateSharedMtlFile(uniqueMaterials, outputName, uniqueTints);
+        }
+        { CrafterLog::StageTimer t("写入 overlay.json");
+        CreateOverlayJsonFile();
         }
     }
 

@@ -636,6 +636,24 @@ nlohmann::json GetModelJson(const std::string& namespaceName, const std::string&
 
 //———————————将JSON数据转为结构体的方法———————————————
 //---------------- 材质处理 ----------------
+// 选择材质的贴图键：忽略 particle(仅粒子效果引用, 常与某个面共图)，其余取字典序
+// 最小的键，保证命名结果稳定（如 cactus 侧面的键取 side 而不是 particle）。
+static void UpdateMaterialTextureKey(Material& material, const std::string& textureKey) {
+    if (textureKey.empty()) return;
+    if (material.textureKey.empty()) {
+        material.textureKey = textureKey;
+        return;
+    }
+    const bool currentParticle = (material.textureKey == "particle");
+    const bool nextParticle = (textureKey == "particle");
+    if (currentParticle && !nextParticle) {
+        material.textureKey = textureKey;
+    }
+    else if (!nextParticle && textureKey < material.textureKey) {
+        material.textureKey = textureKey;
+    }
+}
+
 void processTextures(const nlohmann::json& modelJson, ModelData& data,
     std::unordered_map<std::string, int>& textureKeyToMaterialIndex) {
 
@@ -733,6 +751,7 @@ void processTextures(const nlohmann::json& modelJson, ModelData& data,
                 Material newMaterial;
                 newMaterial.name = fullMaterialName;
                 newMaterial.texturePath = textureSavePath;
+                newMaterial.textureKey = textureKey;
                 newMaterial.tintIndex = -1;  // 默认值
                 
                 // 检测材质类型和长宽比(如果为动态材质)
@@ -744,12 +763,185 @@ void processTextures(const nlohmann::json& modelJson, ModelData& data,
                 data.materials.push_back(newMaterial);
                 processedMaterials[fullMaterialName] = materialIndex;
             }
+            else {
+                // 同一贴图可能有多个键(如 top/particle 同图)：忽略 particle 后取最小键
+                UpdateMaterialTextureKey(data.materials[processedMaterials[fullMaterialName]], textureKey);
+            }
 
             // 记录材质键到索引的映射
             textureKeyToMaterialIndex[textureKey] = processedMaterials[fullMaterialName];
         }
     }
 }
+//---------------- 材质重命名 ----------------
+// 材质名 -> 贴图路径 的全局注册表：同一张图复用同一个名字；不同图重名时
+// 使用更长候选名降级，保证"名字 -> 贴图"唯一。多线程处理方块状态时需要加锁。
+static std::mutex g_materialNameMutex;
+static std::unordered_map<std::string, std::string> g_materialNameToTexture;
+
+namespace {
+std::string TryRegisterMaterialName(const std::string& candidate, const std::string& texturePath) {
+    if (candidate.empty()) return {};
+    std::lock_guard<std::mutex> lock(g_materialNameMutex);
+    auto it = g_materialNameToTexture.find(candidate);
+    if (it == g_materialNameToTexture.end()) {
+        g_materialNameToTexture.emplace(candidate, texturePath);
+        return candidate;
+    }
+    return (it->second == texturePath) ? candidate : std::string();
+}
+
+// textures/minecraft/block/oak_log.png -> minecraft/block/oak_log
+std::string MaterialTextureRelPath(const std::string& texturePath) {
+    const std::string prefix = "textures/";
+    std::string path = texturePath;
+    if (path.rfind(prefix, 0) == 0) path = path.substr(prefix.size());
+    size_t dot = path.find_last_of('.');
+    if (dot != std::string::npos) path = path.substr(0, dot);
+    return path;
+}
+}
+
+std::string MaterialTextureBasename(const std::string& texturePath) {
+    size_t slash = texturePath.find_last_of('/');
+    std::string leaf = (slash == std::string::npos) ? texturePath : texturePath.substr(slash + 1);
+    size_t dot = leaf.find_last_of('.');
+    if (dot != std::string::npos) leaf = leaf.substr(0, dot);
+    return leaf;
+}
+
+void RenameBlockMaterials(ModelData& model, const std::string& namespaceName, const std::string& baseBlockId) {
+    if (model.materials.empty() || baseBlockId.empty()) return;
+    const bool singleMaterial = (model.materials.size() == 1);
+    const std::string prefix = namespaceName + ":" + baseBlockId;
+    for (auto& material : model.materials) {
+        // 只处理来自模型 textures 的材质；占位/特殊材质(无贴图键)保持原名
+        if (material.textureKey.empty()) continue;
+
+        std::string resolved;
+        // 1. 单材质且贴图就是 block/<方块id>：直接用方块 id（名字最简且稳定）
+        if (singleMaterial &&
+            material.texturePath == "textures/" + namespaceName + "/block/" + baseBlockId + ".png") {
+            resolved = TryRegisterMaterialName(prefix, material.texturePath);
+        }
+        if (resolved.empty()) {
+            const std::string base = prefix + "#" + material.textureKey;
+            // 2. 方块id#贴图键~贴图文件名（名字只由 方块/键/贴图 决定，与处理顺序无关）
+            resolved = TryRegisterMaterialName(base + "~" + MaterialTextureBasename(material.texturePath),
+                material.texturePath);
+            // 3. 方块id#贴图键~相对路径（同一键下不同目录同名文件的兜底）
+            if (resolved.empty()) {
+                resolved = TryRegisterMaterialName(base + "~" + MaterialTextureRelPath(material.texturePath),
+                    material.texturePath);
+            }
+        }
+
+        if (!resolved.empty()) material.name = resolved;
+    }
+}
+
+// 计算面的最终 UV 坐标(显式 uv、镜像翻转、动态贴图 V 缩放、90° 旋转)。
+// 面重叠配对比较与实际写出共用同一份逻辑,保证两层规格比较一致。
+static std::vector<std::vector<float>> ComputeFaceUvCoords(
+    const std::string& faceName,
+    float x1, float y1, float z1,
+    float x2, float y2, float z2,
+    const nlohmann::json& faceData,
+    const Material* material)
+{
+    std::vector<float> uvRegion;
+    if (faceName == "down") {
+        uvRegion = { x1 * 16, (1 - z2) * 16, x2 * 16, (1 - z1) * 16 };
+    }
+    else if (faceName == "up") {
+        uvRegion = { x1 * 16, z1 * 16, x2 * 16, z2 * 16 };
+    }
+    else if (faceName == "north") {
+        uvRegion = { (1 - x2) * 16, (1 - y2) * 16, (1 - x1) * 16, (1 - y1) * 16 };
+    }
+    else if (faceName == "south") {
+        uvRegion = { x1 * 16, (1 - y2) * 16, x2 * 16, (1 - y1) * 16 };
+    }
+    else if (faceName == "west") {
+        uvRegion = { z1 * 16, (1 - y2) * 16, z2 * 16, (1 - y1) * 16 };
+    }
+    else if (faceName == "east") {
+        uvRegion = { (1 - z2) * 16, (1 - y2) * 16, (1 - z1) * 16, (1 - y1) * 16 };
+    }
+    else {
+        return {};
+    }
+
+    // 如果 JSON 中存在 uv 则使用其数据
+    if (faceData.contains("uv")) {
+        auto uv = faceData["uv"];
+        uvRegion = {
+            uv[0].get<float>(),
+            uv[1].get<float>(),
+            uv[2].get<float>(),
+            uv[3].get<float>()
+        };
+    }
+
+    // 检测UV区域是否有镜像翻转
+    bool flipX = uvRegion[0] > uvRegion[2];
+    bool flipY = uvRegion[1] > uvRegion[3];
+    if (flipX) {
+        std::swap(uvRegion[0], uvRegion[2]);
+    }
+    if (flipY) {
+        std::swap(uvRegion[1], uvRegion[3]);
+    }
+
+    std::vector<std::vector<float>> uvCoords = {
+        {uvRegion[2] / 16.0f, 1 - uvRegion[3] / 16.0f},
+        {uvRegion[2] / 16.0f, 1 - uvRegion[1] / 16.0f},
+        {uvRegion[0] / 16.0f, 1 - uvRegion[1] / 16.0f},
+        {uvRegion[0] / 16.0f, 1 - uvRegion[3] / 16.0f}
+    };
+
+    // 动态材质只显示一帧: 缩放 V 坐标
+    if (material != nullptr && material->type == ANIMATED) {
+        float aspectRatio = material->aspectRatio;
+        for (auto& uv : uvCoords) {
+            float v = 1.0f - uv[1];
+            v = v / aspectRatio;
+            uv[1] = 1.0f - v;
+        }
+    }
+
+    if (flipX) {
+        std::swap(uvCoords[0], uvCoords[3]);
+        std::swap(uvCoords[1], uvCoords[2]);
+    }
+    if (flipY) {
+        std::swap(uvCoords[0], uvCoords[1]);
+        std::swap(uvCoords[3], uvCoords[2]);
+    }
+
+    int rotation = faceData.value("rotation", 0);
+    int steps = ((rotation % 360) + 360) % 360 / 90;
+    if (steps != 0) {
+        std::vector<std::vector<float>> rotatedUV(4);
+        for (int i = 0; i < 4; i++) {
+            rotatedUV[i] = uvCoords[(i - steps + 4) % 4];
+        }
+        uvCoords = rotatedUV;
+    }
+    return uvCoords;
+}
+
+static bool UvCoordsEqual(const std::vector<std::vector<float>>& a,
+    const std::vector<std::vector<float>>& b)
+{
+    if (a.size() != 4 || b.size() != 4) return false;
+    for (int i = 0; i < 4; ++i) {
+        if (std::fabs(a[i][0] - b[i][0]) > 1e-6f) return false;
+        if (std::fabs(a[i][1] - b[i][1]) > 1e-6f) return false;
+    }
+    return true;
+}
+
 //---------------- 几何数据处理 ----------------
 void processElements(const nlohmann::json& modelJson, ModelData& data,
     const std::unordered_map<std::string, int>& textureKeyToMaterialIndex)
@@ -760,6 +952,8 @@ void processElements(const nlohmann::json& modelJson, ModelData& data,
     short tintindex = -1;
     std::unordered_map<std::string, int> faceCountMap; // 面计数映射
     std::unordered_map<std::string, std::unordered_set<int>> faceMaterialMap;
+    std::unordered_map<std::string, int> faceBaseIndexMap;               // 每个共面键的首面(底层)索引
+    std::unordered_map<std::string, std::vector<std::vector<float>>> faceBaseUvMap; // 底层最终 UV
 
     auto elements = modelJson["elements"];
 
@@ -1109,9 +1303,47 @@ void processElements(const nlohmann::json& modelJson, ModelData& data,
                         bool isLayeredMaterial = !seenMaterials.empty() &&
                             !seenMaterials.contains(currentMaterialIndex);
 
-                        if (config.allowDoubleFace || isLayeredMaterial) {
+                        const Material* currentMaterialPtr =
+                            (currentMaterialIndex >= 0 &&
+                             currentMaterialIndex < static_cast<int>(data.materials.size()))
+                            ? &data.materials[currentMaterialIndex] : nullptr;
+
+                        if (seenMaterials.empty()) {
+                            // 记录底层(首个面)索引与最终 UV 规格,供叠加层配对比较
+                            faceBaseIndexMap[key] = static_cast<int>(data.faces.size());
+                            faceBaseUvMap[key] = ComputeFaceUvCoords(
+                                faceName, x1, y1, z1, x2, y2, z2,
+                                face.value(), currentMaterialPtr);
+                        }
+
+                        if (isLayeredMaterial) {
+                            // 共面异材质层(如草方块侧面的 overlay 元素): UV 规格与底层
+                            // 一致时记入 overlayPairs(导出阶段若底层存活就删除该面并写
+                            // overlay.json, 由 Blender 材质节点实现叠加)。逐层外移保留:
+                            // 配对未解析(实体模型/底层被剔除)时仍靠它避免共面闪烁。
+                            auto baseUvIt = faceBaseUvMap.find(key);
+                            auto baseIdxIt = faceBaseIndexMap.find(key);
+                            bool sameUv = baseUvIt != faceBaseUvMap.end() &&
+                                UvCoordsEqual(baseUvIt->second,
+                                    ComputeFaceUvCoords(faceName, x1, y1, z1, x2, y2, z2,
+                                        face.value(), currentMaterialPtr));
+                            if (sameUv && baseIdxIt != faceBaseIndexMap.end()) {
+                                data.overlayPairs.push_back(
+                                    { baseIdxIt->second, static_cast<int>(data.faces.size()) });
+                            }
+
                             int count = ++faceCountMap[key];
-                            float offset = (count - 1) * 0.001f;
+                            float offset = (count - 1) * config.overlayLayerStep;
+                            for (auto& v : faceVertices) {
+                                v[0] += crossX * offset;
+                                v[1] += crossY * offset;
+                                v[2] += crossZ * offset;
+                            }
+                        }
+                        else if (config.allowDoubleFace) {
+                            // 同材质重复面: 保持逐层外移
+                            int count = ++faceCountMap[key];
+                            float offset = (count - 1) * config.overlayLayerStep;
                             for (auto& v : faceVertices) {
                                 v[0] += crossX * offset;
                                 v[1] += crossY * offset;
@@ -1167,104 +1399,14 @@ void processElements(const nlohmann::json& modelJson, ModelData& data,
                         
                         // UV数据处理
                         nlohmann::json faceData = face.value();
-                        
-                        std::vector<float> uvRegion;
-                        if (faceName == "down")
-                        {
-                            uvRegion = { x1 * 16, (1 - z2) * 16, x2 * 16, (1 - z1) * 16 };
-                        }
-                        else if (faceName == "up")
-                        {
-                            uvRegion = { x1 * 16, z1 * 16, x2 * 16, z2 * 16 };
-                        }
-                        else if (faceName == "north")
-                        {
-                            uvRegion = { (1 - x2) * 16, (1 - y2) * 16, (1 - x1) * 16, (1 - y1) * 16 };
-                        }
-                        else if (faceName == "south")
-                        {
-                            uvRegion = { x1 * 16, (1 - y2) * 16, x2 * 16, (1 - y1) * 16 };
-                        }
-                        else if (faceName == "west")
-                        {
-                            uvRegion = { z1 * 16, (1 - y2) * 16, z2 * 16, (1 - y1) * 16 };
-                        }
-                        else if (faceName == "east")
-                        {
-                            uvRegion = { (1 - z2) * 16, (1 - y2) * 16, (1 - z1) * 16, (1 - y1) * 16 };
-                        }
+                        const Material* faceMaterialPtr =
+                            (data.faces.back().materialIndex >= 0 &&
+                             data.faces.back().materialIndex < static_cast<int>(data.materials.size()))
+                            ? &data.materials[data.faces.back().materialIndex] : nullptr;
+                        std::vector<std::vector<float>> uvCoords = ComputeFaceUvCoords(
+                            faceName, x1, y1, z1, x2, y2, z2, faceData, faceMaterialPtr);
 
-                        // 如果 JSON 中存在 uv 则使用其数据
-                        if (faceData.contains("uv")) {
-                            auto uv = faceData["uv"];
-                           
-                            uvRegion = {
-                                uv[0].get<float>(),
-                                uv[1].get<float>(),
-                                uv[2].get<float>(),
-                                uv[3].get<float>()
-                            };
-                        }
-                  
                         std::array<int, 4> uvIndices;
-                        
-                        // 检测UV区域是否有镜像翻转
-                        bool flipX = uvRegion[0] > uvRegion[2]; // X方向镜像
-                        bool flipY = uvRegion[1] > uvRegion[3]; // Y方向镜像
-
-                        // 确保UV坐标范围正确(起点小于终点)
-                        if (flipX) {
-                            std::swap(uvRegion[0], uvRegion[2]);
-                        }
-                        if (flipY) {
-                            std::swap(uvRegion[1], uvRegion[3]);
-                        }
-                        
-                        // 计算四个 UV 坐标点(左下,左上,右上,右下)
-                        std::vector<std::vector<float>> uvCoords = {
-                            {uvRegion[2] / 16.0f, 1 - uvRegion[3] / 16.0f},
-                            {uvRegion[2] / 16.0f, 1 - uvRegion[1] / 16.0f},
-                            {uvRegion[0] / 16.0f, 1 - uvRegion[1] / 16.0f},
-                            {uvRegion[0] / 16.0f, 1 - uvRegion[3] / 16.0f}
-                        };
-
-                        // 检查材质类型，如果是动态材质，应用长宽比缩放V坐标
-                        if (data.faces.back().materialIndex >= 0 && 
-                            data.faces.back().materialIndex < data.materials.size() && 
-                            data.materials[data.faces.back().materialIndex].type == ANIMATED) {
-                            
-                            float aspectRatio = data.materials[data.faces.back().materialIndex].aspectRatio;
-                            
-                            // 只缩放v坐标
-                            for (auto& uv : uvCoords) {
-                                // 转换v坐标，确保每个动画帧只显示一帧的内容
-                                float v = 1.0f - uv[1]; // v是倒置的，先转回来
-                                v = v / aspectRatio;    // 缩放到对应帧的范围
-                                uv[1] = 1.0f - v;       // 转回UV坐标系
-                            }
-                        }
-                        
-                        if (flipX) {
-                            std::swap(uvCoords[0], uvCoords[3]);
-                            std::swap(uvCoords[1], uvCoords[2]);
-                        }
-                        if (flipY) {
-                            std::swap(uvCoords[0], uvCoords[1]);
-                            std::swap(uvCoords[3], uvCoords[2]);
-                        }
-
-                        // 获取旋转值
-                        int rotation = faceData.value("rotation", 0);                        
-                        int steps = ((rotation % 360) + 360) % 360 / 90;
-
-                        if (steps != 0) {
-                            std::vector<std::vector<float>> rotatedUV(4);
-                            for (int i = 0; i < 4; i++) {
-                                rotatedUV[i] = uvCoords[(i - steps + 4) % 4];
-                            }
-                            uvCoords = rotatedUV;
-                        }
-
                         for (int i = 0; i < 4; ++i) {
                             const auto& uv = uvCoords[i];
                             std::string uvKey =
@@ -1294,6 +1436,8 @@ void processElements(const nlohmann::json& modelJson, ModelData& data,
                     if (face.value().contains("tintindex")) {
                         localTintIndex = face.value()["tintindex"].get<int>();
                     }
+                    // 面级 tintindex(用于导出阶段的逐面色型解析)
+                    data.faces.back().tintIndex = static_cast<int8_t>(localTintIndex);
                     // 更新此材质的tintIndex
                     if (!data.materials.empty() && data.faces.back().materialIndex >= 0 && data.faces.back().materialIndex < data.materials.size()) {
                         data.materials[data.faces.back().materialIndex].tintIndex = localTintIndex;
@@ -1549,6 +1693,7 @@ ModelData MergeModelData(const ModelData& data1, const ModelData& data2) {
             
             // 保留面方向
             newFace.faceDirection = face.faceDirection;
+            newFace.tintIndex = face.tintIndex;
             
             mergedData.faces.push_back(newFace);
         }
@@ -1556,6 +1701,15 @@ ModelData MergeModelData(const ModelData& data1, const ModelData& data2) {
 
     remapFaces(data1.faces, true);
     remapFaces(data2.faces, false);
+
+    // 叠加层配对随面索引平移(data1 面在前保持不变, data2 面整体偏移)
+    mergedData.overlayPairs = data1.overlayPairs;
+    const int overlayFaceOffset = static_cast<int>(data1.faces.size());
+    for (auto pair : data2.overlayPairs) {
+        pair.baseFace += overlayFaceOffset;
+        pair.overlayFace += overlayFaceOffset;
+        mergedData.overlayPairs.push_back(pair);
+    }
 
     //------------------------ 阶段4:材质数据合并 ------------------------
     // 材质数据已在上面处理完成
@@ -1735,6 +1889,7 @@ ModelData MergeFluidModelData(const ModelData& data1, const ModelData& data2) {
             
             // 保留面方向
             newFace.faceDirection = face.faceDirection;
+            newFace.tintIndex = face.tintIndex;
             
             mergedData.faces.push_back(newFace);
         }
@@ -1893,6 +2048,7 @@ ModelData MergeFluidModelData(const ModelData& data1, const ModelData& data2) {
     int data2FaceCount = data2.faces.size();
     int data2VertexOffset = data1.vertices.size() / 3;
     int data2UVOffset = data1.uvCoordinates.size() / 2;
+    std::vector<int> data2FaceNewIndex(data2.faces.size(), -1);
     for (size_t i = 0; i < static_cast<size_t>(data2FaceCount); i++) {
         // 重映射 mesh2 面的顶点索引
         std::array<int, 4> faceIndices;
@@ -1914,6 +2070,8 @@ ModelData MergeFluidModelData(const ModelData& data1, const ModelData& data2) {
         newFace.vertexIndices = faceIndices;
         newFace.materialIndex = (data2.faces[i].materialIndex != -1) ? materialIndexMap[data2.faces[i].materialIndex] : -1;
         newFace.faceDirection = data2.faces[i].faceDirection;
+        newFace.tintIndex = data2.faces[i].tintIndex;
+        data2FaceNewIndex[i] = static_cast<int>(mergedData.faces.size());
         mergedData.faces.push_back(newFace);
 
         // 对应的UV面处理
@@ -1923,6 +2081,20 @@ ModelData MergeFluidModelData(const ModelData& data1, const ModelData& data2) {
             uvFaceIndices[j] = uvIndexMap[originalUVIndex];
         }
         mergedData.faces.back().uvIndices = uvFaceIndices;
+    }
+
+    // 叠加层配对:data1 面 1:1 保留;data2 面被包含剔除时配对一并丢弃
+    mergedData.overlayPairs = data1.overlayPairs;
+    for (const auto& pair : data2.overlayPairs) {
+        if (pair.baseFace < 0 || pair.overlayFace < 0 ||
+            pair.baseFace >= data2FaceCount || pair.overlayFace >= data2FaceCount) {
+            continue;
+        }
+        int baseNew = data2FaceNewIndex[pair.baseFace];
+        int overlayNew = data2FaceNewIndex[pair.overlayFace];
+        if (baseNew >= 0 && overlayNew >= 0) {
+            mergedData.overlayPairs.push_back({ baseNew, overlayNew });
+        }
     }
 
     return mergedData;
@@ -2031,8 +2203,20 @@ void MergeModelsDirectly(ModelData& data1, const ModelData& data2,
         
         // 保留面方向
         newFace.faceDirection = face.faceDirection;
+        newFace.tintIndex = face.tintIndex;
         
         data1.faces.push_back(newFace);
+    }
+
+    // 叠加层配对随面索引平移(data2 面整体追加到 data1 之后)
+    if (!data2.overlayPairs.empty()) {
+        const int overlayBaseOffset = static_cast<int>(data1.faces.size()) -
+            static_cast<int>(data2.faces.size());
+        for (auto pair : data2.overlayPairs) {
+            pair.baseFace += overlayBaseOffset;
+            pair.overlayFace += overlayBaseOffset;
+            data1.overlayPairs.push_back(pair);
+        }
     }
 }
 

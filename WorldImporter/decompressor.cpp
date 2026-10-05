@@ -1,19 +1,20 @@
 #include <zlib.h>
 #include <algorithm>
 #include <iostream>
+#include <limits>
 #include "decompressor.h"
 
 namespace {
     // 解压输出的安全上限：避免损坏数据触发无限扩容导致内存耗尽。
-    // 取 64 MiB 与输入大小 1024 倍中的较大者。
-    size_t MaxOutputSize(size_t inputSize) {
-        const size_t hardCap = 64ull * 1024 * 1024;
-        const size_t scaled = inputSize * 1024ull;
-        return (scaled > hardCap) ? scaled : hardCap;
-    }
+    constexpr size_t MaxOutputSize = 64ull * 1024 * 1024;
 
     // 通用 zlib 流式解压：windowBits=15 为 zlib 包装，15+16 为 gzip 包装。
     bool InflateBuffer(const std::vector<char>& chunkData, std::vector<char>& decompressedData, int windowBits) {
+        decompressedData.clear();
+        if (chunkData.empty() || chunkData.size() > std::numeric_limits<uInt>::max()) {
+            return false;
+        }
+
         z_stream strm{};
         if (inflateInit2(&strm, windowBits) != Z_OK) {
             std::cerr << "错误: inflateInit2 初始化失败" << std::endl;
@@ -22,9 +23,6 @@ namespace {
 
         strm.next_in = reinterpret_cast<Bytef*>(const_cast<char*>(chunkData.data()));
         strm.avail_in = static_cast<uInt>(chunkData.size());
-
-        const size_t limit = MaxOutputSize(chunkData.size());
-        decompressedData.clear();
 
         std::vector<char> buffer(256 * 1024);
         int result = Z_OK;
@@ -36,7 +34,7 @@ namespace {
             size_t produced = buffer.size() - strm.avail_out;
 
             if (produced > 0) {
-                if (decompressedData.size() + produced > limit) {
+                if (produced > MaxOutputSize - decompressedData.size()) {
                     result = Z_MEM_ERROR; // 超出安全上限,按失败处理
                     break;
                 }

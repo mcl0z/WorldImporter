@@ -6,7 +6,9 @@
 #include "include/stb_image.h"
 #include "biome.h"
 #include "Fluid.h"
+#include "blocktint.h"
 #include "texture.h"
+#include "Occlusion.h"
 #include <iomanip>
 #include <sstream>
 #include <regex>
@@ -199,37 +201,60 @@ std::string GetBlockAverageColor(int blockId, Block currentBlock, int x, int y, 
     }
 
     char finalColorStr[128];
-    // 检查模型中是否有任何材质需要tint索引(群系着色)
-    bool hasTintIndex = false;
-    short tintIndexValue = -1;
-    
-    // 首先检查当前使用的材质
-    if (!blockModel.materials.empty() && materialIndex >= 0 && materialIndex < blockModel.materials.size()) {
-        tintIndexValue = blockModel.materials[materialIndex].tintIndex;
-        hasTintIndex = (tintIndexValue != -1);
+    // 解析 tint：优先当前使用的材质，取不到再扫其它材质
+    TintResult tint;
+    if (!blockModel.materials.empty() && materialIndex >= 0 && materialIndex < static_cast<int>(blockModel.materials.size())) {
+        const Material& material = blockModel.materials[materialIndex];
+        if (material.tint.on()) {
+            tint = material.tint;
+        }
+        else if (material.tintIndex != -1) {
+            tint = ResolveTint(currentBlock.name, material.tintIndex);
+        }
     }
-    
-    // 如果当前材质不需要着色,检查模型中的所有其他材质
-    if (!hasTintIndex && !blockModel.materials.empty()) {
+    if (!tint.on() && !blockModel.materials.empty()) {
         for (const auto& material : blockModel.materials) {
-            if (material.tintIndex != -1) {
-                hasTintIndex = true;
-                tintIndexValue = material.tintIndex;
+            if (material.tintIndex == -1) continue;
+            TintResult candidate = material.tint.on() ? material.tint
+                                                      : ResolveTint(currentBlock.name, material.tintIndex);
+            if (candidate.on()) {
+                tint = candidate;
                 break;
             }
         }
     }
-    
-    if (hasTintIndex && config.useBiomeColors) {
+
+    // 固定色与群系无关，始终生效；群系类仍受 useBiomeColors 开关控制
+    const bool applyTint = tint.on() && (tint.kind == TintKind::Fixed || config.useBiomeColors);
+    if (applyTint) {
         float textureR, textureG, textureB;
         sscanf(textureAverage.c_str(), "%f %f %f", &textureR, &textureG, &textureB);
-        uint32_t hexColor = Biome::GetBiomeColor(x, y, z,tintIndexValue == 2 ? BiomeColorType::Water : BiomeColorType::Foliage);
-        float biomeR = ((hexColor >> 16) & 0xFF) / 255.0f;
-        float biomeG = ((hexColor >> 8) & 0xFF) / 255.0f;
-        float biomeB = (hexColor & 0xFF) / 255.0f;
-        float finalR = biomeR * textureR;
-        float finalG = biomeG * textureG;
-        float finalB = biomeB * textureB;
+        float tintR, tintG, tintB;
+        if (tint.kind == TintKind::Fixed) {
+            tintR = ((tint.color >> 16) & 0xFF) / 255.0f;
+            tintG = ((tint.color >> 8) & 0xFF) / 255.0f;
+            tintB = (tint.color & 0xFF) / 255.0f;
+        }
+        else {
+            BiomeColorType type = BiomeColorType::Foliage;
+            switch (tint.kind) {
+            case TintKind::Grass: type = BiomeColorType::Grass; break;
+            case TintKind::Foliage: type = BiomeColorType::Foliage; break;
+            case TintKind::DryFoliage: type = BiomeColorType::DryFoliage; break;
+            case TintKind::Water: type = BiomeColorType::Water; break;
+            case TintKind::WaterFog: type = BiomeColorType::WaterFog; break;
+            case TintKind::Fog: type = BiomeColorType::Fog; break;
+            case TintKind::Sky: type = BiomeColorType::Sky; break;
+            default: break;
+            }
+            uint32_t hexColor = Biome::GetBiomeColor(x, y, z, type);
+            tintR = ((hexColor >> 16) & 0xFF) / 255.0f;
+            tintG = ((hexColor >> 8) & 0xFF) / 255.0f;
+            tintB = (hexColor & 0xFF) / 255.0f;
+        }
+        float finalR = tintR * textureR;
+        float finalG = tintG * textureG;
+        float finalB = tintB * textureB;
 
         // 根据配置的小数位数格式化最终颜色字符串
         std::ostringstream oss;
@@ -297,7 +322,10 @@ namespace {
         if (currentBlock.IsPureFluid()) {
             type = FLUID;
         }
-        else if (!currentBlock.air) {
+        // LOD 的"实心"判定：与剔除一致，使用运行时自建遮挡表（原 solids 名单的等价物）
+        // 注意：不能使用 currentBlock.air（只覆盖 air/cave_air/void_air），
+        // 否则高草、十字模型等非遮挡方块会被误判为 SOLID。
+        else if (GetBlockOcclusion(id).occludes) {
             type = SOLID;
         }
         else {

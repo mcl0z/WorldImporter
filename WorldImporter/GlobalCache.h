@@ -12,7 +12,6 @@
 class JarReader;
 
 // 外部声明
-extern std::unordered_set<std::string> solidBlocks;
 extern std::unordered_set<std::string> fluidBlocks;
 
 // ========= 全局缓存声明 =========
