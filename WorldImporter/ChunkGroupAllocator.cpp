@@ -19,7 +19,9 @@ namespace ChunkGroupAllocator {
         int sectionYStart, int sectionYEnd)
     {
         g_chunkGroups.clear(); // 清空之前的分组
-        int partitionSize = config.partitionSize;
+        // A single-file export must not serialize a whole huge partition on
+        // one worker. Internal 2x2 work units do not change output file layout.
+        int partitionSize = config.exportFullModel ? std::min(2, config.partitionSize) : config.partitionSize;
         int groupsX = ((chunkXEnd - chunkXStart) / partitionSize) + 1;
         int groupsZ = ((chunkZEnd - chunkZStart) / partitionSize) + 1;
         g_chunkGroups.reserve(groupsX * groupsZ);
@@ -119,10 +121,11 @@ namespace ChunkGroupAllocator {
             currentBatch.chunkXStart = std::min(currentBatch.chunkXStart, groupStartX);
             currentBatch.chunkZStart = std::min(currentBatch.chunkZStart, groupStartZ);
             // 最后一组可能不足 partitionSize，不能把批次边界扩到选择区域外。
-            currentBatch.chunkXEnd   = std::max(currentBatch.chunkXEnd,
-                std::min(chunkXEnd, groupStartX + config.partitionSize - 1));
-            currentBatch.chunkZEnd   = std::max(currentBatch.chunkZEnd,
-                std::min(chunkZEnd, groupStartZ + config.partitionSize - 1));
+            // Actual task bounds also cover internally subdivided full-model groups.
+            for (const auto& task : group.tasks) {
+                currentBatch.chunkXEnd = std::max(currentBatch.chunkXEnd, task.chunkX);
+                currentBatch.chunkZEnd = std::max(currentBatch.chunkZEnd, task.chunkZ);
+            }
 
             // g_chunkGroups 在批次生成后只保留数量统计，任务向量直接搬入 Batch。
             currentBatch.groups.push_back(std::move(group));

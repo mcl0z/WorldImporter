@@ -214,6 +214,7 @@ void RegionModelExporter::ExportModels(const string& outputName) {
                                 sectionYStart, sectionYEnd);
         globalPaletteFrozen.store(true, std::memory_order_release);
         blockstateCachesFrozen.store(true, std::memory_order_release);
+        ChunkGenerator::PrepareBlockNames();
         size_t afterLoad = CountLoadedChunks();
         size_t newlyLoaded = (afterLoad > beforeLoad) ? (afterLoad - beforeLoad) : 0;
 
@@ -260,14 +261,18 @@ void RegionModelExporter::ExportModels(const string& outputName) {
         // 重置当前批次的完成任务计数
         std::atomic<size_t> batchCompletedTasks{0};
 
-        // Python 自动模式根据可用内存和 CPU 选择 1~4 个线程；手写/旧配置
-        // 默认仍为 1。相关模型、CTM、纹理和调色板缓存均已改为并发只读或加锁。
+        // Automatic mode chooses workers from CPU and memory (up to 32).
+        // Manual/old configs still default to 1; actual concurrency is also
+        // limited by the number of independently schedulable groups.
         const unsigned numThreads = std::max<unsigned>(1,
             std::min<unsigned>(static_cast<unsigned>(config.modelThreads),
                                static_cast<unsigned>(std::max<size_t>(1, groupsInBatch.size()))));
         // 通知去重层限制内部并行度,避免线程数量爆炸
         SetModelThreadBudget(static_cast<int>(numThreads));
         std::atomic<size_t> groupIndex{0};
+        // Full exports merge in task order after joining. Completion-order
+        // merging made coincident-face selection/GreedyMesh depend on timing.
+        std::vector<ModelData> completedModels(config.exportFullModel ? groupsInBatch.size() : 0);
         std::vector<std::thread> threads;
         threads.reserve(numThreads);
 
@@ -333,7 +338,7 @@ void RegionModelExporter::ExportModels(const string& outputName) {
                         for (const auto& mat : groupModel.materials)
                             if (mat.tintIndex != -1) localTints[mat.name] = mat.tintIndex;
                         if (config.exportFullModel) {
-                            mergeToFinalModel(std::move(groupModel));
+                            completedModels[idx] = std::move(groupModel);
                         } else {
                             // 去重处理
                             {
@@ -369,6 +374,15 @@ void RegionModelExporter::ExportModels(const string& outputName) {
         }
         for (auto& t : threads) {
             if (t.joinable()) t.join();
+        }
+
+        if (config.exportFullModel) {
+            for (auto& model : completedModels) {
+                if (model.vertices.empty()) continue;
+                mergeToFinalModel(std::move(model));
+                // Release each source before merging the next one.
+                model = ModelData{};
+            }
         }
 
         // ---------- 卸载当前批次 ----------
@@ -414,6 +428,9 @@ void RegionModelExporter::ExportModels(const string& outputName) {
     Biome::ExportToPNG("fog.png", BiomeColorType::Fog);
     Biome::ExportToPNG("sky.png", BiomeColorType::Sky);
     }
+    // Group workers have joined. The final mesh is now the only task; restore
+    // internal CPU parallelism instead of retaining the former outer budget.
+    SetModelThreadBudget(1);
     // 最终导出处理
     if (config.exportFullModel && !finalMergedModel.vertices.empty()) {
         { CrafterLog::StageTimer t("顶点去重");

@@ -30,6 +30,23 @@
 using namespace std;
 using namespace std::chrono;
 
+namespace {
+    // Indexed by the frozen global palette; rebuilt between batches only.
+    struct PreparedBlockName { std::string ns, local, full; };
+    std::vector<PreparedBlockName> preparedBlockNames;
+}
+
+void ChunkGenerator::PrepareBlockNames() {
+    preparedBlockNames.clear();
+    preparedBlockNames.reserve(globalBlockPalette.size());
+    for (const Block& block : globalBlockPalette) {
+        const std::string full = block.GetModifiedNameWithNamespace();
+        const size_t colon = full.find(':');
+        preparedBlockNames.push_back({block.GetNamespace(),
+            colon == std::string::npos ? full : full.substr(colon + 1), full});
+    }
+}
+
 static const std::unordered_map<FaceType, int> neighborIndexMap = {
         {FaceType::DOWN, 1}, {FaceType::UP, 0}, {FaceType::NORTH, 4},
         {FaceType::SOUTH, 5}, {FaceType::WEST, 2}, {FaceType::EAST, 3}
@@ -93,14 +110,21 @@ static bool IsFullCubeModel(const ModelData& model) {
     return true;
 }
 
-void ChunkGenerator::ProcessBlockForModel(ModelData& chunkModel, int x, int y, int z) {
+void ChunkGenerator::ProcessBlockForModel(ModelData& chunkModel, int x, int y, int z,
+    std::unordered_map<std::string, int>* materialLookup) {
     std::array<bool, 6> neighbors; // 邻居是否为空气
     std::array<int, 10> fluidLevels; // 流体液位
 
-    int id = GetBlockIdWithNeighbors(x, y, z, neighbors.data(), fluidLevels.data());
+    // Most sections contain large air volumes. Do not look up six neighbors,
+    // fluid data or model strings for those cells.
+    int id = GetBlockId(x, y, z);
     Block currentBlock = GetBlockById(id);
-    string blockName = currentBlock.GetModifiedNameWithNamespace();
-    if (blockName == "minecraft:air") return;
+    if (currentBlock.name == "minecraft:air") return;
+    GetBlockIdWithNeighbors(x, y, z, neighbors.data(), fluidLevels.data());
+    const PreparedBlockName* prepared = globalPaletteFrozen.load(std::memory_order_acquire) &&
+        id >= 0 && static_cast<size_t>(id) < preparedBlockNames.size()
+        ? &preparedBlockNames[id] : nullptr;
+    string blockName = prepared ? prepared->full : currentBlock.GetModifiedNameWithNamespace();
 
     if (config.exportLightBlockOnly)
     {
@@ -128,12 +152,14 @@ void ChunkGenerator::ProcessBlockForModel(ModelData& chunkModel, int x, int y, i
         if (GetSkyLight(x, y, z) == -1) return;
     }
 
-    string ns = currentBlock.GetNamespace();
+    string ns = prepared ? prepared->ns : currentBlock.GetNamespace();
 
     // 标准化方块名称(去掉命名空间,处理状态)
-    size_t colonPos = blockName.find(':');
-    if (colonPos != string::npos) {
-        blockName = blockName.substr(colonPos + 1);
+    if (prepared) {
+        blockName = prepared->local;
+    } else {
+        size_t colonPos = blockName.find(':');
+        if (colonPos != string::npos) blockName = blockName.substr(colonPos + 1);
     }
 
     ModelData blockModel;
@@ -142,7 +168,7 @@ void ChunkGenerator::ProcessBlockForModel(ModelData& chunkModel, int x, int y, i
     bool specialHandled = TryGenerateBbsModel(blockEntityNbt, x, y, z, blockModel);
     if (!specialHandled) {
         specialHandled = SpecialBlock::TryGenerateCreateBlockModel(
-        currentBlock.GetModifiedNameWithNamespace(), x, y, z,
+        prepared ? prepared->full : currentBlock.GetModifiedNameWithNamespace(), x, y, z,
             blockEntityNbt, blockModel);
     }
     if (specialHandled) {
@@ -274,22 +300,15 @@ void ChunkGenerator::ProcessBlockForModel(ModelData& chunkModel, int x, int y, i
         }
     }
 
-    // 重建面数据(使用新的Face结构体)
-    ModelData filteredModel;
-    filteredModel.faces.reserve(validFaceIndices.size());
-
-    for (int faceIdx : validFaceIndices) {
-        // 直接复制Face结构体
-        filteredModel.faces.push_back(blockModel.faces[faceIdx]);
+    // Hidden blocks contribute no geometry. Previously their unused vertices,
+    // UVs and materials still reached the final mesh and global sort.
+    if (validFaceIndices.empty()) return;
+    // Indices are ascending, so compact faces in place without copying the
+    // already-owned vertex/UV/material arrays a second time.
+    for (size_t i = 0; i < validFaceIndices.size(); ++i) {
+        blockModel.faces[i] = blockModel.faces[validFaceIndices[i]];
     }
-
-    // 顶点和UV数据保持不变(后续合并时会去重)
-    filteredModel.vertices = blockModel.vertices;
-    filteredModel.uvCoordinates = blockModel.uvCoordinates;
-    filteredModel.materials = blockModel.materials;
-
-    // 使用过滤后的模型
-    blockModel = std::move(filteredModel);
+    blockModel.faces.resize(validFaceIndices.size());
 
     ApplyPositionOffset(blockModel, x, y, z);
 
@@ -298,13 +317,14 @@ void ChunkGenerator::ProcessBlockForModel(ModelData& chunkModel, int x, int y, i
         chunkModel = blockModel;
     }
     else {
-        MergeModelsDirectly(chunkModel, blockModel);
+        MergeModelsDirectly(chunkModel, blockModel, materialLookup);
     }
 }
 
 ModelData ChunkGenerator::GenerateChunkModel(int chunkX, int sectionY, int chunkZ) {
-    // 从RegionModelExporter.cpp中复制GenerateChunkModel的实现
+    // Reuse the material index across thousands of block appends.
     ModelData chunkModel;
+    std::unordered_map<std::string, int> materialLookup;
     int xStart = config.minX;
     int xEnd = config.maxX;
     int yStart = config.minY;
@@ -327,7 +347,7 @@ ModelData ChunkGenerator::GenerateChunkModel(int chunkX, int sectionY, int chunk
                 if (x < xStart || x > xEnd || y < yStart || y > yEnd || z < zStart || z > zEnd) {
                     continue; // 跳过不在导出区域内的方块
                 }
-                ProcessBlockForModel(chunkModel, x, y, z);
+                ProcessBlockForModel(chunkModel, x, y, z, &materialLookup);
             }
         }
     }
@@ -373,8 +393,8 @@ ModelData ChunkGenerator::GenerateChunkModel(int chunkX, int sectionY, int chunk
 }
 
 ModelData ChunkGenerator::GenerateLODChunkModel(int chunkX, int sectionY, int chunkZ, float lodSize) {
-    // 从RegionModelExporter.cpp中复制GenerateLODChunkModel的实现
     ModelData chunkModel;
+    std::unordered_map<std::string, int> materialLookup;
     int xStart = config.minX;
     int xEnd = config.maxX;
     int yStart = config.minY;
@@ -411,29 +431,22 @@ ModelData ChunkGenerator::GenerateLODChunkModel(int chunkX, int sectionY, int ch
                     std::string blockName = currentBlock.GetModifiedNameWithNamespace();
 
                     if (lodBlockSize == 1 && currentBlock.HasFluid() && !currentBlock.IsPureFluid()) {
-                        ProcessBlockForModel(chunkModel, x, y, z);
+                        ProcessBlockForModel(chunkModel, x, y, z, &materialLookup);
                         continue;
                     }
                     
                     // 仅在LOD级别为1时启用原始模型功能
                     if (lodBlockSize == 1 && LODManager::ShouldUseOriginalModel(blockName)) {
-                        ProcessBlockForModel(chunkModel, x, y, z);
+                        ProcessBlockForModel(chunkModel, x, y, z, &materialLookup);
                         continue; // 跳过LOD方块生成
                     }
                 }
                 
+                if (type != SOLID && type != FLUID) continue;
                 std::vector<std::string> color = LODManager::GetBlockColor(x, y, z, id, type);
                 level = (lodBlockSize - (level));
-                // 如果块类型是固体
-                if (type == SOLID) {
-                    ModelData solidBox = LODManager::GenerateBox(x, y, z, lodBlockSize, level, color);
-                    MergeModelsDirectly(chunkModel, solidBox);
-                }
-                if (type ==FLUID)
-                {
-                    ModelData solidBox = LODManager::GenerateBox(x, y, z, lodBlockSize, level, color);
-                    MergeModelsDirectly(chunkModel, solidBox);
-                }
+                ModelData solidBox = LODManager::GenerateBox(x, y, z, lodBlockSize, level, color);
+                MergeModelsDirectly(chunkModel, solidBox, &materialLookup);
             }
         }
     }

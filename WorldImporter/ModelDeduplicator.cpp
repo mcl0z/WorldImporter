@@ -295,20 +295,15 @@ void ModelDeduplicator::DeduplicateFaces(ModelData& data) {
         keys.push_back(FaceKey{ sorted, matIndex });
     }
 
-    // 使用预分配容量的 unordered_map 来统计每个 FaceKey 的出现次数
-    std::unordered_map<FaceKey, int, FaceKeyHasher> freq;
-    freq.reserve(faceCountNum);
-    for (const auto& key : keys) {
-        freq[key]++;
-    }
-
     // 第二次遍历:每个重合面键保留首个面。
     // 旧代码仅保留 freq==1，两个完全重合的面会被「全部删除」；玻璃、
     // 玻璃板、多元素模型及水面等经常出现这类重复，导致随机缺面甚至整块消失。
     // ChunkGenerator 已在方块邻居层剔除真正的内部面，此处只能安全地去重，
     // 不能把所有副本都删除。
     std::unordered_set<FaceKey, FaceKeyHasher> kept;
-    kept.reserve(freq.size());
+    // Only first-occurrence membership is needed; counting every key in a
+    // second hash table doubled hashing, allocations and peak memory.
+    kept.reserve(faceCountNum);
     std::vector<Face> newFaces;
     newFaces.reserve(data.faces.size());
 

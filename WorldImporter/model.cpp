@@ -1928,7 +1928,8 @@ ModelData MergeFluidModelData(const ModelData& data1, const ModelData& data2) {
     return mergedData;
 }
 
-void MergeModelsDirectly(ModelData& data1, const ModelData& data2) {
+void MergeModelsDirectly(ModelData& data1, const ModelData& data2,
+    std::unordered_map<std::string, int>* materialLookup) {
     // 优化:预分配并按倍增扩容,减少内存重分配
     {
         size_t oldV = data1.vertices.size();
@@ -1986,9 +1987,13 @@ void MergeModelsDirectly(ModelData& data1, const ModelData& data2) {
         data2.uvCoordinates.begin(), data2.uvCoordinates.end());
 
     // 材质索引映射
-    std::unordered_map<std::string, int> materialNameMap;
-    for (size_t i = 0; i < data1.materials.size(); ++i) {
-        materialNameMap[data1.materials[i].name] = static_cast<int>(i);
+    std::unordered_map<std::string, int> temporaryLookup;
+    auto& materialNameMap = materialLookup ? *materialLookup : temporaryLookup;
+    if (materialNameMap.empty()) {
+        materialNameMap.reserve(data1.materials.size() + data2.materials.size());
+        for (size_t i = 0; i < data1.materials.size(); ++i) {
+            materialNameMap[data1.materials[i].name] = static_cast<int>(i);
+        }
     }
 
     std::vector<int> materialIndexMap(data2.materials.size(), -1);
@@ -1997,7 +2002,8 @@ void MergeModelsDirectly(ModelData& data1, const ModelData& data2) {
         if (it != materialNameMap.end()) {
             materialIndexMap[i] = it->second;
         } else {
-            materialIndexMap[i] = data1.materials.size();
+            materialIndexMap[i] = static_cast<int>(data1.materials.size());
+            materialNameMap.emplace(data2.materials[i].name, materialIndexMap[i]);
             data1.materials.push_back(data2.materials[i]);
         }
     }

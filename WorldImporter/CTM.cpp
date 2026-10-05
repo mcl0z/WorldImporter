@@ -47,6 +47,19 @@ static std::mutex g_ctmTexCacheMutex;
 
 static bool g_hasCtmRules = false;
 
+// CTM can be supplied entirely by mcmeta, without OptiFine properties.
+static bool IsSupportedMcmetaCtm(const nlohmann::json& metadata) {
+    if (!metadata.is_object() || !metadata.contains("ctm") || !metadata["ctm"].is_object()) return false;
+    const auto& ctm = metadata["ctm"];
+    if (!ctm.contains("ctm_version") || !ctm["ctm_version"].is_number_integer() ||
+        ctm["ctm_version"] != 1 || !ctm.contains("type") || !ctm["type"].is_string() ||
+        !ctm.contains("textures") || !ctm["textures"].is_array() || ctm["textures"].empty() ||
+        !ctm["textures"][0].is_string() || ctm["textures"][0].get<std::string>().empty()) return false;
+    std::string type = ctm["type"].get<std::string>();
+    std::transform(type.begin(), type.end(), type.begin(), [](unsigned char c) { return std::tolower(c); });
+    return type == "ctm";
+}
+
 // ========= 辅助:获取 exe 目录 =========
 static std::string GetExeDir() {
     wchar_t buffer[MAX_PATH];
@@ -308,6 +321,13 @@ void InitializeCtmRules() {
     }
 
     g_hasCtmRules = !g_ctmRules.empty();
+    for (const auto& entry : GlobalCache::mcmetaIndex) {
+        auto it = GlobalCache::mcmetaCache.find(entry.second);
+        if (it != GlobalCache::mcmetaCache.end() && IsSupportedMcmetaCtm(it->second)) {
+            g_hasCtmRules = true;
+            break;
+        }
+    }
     if (g_hasCtmRules) {
         std::cout << "[CTM] Loaded " << g_ctmRules.size() << " CTM rules "
             << "(byBlock=" << g_rulesByBlock.size()
@@ -331,13 +351,43 @@ static bool MatchBlockName(const std::string& pattern, const std::string& blockN
 const CtmRule* FindCtmRule(const std::string& blockNs,
     const std::string& blockName,
     const std::string& textureNs,
-    const std::string& textureName) {
+    const std::string& textureName,
+    const std::string& faceName) {
+    // Filter candidates before selecting one, not after the first hit.
+    auto eligible = [&](size_t idx) {
+        const auto& rule = g_ctmRules[idx];
+        if (rule.method == CtmMethod::Overlay || rule.method == CtmMethod::OverlayHorizontal) return false;
+        if (!faceName.empty() && !CtmRuleMatchesFace(rule, faceName)) return false;
+        if (!rule.matchBlocks.empty()) {
+            bool matched = false;
+            for (const auto& block : rule.matchBlocks) {
+                size_t colon = block.find(':');
+                std::string bns = colon == std::string::npos ? "minecraft" : block.substr(0, colon);
+                std::string name = colon == std::string::npos ? block : block.substr(colon + 1);
+                if (bns == blockNs && MatchBlockName(name, blockName)) { matched = true; break; }
+            }
+            if (!matched) return false;
+        }
+        if (!rule.matchTiles.empty()) {
+            bool matched = false;
+            size_t slash = textureName.find_last_of('/');
+            std::string shortName = slash == std::string::npos ? textureName : textureName.substr(slash + 1);
+            for (size_t i = 0; i < rule.matchTiles.size(); ++i) {
+                if (rule.matchTileNamespaces[i] == textureNs &&
+                    (rule.matchTiles[i] == textureName || rule.matchTiles[i] == shortName)) {
+                    matched = true; break;
+                }
+            }
+            if (!matched) return false;
+        }
+        return true;
+    };
     // 优先按 matchTiles 匹配(更具体),再按 matchBlocks
     {
         auto it = g_rulesByTile.find(textureNs + ":" + textureName);
         if (it != g_rulesByTile.end()) {
             for (size_t idx : it->second)
-                if (g_ctmRules[idx].method != CtmMethod::Overlay) return &g_ctmRules[idx];
+                if (eligible(idx)) return &g_ctmRules[idx];
         }
         // matchTiles 可能只写了短名(如 "glass"),textureName 可能是 "block/glass"
         // 尝试取 textureName 末尾段
@@ -347,7 +397,7 @@ const CtmRule* FindCtmRule(const std::string& blockNs,
             auto it2 = g_rulesByTile.find(textureNs + ":" + shortName);
             if (it2 != g_rulesByTile.end()) {
                 for (size_t idx : it2->second)
-                    if (g_ctmRules[idx].method != CtmMethod::Overlay) return &g_ctmRules[idx];
+                    if (eligible(idx)) return &g_ctmRules[idx];
             }
         }
     }
@@ -355,7 +405,7 @@ const CtmRule* FindCtmRule(const std::string& blockNs,
         auto it = g_rulesByBlock.find(blockNs + ":" + blockName);
         if (it != g_rulesByBlock.end()) {
             for (size_t idx : it->second)
-                if (g_ctmRules[idx].method != CtmMethod::Overlay) return &g_ctmRules[idx];
+                if (eligible(idx)) return &g_ctmRules[idx];
         }
         // 通配匹配 _stained_glass 等(只在少量通配规则中后缀匹配)
         for (const auto& wc : g_wildcardBlockRules) {
@@ -363,7 +413,7 @@ const CtmRule* FindCtmRule(const std::string& blockNs,
             const std::string& pattern = std::get<1>(wc);
             size_t idx = std::get<2>(wc);
             if (wns != blockNs) continue;
-            if (MatchBlockName(pattern, blockName) && g_ctmRules[idx].method != CtmMethod::Overlay)
+            if (MatchBlockName(pattern, blockName) && eligible(idx))
                 return &g_ctmRules[idx];
         }
     }
@@ -664,18 +714,40 @@ static bool GetMcmetaCtmTexture(const std::string& ns, const std::string& textur
         metadata = metadataIt->second;
     }
 
-    if (!metadata.contains("ctm") || !metadata["ctm"].is_object()) return false;
+    if (!IsSupportedMcmetaCtm(metadata)) return false;
     const auto& ctm = metadata["ctm"];
-    if (ctm.value("ctm_version", 0) != 1 || ctm.value("type", "") != "CTM" ||
-        !ctm.contains("textures") || !ctm["textures"].is_array() || ctm["textures"].empty()) {
-        return false;
-    }
 
     std::string texture = ctm["textures"][0].get<std::string>();
     size_t colon = texture.find(':');
     outNs = colon == std::string::npos ? ns : texture.substr(0, colon);
     outPath = colon == std::string::npos ? texture : texture.substr(colon + 1);
     return true;
+}
+
+// Share numeric tile lookup between whole-tile and compact baking.
+static bool LoadNumberedCtmTile(const std::string& ns, const std::string& baseDir, int tile,
+    std::vector<unsigned char>& pixels, int& width, int& height) {
+    char padded[16];
+    snprintf(padded, sizeof(padded), "%02d", tile);
+    return LoadCtmTilePixels(ns, baseDir + "/" + padded, pixels, width, height) ||
+        LoadCtmTilePixels(ns, baseDir + "/" + std::to_string(tile), pixels, width, height);
+}
+
+// Nearest-neighbour sampling in normalized submap coordinates. Each source
+// keeps its own dimensions; never index a small tile with a larger tile's stride.
+static void CopyCtmSubmap(const std::vector<unsigned char>& source, int sourceWidth,
+    int sourceHeight, int columns, int rows, int column, int row,
+    std::vector<unsigned char>& output, int outputWidth, int half,
+    int destinationX, int destinationY) {
+    for (int y = 0; y < half; ++y) {
+        int sy = static_cast<int>((static_cast<int64_t>(row) * half + y) * sourceHeight / (rows * static_cast<int64_t>(half)));
+        for (int x = 0; x < half; ++x) {
+            int sx = static_cast<int>((static_cast<int64_t>(column) * half + x) * sourceWidth / (columns * static_cast<int64_t>(half)));
+            size_t src = (static_cast<size_t>(sy) * sourceWidth + sx) * 4;
+            size_t dst = (static_cast<size_t>(destinationY + y) * outputWidth + destinationX + x) * 4;
+            std::copy_n(source.data() + src, 4, output.data() + dst);
+        }
+    }
 }
 
 // 确保目录存在(支持中文路径)
@@ -750,28 +822,11 @@ static CtmTexInfo GetOrCreateTileTexInfo(const std::string& ns, const std::strin
         if (it != g_ctmTexCache.end()) return it->second; // 双重检查
     }
     std::string fullPath = BuildCtmTextureFilePath(ns, baseDir, fileName);
-    std::wstring wfull = string_to_wstring(fullPath);
-    bool needSave = GetFileAttributesW(wfull.c_str()) == INVALID_FILE_ATTRIBUTES;
-    bool saved = !needSave;
-    if (needSave) {
-        std::vector<unsigned char> px; int w = 0, h = 0;
-        // OptiFine 资源包 tile 命名有两种风格: 两位数字(01.png) 或 一位数字(1.png)
-        // 先试两位, 再试一位, 都找不到再跳过
-        bool loaded = false;
-        std::string tileRel2 = baseDir + "/" + std::string(tileNameBuf);  // 两位
-        if (LoadCtmTilePixels(ns, tileRel2, px, w, h)) {
-            loaded = true;
-        }
-        if (!loaded) {
-            std::string tileRel1 = baseDir + "/" + std::to_string(tileIndex);  // 一位
-            if (LoadCtmTilePixels(ns, tileRel1, px, w, h)) {
-                loaded = true;
-            }
-        }
-        if (loaded) {
-            saved = stbi_write_png(fullPath.c_str(), w, h, 4, px.data(), w * 4) != 0;
-        }
-    }
+    // The in-process cache avoids repeated writes; an old output file is not
+    // evidence that the currently selected resource pack has been baked.
+    std::vector<unsigned char> px; int w = 0, h = 0;
+    bool saved = LoadNumberedCtmTile(ns, baseDir, tileIndex, px, w, h) &&
+        stbi_write_png(fullPath.c_str(), w, h, 4, px.data(), w * 4) != 0;
     info.saved = saved;
     if (info.saved) {
         std::lock_guard<std::mutex> lk2(g_ctmTexCacheMutex);
@@ -819,6 +874,7 @@ static int CompactGetSpriteIndex(int quadrantIndex, int connections) {
 static CtmTexInfo GetOrCreateCompactTexInfo(const std::string& ns, const std::string& baseDir,
     const FaceLayout& L, int x, int y, int z, const std::string& curBaseName,
     const CtmRule& rule) {
+    if (rule.tiles.size() < 5) return {}; // Compact requires all five sprite roles.
     // 4 个方向偏移: directions[0]=左, [1]=下, [2]=右, [3]=上
     const std::array<int,3>* dirs[4] = { &L.left, &L.down, &L.right, &L.up };
 
@@ -886,11 +942,10 @@ static CtmTexInfo GetOrCreateCompactTexInfo(const std::string& ns, const std::st
     }
 
     std::string fullPath = BuildCtmTextureFilePath(ns, baseDir, fileName);
-    std::wstring wfull = string_to_wstring(fullPath);
-    bool needSave = GetFileAttributesW(wfull.c_str()) == INVALID_FILE_ATTRIBUTES;
-    bool saved = !needSave;
+    bool saved = false;
 
-    if (needSave) {
+    // Rebuild once per process so previous packs/resolutions cannot mask errors.
+    {
         // 读取 4 张需要的 tile 像素
         // 缓存到局部 map 避免重复加载
         std::unordered_map<int, std::pair<std::vector<unsigned char>, std::pair<int, int>>> tilePx;
@@ -898,19 +953,21 @@ static CtmTexInfo GetOrCreateCompactTexInfo(const std::string& ns, const std::st
         for (int i = 0; i < 4; ++i) {
             int tn = tileSel[i];
             if (tilePx.count(tn)) continue;
-            std::string tileRel = baseDir + "/" + std::to_string(tn);
             std::vector<unsigned char> px; int w = 0, h = 0;
-            if (!LoadCtmTilePixels(ns, tileRel, px, w, h) || w != h) {
+            if (!LoadNumberedCtmTile(ns, baseDir, tn, px, w, h) || w != h) {
                 ok = false;
                 break;
             }
             tilePx[tn] = { px, {w, h} };
         }
         if (ok) {
-            // 取 tile 尺寸(假设所有 tile 同尺寸且为正方形)
-            int tw = tilePx[tileSel[0]].second.first;
+            // Preserve the highest input resolution. An even output permits
+            // four complete quadrants, including 1x1 and odd-sized source tiles.
+            int tw = 2;
+            for (const auto& tile : tilePx) tw = std::max(tw, tile.second.second.first);
+            tw += tw % 2;
             int half = tw / 2;
-            int outW = tw, outH = tw; // 合成图与 tile 同尺寸
+            int outW = tw, outH = tw;
             std::vector<unsigned char> out((size_t)outW * outH * 4, 0);
 
             // 4 象限在合成图和 tile 中的位置(象限索引: 0=TL 1=BL 2=BR 3=TR)
@@ -924,17 +981,8 @@ static CtmTexInfo GetOrCreateCompactTexInfo(const std::string& ns, const std::st
             for (int i = 0; i < 4; ++i) {
                 auto& tp = tilePx[tileSel[i]];
                 const std::vector<unsigned char>& px = tp.first;
-                int w = tp.second.first;
-                for (int yy = 0; yy < half; ++yy) {
-                    for (int xx = 0; xx < half; ++xx) {
-                        int srcIdx = ((qy0[i] + yy) * w + (qx0[i] + xx)) * 4;
-                        int dstIdx = ((qy0[i] + yy) * outW + (qx0[i] + xx)) * 4;
-                        out[dstIdx + 0] = px[srcIdx + 0];
-                        out[dstIdx + 1] = px[srcIdx + 1];
-                        out[dstIdx + 2] = px[srcIdx + 2];
-                        out[dstIdx + 3] = px[srcIdx + 3];
-                    }
-                }
+                CopyCtmSubmap(px, tp.second.first, tp.second.second, 2, 2,
+                    qx0[i] / half, qy0[i] / half, out, outW, half, qx0[i], qy0[i]);
             }
             saved = stbi_write_png(fullPath.c_str(), outW, outH, 4, out.data(), outW * 4) != 0;
         }
@@ -1009,40 +1057,37 @@ static CtmTexInfo GetOrCreateMcmetaCtmTexInfo(const std::string& ns,
         return info;
     }
 
-    int half = baseW / 2;
-    std::vector<unsigned char> output(static_cast<size_t>(baseW) * baseH * 4);
+    int outputWidth = std::max(2, baseW + baseW % 2);
+    int half = outputWidth / 2;
+    std::vector<unsigned char> output(static_cast<size_t>(outputWidth) * outputWidth * 4);
     const int destinationX[4] = { 0, half, half, 0 };
     const int destinationY[4] = { half, half, 0, 0 };
     for (int quadrant = 0; quadrant < 4; ++quadrant) {
         int submap = submaps[quadrant];
         const std::vector<unsigned char>* source = nullptr;
-        int sourceWidth = 0, sourceX = 0, sourceY = 0;
+        int sourceWidth = 0, columns = 0, column = 0, row = 0;
         if (submap >= 16) {
             source = &basePixels;
             sourceWidth = baseW;
             int baseQuadrant = submap - 16;
-            sourceX = (baseQuadrant % 2) * half;
-            sourceY = (baseQuadrant / 2) * half;
+            columns = 2;
+            column = baseQuadrant % 2;
+            row = baseQuadrant / 2;
         }
         else {
             source = &ctmPixels;
             sourceWidth = ctmW;
-            sourceX = (submap % 4) * half;
-            sourceY = (submap / 4) * half;
+            columns = 4;
+            column = submap % 4;
+            row = submap / 4;
         }
 
-        for (int yy = 0; yy < half; ++yy) {
-            for (int xx = 0; xx < half; ++xx) {
-                size_t src = (static_cast<size_t>(sourceY + yy) * sourceWidth + sourceX + xx) * 4;
-                size_t dst = (static_cast<size_t>(destinationY[quadrant] + yy) * baseW +
-                    destinationX[quadrant] + xx) * 4;
-                std::copy_n(source->data() + src, 4, output.data() + dst);
-            }
-        }
+        CopyCtmSubmap(*source, sourceWidth, sourceWidth, columns, columns, column, row,
+            output, outputWidth, half, destinationX[quadrant], destinationY[quadrant]);
     }
 
     std::string fullPath = BuildCtmTextureFilePath(ns, baseDir, signature);
-    info.saved = stbi_write_png(fullPath.c_str(), baseW, baseH, 4, output.data(), baseW * 4) != 0;
+    info.saved = stbi_write_png(fullPath.c_str(), outputWidth, outputWidth, 4, output.data(), outputWidth * 4) != 0;
     if (info.saved) {
         std::lock_guard<std::mutex> lock(g_ctmTexCacheMutex);
         g_ctmTexCache[cacheId] = info;
@@ -1322,24 +1367,29 @@ void ApplyCtmToBlockModel(ModelData& model,
     // model 内的 CTM 材质名 -> materialIndex
     std::unordered_map<std::string, int> localCtmMatIndex;
     std::vector<PendingOverlayFace> pendingOverlays;
-    auto getOrAddMaterial = [&](const CtmTexInfo& info) -> int {
-        auto it = localCtmMatIndex.find(info.materialName);
+    auto getOrAddMaterial = [&](const CtmTexInfo& info, const Material& source, int tintIndex) -> int {
+        // Preserve the base material identifier for Blender's classification.
+        // The baked tile path remains independent of the material/tint identity.
+        std::string name = source.name + "@ctm/" + info.materialName;
+        if (tintIndex != -1) name += "@t" + std::to_string(tintIndex);
+        auto it = localCtmMatIndex.find(name);
         if (it != localCtmMatIndex.end()) return it->second;
         Material m;
-        m.name = info.materialName;
+        m.name = name;
         m.texturePath = info.texturePath;
-        m.tintIndex = -1;
+        m.tintIndex = static_cast<int8_t>(tintIndex);
         m.type = NORMAL;
         m.aspectRatio = 1.0f;
         int idx = (int)model.materials.size();
         model.materials.push_back(m);
-        localCtmMatIndex[info.materialName] = idx;
+        localCtmMatIndex[name] = idx;
         return idx;
         };
 
     for (auto& face : model.faces) {
         if (face.materialIndex < 0 || face.materialIndex >= (int)model.materials.size()) continue;
-        const Material& mat = model.materials[face.materialIndex];
+        // Material insertion below can reallocate model.materials.
+        const Material mat = model.materials[face.materialIndex];
 
         // 从材质名/路径提取贴图名
         // mat.name 形如 "minecraft:block/glass", mat.texturePath 形如 "textures/minecraft/block/glass.png"
@@ -1368,8 +1418,7 @@ void ApplyCtmToBlockModel(ModelData& model,
         CtmTexInfo info;
         bool got = false;
         auto overlayRules = FindOverlayRules(ns, baseBlockName, matNs, textureName);
-        const CtmRule* rule = FindCtmRule(ns, baseBlockName, matNs, textureName);
-        if (rule && !CtmRuleMatchesFace(*rule, ftn)) rule = nullptr;
+        const CtmRule* rule = FindCtmRule(ns, baseBlockName, matNs, textureName, ftn);
         t_activeRule = rule;
         t_textureNs = matNs;
         t_textureName = textureName;
@@ -1451,7 +1500,7 @@ void ApplyCtmToBlockModel(ModelData& model,
         }
 
         if (got) {
-            face.materialIndex = getOrAddMaterial(info);
+            face.materialIndex = getOrAddMaterial(info, mat, mat.tintIndex);
             // overlay 的 matchTiles 可能指向前一条 CTM 规则产生的 tile。
             // 生成材质名形如 ns:ctm/optifine/.../t7，将其还原为 optifine/.../7 再查一次。
             std::string resolved = info.materialName;
@@ -1474,7 +1523,7 @@ void ApplyCtmToBlockModel(ModelData& model,
             for (int tilePos : SelectOverlayTiles(*overlay, L, x, y, z)) {
                 if (tilePos < 0 || tilePos >= static_cast<int>(overlay->tiles.size())) continue;
                 CtmTexInfo oi = GetOrCreateTileTexInfo(overlay->ns, overlay->baseDir, overlay->tiles[tilePos]);
-                if (oi.saved) pendingOverlays.push_back({face, ft, getOrAddMaterial(oi)});
+                if (oi.saved) pendingOverlays.push_back({face, ft, getOrAddMaterial(oi, mat, overlay->tintIndex)});
             }
         }
         t_activeRule = nullptr;

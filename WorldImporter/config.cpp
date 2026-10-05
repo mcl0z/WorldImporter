@@ -84,7 +84,7 @@ Config LoadConfig(const std::string& configFile) {
     // 分批失效、整数溢出或一次加载整个世界。
     const size_t requestedMaxTasks = j.value("maxTasksPerBatch", config.maxTasksPerBatch);
     config.maxTasksPerBatch = std::clamp<size_t>(requestedMaxTasks, 1, 262144);
-    config.modelThreads = std::clamp(j.value("modelThreads", config.modelThreads), 1, 8);
+    config.modelThreads = std::clamp(j.value("modelThreads", config.modelThreads), 1, 32);
 
 
     config.selectedDimension = j.value("selectedDimension", config.selectedDimension);

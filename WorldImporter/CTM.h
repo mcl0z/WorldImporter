@@ -95,7 +95,8 @@ void InitializeCtmRules();
 const CtmRule* FindCtmRule(const std::string& blockNs,
                            const std::string& blockName,
                            const std::string& textureNs,
-                           const std::string& textureName);
+                           const std::string& textureName,
+                           const std::string& faceName = "");
 
 // 判断给定面方向是否在规则的 faces 过滤内。faceName 为 down/up/north/south/west/east。
 bool CtmRuleMatchesFace(const CtmRule& rule, const std::string& faceName);

@@ -131,9 +131,16 @@ std::vector<char> ReadFileToMemory(const std::string& regionDirPath, int regionX
         return {};  // 返回空vector表示失败
     }
 
-    // 将文件内容读取到文件数据中
-    std::vector<char> fileData;
-    fileData.assign(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
+    // Read the region in one bulk operation, not one stream iterator per byte.
+    file.seekg(0, std::ios::end);
+    const auto length = file.tellg();
+    if (length <= 0) return {};
+    file.seekg(0, std::ios::beg);
+    std::vector<char> fileData(static_cast<size_t>(length));
+    if (!file.read(fileData.data(), static_cast<std::streamsize>(fileData.size()))) {
+        std::cerr << "错误: 区域文件读取不完整!" << std::endl;
+        return {};
+    }
     if (fileData.empty()) {
         std::cerr << "错误: 文件为空或读取失败!" << std::endl;
         return {};  // 返回空vector表示失败
