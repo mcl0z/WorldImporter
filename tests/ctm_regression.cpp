@@ -262,6 +262,27 @@ static void Pillar() {
         "pillar UP face not mapped to top row");
 }
 
+static void PrefixTile() {
+    // Renamed material (blockId#key~texshort) + OptiFine trailing-underscore matchTiles.
+    const std::string dir = "optifine/ctm/regression_prefix";
+    AddProperties(dir + "/r.properties",
+        "matchTiles=yuushya:block_/concrete/white_worn_concrete_\nmethod=fixed\ntiles=0\n");
+    AddTexture(dir + "/0", 8, 8, 140, true);
+    InitializeCtmRules();
+    ModelData model;
+    model.materials.emplace_back("yuushya:white_worn_concrete#sides~white_worn_concrete",
+        "textures/yuushya/block_/concrete/white_worn_concrete.png", -1);
+    model.faces.push_back({{0,1,2,3}, {0,1,2,3}, 0, SOUTH});
+    model.vertices = {0,0,0, 1,0,0, 1,1,0, 0,1,0};
+    model.uvCoordinates = {0,0, 1,0, 1,1, 0,1};
+    ApplyCtmToBlockModel(model, "yuushya", "white_worn_concrete", 0,0,0);
+    Check(model.faces[0].materialIndex != 0, "prefix matchTiles rule not applied to renamed material");
+    const auto& material = model.materials[model.faces[0].materialIndex];
+    Check(material.name.rfind("yuushya:white_worn_concrete#sides~white_worn_concrete@ctm/", 0) == 0,
+        "prefix rule material loses base name");
+    RequireTextureFile(material.texturePath, 0, 0);
+}
+
 static void Invalid() {
     CtmRule rule;
     rule.tiles = {0};
@@ -294,6 +315,7 @@ int main(int argc, char** argv) {
         else if (test == "proxy_pattern") ProxyPattern();
         else if (test == "grid_random") GridRandom();
         else if (test == "pillar") Pillar();
+        else if (test == "prefix_tile") PrefixTile();
         else if (test == "invalid") Invalid();
         else throw std::runtime_error("unknown test");
         std::cout << "PASS " << test << '\n';

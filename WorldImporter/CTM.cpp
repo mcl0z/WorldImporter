@@ -36,6 +36,9 @@ static std::unordered_map<std::string, std::vector<size_t>> g_rulesByTile;
 // 通配 matchBlocks(以 '_' 开头)单独存放,避免对普通方块做全量扫描
 // 元素: {ns, pattern, ruleIndex}
 static std::vector<std::tuple<std::string, std::string, size_t>> g_wildcardBlockRules;
+// OptiFine matchTiles 前缀规则: 以 '_' 结尾表示匹配任意同名前缀贴图
+// (如 white_worn_concrete_ 匹配 white_worn_concrete)。单独存放避免全量扫描。
+static std::vector<std::tuple<std::string, std::string, size_t>> g_prefixTileRules;
 static std::atomic<bool> g_ctmInitialized{ false };
 static std::mutex g_ctmPngMutex;        // 保护 PNG 合成/保存
 static std::mutex g_ctmRuleMutex;       // 保护规则索引读取(初始化后只读,无需加锁)
@@ -331,7 +334,10 @@ void InitializeCtmRules() {
         for (size_t i = 0; i < g_ctmRules[idx].matchTiles.size(); ++i) {
             const std::string& tileNs = g_ctmRules[idx].matchTileNamespaces[i];
             const std::string& t = g_ctmRules[idx].matchTiles[i];
-            g_rulesByTile[tileNs + ":" + t].push_back(idx);
+            if (!t.empty() && t.back() == '_')
+                g_prefixTileRules.emplace_back(tileNs, t, idx);
+            else
+                g_rulesByTile[tileNs + ":" + t].push_back(idx);
         }
     }
 
@@ -399,9 +405,15 @@ const CtmRule* FindCtmRule(const std::string& blockNs,
             size_t slash = textureName.find_last_of('/');
             std::string shortName = slash == std::string::npos ? textureName : textureName.substr(slash + 1);
             for (size_t i = 0; i < r.matchTiles.size(); ++i) {
-                if (r.matchTileNamespaces[i] == textureNs &&
-                    (r.matchTiles[i] == textureName || r.matchTiles[i] == shortName)) {
-                    ok = true; break;
+                if (r.matchTileNamespaces[i] != textureNs) continue;
+                const std::string& tile = r.matchTiles[i];
+                if (tile == textureName || tile == shortName) { ok = true; break; }
+                if (!tile.empty() && tile.back() == '_') {
+                    std::string base = tile.substr(0, tile.size() - 1);
+                    if (textureName == base || shortName == base ||
+                        textureName.rfind(tile, 0) == 0 || shortName.rfind(tile, 0) == 0) {
+                        ok = true; break;
+                    }
                 }
             }
             if (!ok) return false;
@@ -424,6 +436,20 @@ const CtmRule* FindCtmRule(const std::string& blockNs,
             if (it2 != g_rulesByTile.end()) {
                 for (size_t idx : it2->second)
                     if (eligible(idx)) return &g_ctmRules[idx];
+            }
+        }
+    }
+    {
+        // OptiFine 前缀 matchTiles(以 '_' 结尾): 命中即按注册顺序取首条
+        for (const auto& pr : g_prefixTileRules) {
+            if (std::get<0>(pr) != textureNs) continue;
+            const std::string& prefix = std::get<1>(pr);
+            size_t slash = textureName.find_last_of('/');
+            std::string shortName = slash == std::string::npos ? textureName : textureName.substr(slash + 1);
+            std::string base = prefix.substr(0, prefix.size() - 1);
+            if (textureName == base || shortName == base ||
+                textureName.rfind(prefix, 0) == 0 || shortName.rfind(prefix, 0) == 0) {
+                if (eligible(std::get<2>(pr))) return &g_ctmRules[std::get<2>(pr)];
             }
         }
     }
@@ -457,9 +483,26 @@ static std::vector<const CtmRule*> FindOverlayRules(const std::string& blockNs,
                 out.push_back(&g_ctmRules[idx]);
         }
     };
+    auto addPrefix = [&]() {
+        size_t slash = textureName.find_last_of('/');
+        std::string shortName = slash == std::string::npos ? textureName : textureName.substr(slash + 1);
+        for (const auto& pr : g_prefixTileRules) {
+            if (std::get<0>(pr) != textureNs) continue;
+            const std::string& prefix = std::get<1>(pr);
+            std::string pbase = prefix.substr(0, prefix.size() - 1);
+            size_t slash = textureName.find_last_of('/');
+            std::string shortName = slash == std::string::npos ? textureName : textureName.substr(slash + 1);
+            if (textureName != pbase && shortName != pbase &&
+                textureName.rfind(prefix, 0) != 0 && shortName.rfind(prefix, 0) != 0) continue;
+            size_t idx = std::get<2>(pr);
+            if (g_ctmRules[idx].method == CtmMethod::Overlay && seen.insert(idx).second)
+                out.push_back(&g_ctmRules[idx]);
+        }
+    };
     add(g_rulesByTile, textureNs + ":" + textureName);
     size_t slash = textureName.find_last_of('/');
     if (slash != std::string::npos) add(g_rulesByTile, textureNs + ":" + textureName.substr(slash + 1));
+    addPrefix();
     add(g_rulesByBlock, blockNs + ":" + blockName);
     return out;
 }
@@ -2098,19 +2141,29 @@ void ApplyCtmToBlockModel(ModelData& model,
             if (at != std::string::npos) baseMaterialName = baseMaterialName.substr(0, at);
         }
 
-        // 从材质名/路径提取贴图名
-        // mat.name 形如 "minecraft:block/glass", mat.texturePath 形如 "textures/minecraft/block/glass.png"
+        // 从材质名/路径提取贴图名。区块缓存里材质已被 RenameBlockMaterials 改名为
+        // "blockId#key~texshort", 只有 texturePath 仍保留完整贴图路径, 优先用它。
         std::string textureName;
         std::string matNs = ns;
         {
-            // mat.name = "ns:path"
+            const std::string& tp = mat.texturePath;
             const std::string& mn = mat.name;
             size_t colon = mn.find(':');
-            std::string pathPart;
-            if (colon != std::string::npos) { matNs = mn.substr(0, colon); pathPart = mn.substr(colon + 1); }
-            else pathPart = mn;
-            // 去掉 block/ 前缀? 保留完整 path 作为 textureName
-            textureName = pathPart;
+            matNs = colon == std::string::npos ? ns : mn.substr(0, colon);
+            if (tp.size() > 4 && tp.rfind(".png") == tp.size() - 4) {
+                std::string p = tp.substr(0, tp.size() - 4);
+                if (p.rfind("textures/", 0) == 0) p = p.substr(9);
+                size_t slash = p.find('/');
+                if (slash != std::string::npos && p.substr(0, slash) == matNs) p = p.substr(slash + 1);
+                textureName = p;
+            }
+            if (textureName.empty()) {
+                std::string pathPart = colon == std::string::npos ? mn : mn.substr(colon + 1);
+                size_t tilde = pathPart.find('~');
+                if (tilde != std::string::npos) pathPart = pathPart.substr(tilde + 1);
+                else { size_t hash = pathPart.find('#'); if (hash != std::string::npos) pathPart = pathPart.substr(0, hash); }
+                textureName = pathPart;
+            }
         }
 
         // 确定面朝向
