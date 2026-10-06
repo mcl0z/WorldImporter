@@ -316,12 +316,9 @@ void RegionModelExporter::ExportModels(const string& outputName) {
                         if (idx >= groupsInBatch.size()) break;
                         const auto& group = groupsInBatch[idx];
                         ModelData groupModel;
-                        // 不再按整个大组的最坏情况一次预留（Face 约 40 字节，旧逻辑
-                        // 可能瞬间预留数百 MiB）。先预留最多 32 个任务，后续按需增长。
-                        const size_t reserveTasks = std::min<size_t>(group.tasks.size(), 32);
-                        groupModel.vertices.reserve(4096 * reserveTasks);
-                        groupModel.faces.reserve(8192 * reserveTasks);
-                        groupModel.uvCoordinates.reserve(4096 * reserveTasks);
+                        // The first nonempty section moves its arrays here;
+                        // reserving before that move only allocates discarded memory.
+                        std::unordered_map<std::string, int> groupMaterialLookup;
                         std::unordered_map<string, string> localMaterials;
                         std::unordered_map<string, TintResult> localTints;
 
@@ -337,7 +334,7 @@ void RegionModelExporter::ExportModels(const string& outputName) {
                             if (groupModel.vertices.empty()) {
                                 groupModel = std::move(chunkModel);
                             } else {
-                                MergeModelsDirectly(groupModel, chunkModel);
+                                MergeModelsDirectly(groupModel, chunkModel, &groupMaterialLookup);
                             }
 
                             // 更新批次完成任务计数
@@ -420,6 +417,13 @@ void RegionModelExporter::ExportModels(const string& outputName) {
             }
         }
 
+        if (config.exportFullModel) {
+            const size_t meshBytes = finalMergedModel.vertices.capacity() * sizeof(float) +
+                finalMergedModel.uvCoordinates.capacity() * sizeof(float) +
+                finalMergedModel.faces.capacity() * sizeof(Face);
+            std::cout << "[perf] 累计模型: faces=" << finalMergedModel.faces.size()
+                      << " arrayCapacityMiB=" << meshBytes / (1024 * 1024) << std::endl;
+        }
         // ---------- 卸载当前批次 ----------
         size_t beforeUnload = CountLoadedChunks();
 

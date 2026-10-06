@@ -1998,6 +1998,23 @@ static bool ParseMcmetaGridRule(const std::string& ns, const std::string& textur
     return true;
 }
 
+static bool GetMcmetaGridRuleCached(const std::string& ns, const std::string& path,
+    McmetaGridRule& out) {
+    // Resources are immutable after initialization. Parsing the same grid per
+    // face previously copied JSON and decompressed the atlas PNG thousands of times.
+    struct Entry { bool found; McmetaGridRule rule; };
+    static thread_local std::unordered_map<std::string, Entry> cache;
+    const std::string key = ns + ":" + path;
+    auto it = cache.find(key);
+    if (it == cache.end()) {
+        McmetaGridRule parsed;
+        bool found = ParseMcmetaGridRule(ns, path, parsed);
+        it = cache.emplace(key, Entry{found, std::move(parsed)}).first;
+    }
+    if (it->second.found) out = it->second.rule;
+    return it->second.found;
+}
+
 static CtmTexInfo GetOrCreateMcmetaGridTexInfo(const McmetaGridRule& rule) {
     const std::string baseDir = "mcmeta/" + rule.texPath;
     const std::string id = rule.texNs + "|" + baseDir + "|grid_" +
@@ -2274,7 +2291,7 @@ void ApplyCtmToBlockModel(ModelData& model,
             // Yuushya 式网格 mcmeta(proxy/pattern/random/pillar): 整张网格作 atlas,
             // 面 UV 映射到选中格子。
             McmetaGridRule grid;
-            if (ParseMcmetaGridRule(matNs, textureName, grid)) {
+            if (GetMcmetaGridRuleCached(matNs, textureName, grid)) {
                 const CtmTexInfo gi = GetOrCreateMcmetaGridTexInfo(grid);
                 if (gi.saved) {
                     int col = 0, row = 0;

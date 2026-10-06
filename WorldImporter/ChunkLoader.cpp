@@ -13,6 +13,8 @@
 void ChunkLoader::LoadChunks(int chunkXStart, int chunkXEnd, int chunkZStart, int chunkZEnd,
     int sectionYStart, int sectionYEnd) {
 
+    // Only newly appended palette entries need blockstate processing this batch.
+    const size_t paletteStart = globalBlockPalette.size();
     // 区块加载会注册全局方块/模型缓存，并且模型解析会查询 sectionCache。
     // 原先每个区块使用 std::async，会造成 sectionCache 与模型缓存的锁顺序死锁。
     // 保持模型导出阶段并行，加载阶段串行以保证缓存一致性。
@@ -35,7 +37,7 @@ void ChunkLoader::LoadChunks(int chunkXStart, int chunkXEnd, int chunkZStart, in
     std::vector<Block> blocksToProcess;
     {
         std::lock_guard<std::mutex> lock(globalPaletteMutex);
-        blocksToProcess = globalBlockPalette;
+        blocksToProcess.assign(globalBlockPalette.begin() + paletteStart, globalBlockPalette.end());
     }
     if (!blocksToProcess.empty()) {
         ProcessBlockstateForBlocks(blocksToProcess);

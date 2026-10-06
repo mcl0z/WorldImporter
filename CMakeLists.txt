@@ -56,6 +56,14 @@ if (BUILD_TESTING)
     endif()
     add_test(NAME slab_regression COMMAND slab_regression_test)
     set_tests_properties(slab_regression PROPERTIES TIMEOUT 30)
+
+    add_executable(foliage_model_tests tests/foliage_model_tests.cpp)
+    target_link_libraries(foliage_model_tests PRIVATE WorldImporterCore)
+    if (MSVC)
+        target_compile_options(foliage_model_tests PRIVATE /EHsc /utf-8 /Zc:preprocessor)
+    endif()
+    add_test(NAME foliage_model COMMAND foliage_model_tests)
+    set_tests_properties(foliage_model PROPERTIES TIMEOUT 30)
 endif()
 
 # Standalone CTM regression harness (self-contained: compiles CTM.cpp directly).

@@ -305,12 +305,19 @@ void ModelDeduplicator::DeduplicateFaces(ModelData& data) {
             { face.vertexIndices[2], face.uvIndices[2] },
             { face.vertexIndices[3], face.uvIndices[3] }
         }};
-        std::sort(pairs.begin(), pairs.end());
+        // Canonicalize cyclic starts, but never reverse winding. Sorting all
+        // four pairs erased front/back identity of zero-thickness foliage.
+        auto canonical = pairs;
+        for (int start = 1; start < 4; ++start) {
+            std::array<std::pair<int, int>, 4> candidate;
+            for (int k = 0; k < 4; ++k) candidate[k] = pairs[(start + k) % 4];
+            if (candidate < canonical) canonical = candidate;
+        }
         std::array<int, 4> sortedVerts;
         std::array<int, 4> sortedUVs;
         for (int k = 0; k < 4; ++k) {
-            sortedVerts[k] = pairs[k].first;
-            sortedUVs[k] = pairs[k].second;
+            sortedVerts[k] = canonical[k].first;
+            sortedUVs[k] = canonical[k].second;
         }
         int matIndex = config.strictDeduplication ? face.materialIndex : -1;
         keys.push_back(FaceKey{ sortedVerts, sortedUVs, matIndex });

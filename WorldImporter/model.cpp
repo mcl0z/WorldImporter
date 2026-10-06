@@ -168,9 +168,9 @@ static inline void fastRotateUV(float& u, float& v, float cosA, float sinA) {
     const float newU = relU * cosA - relV * sinA + centerU;
     const float newV = relU * sinA + relV * cosA + centerV;
 
-    // 快速clamp替代方案
-    u = newU < 0.0f ? 0.0f : (newU > 1.0f ? 1.0f : newU);
-    v = newV < 0.0f ? 0.0f : (newV > 1.0f ? 1.0f : newV);
+    // Extended resource-pack UVs are legal and must remain repeatable.
+    u = newU;
+    v = newV;
 }
 
 // 预计算三角函数值(包含常见角度优化)
@@ -235,7 +235,17 @@ static void applyFaceRotation(ModelData& modelData, size_t faceIdx, int angle) {
         if (uvIdx >= 0 && uvIdx*2+1 < modelData.uvCoordinates.size()) {
             float& u = modelData.uvCoordinates[uvIdx * 2];
             float& v = modelData.uvCoordinates[uvIdx * 2 + 1];
-            fastRotateUV(u, v, cosA, sinA);
+            float frameRatio = 1.0f;
+            if (f.materialIndex >= 0 && static_cast<size_t>(f.materialIndex) < modelData.materials.size()) {
+                const auto& material = modelData.materials[f.materialIndex];
+                if (material.type == ANIMATED && material.aspectRatio > 0)
+                    frameRatio = material.aspectRatio;
+            }
+            // Undo animation cropping before rotation, then map back to frame 0.
+            // Rotating the packed frame UV around the entire sheet selects other frames.
+            float localV = 1.0f - (1.0f - v) * frameRatio;
+            fastRotateUV(u, localV, cosA, sinA);
+            v = 1.0f - (1.0f - localV) / frameRatio;
         }
     }
 }
@@ -250,7 +260,30 @@ void ApplyRotationToUV(ModelData& modelData, int rotationX, int rotationY) {
     faceTypes.reserve(faceCount);
     
     for (size_t i = 0; i < faceCount; ++i) {
-        FaceType faceType = modelData.faces[i].faceDirection;
+        // cullface is an occlusion hint, not the geometric direction. Most
+        // extra leaf/frond quads intentionally omit it.
+        const Face& f = modelData.faces[i];
+        FaceType faceType = f.faceDirection;
+        if (faceType == DO_NOT_CULL || faceType == UNKNOWN) {
+            auto position = [&](int j) {
+                size_t k = static_cast<size_t>(f.vertexIndices[j]) * 3;
+                if (k + 2 >= modelData.vertices.size()) return std::array<float,3>{};
+                return std::array<float,3>{modelData.vertices[k],modelData.vertices[k+1],modelData.vertices[k+2]};
+            };
+            const auto a=position(0), b=position(1), c=position(2);
+            float ax=b[0]-a[0], ay=b[1]-a[1], az=b[2]-a[2];
+            float bx=c[0]-a[0], by=c[1]-a[1], bz=c[2]-a[2];
+            // Undo blockstate Y then X rotation to recover the original face.
+            float x=ay*bz-az*by, y=az*bx-ax*bz, z=ax*by-ay*bx;
+            float ry=rotationY*static_cast<float>(M_PI/180.0), rx=rotationX*static_cast<float>(M_PI/180.0);
+            float nx=x*std::cos(ry)+z*std::sin(ry), nz=-x*std::sin(ry)+z*std::cos(ry);
+            x=nx; z=nz;
+            float ny=y*std::cos(rx)-z*std::sin(rx); nz=y*std::sin(rx)+z*std::cos(rx);
+            y=ny; z=nz;
+            if (std::fabs(x)>=std::fabs(y) && std::fabs(x)>=std::fabs(z)) faceType=x>0?EAST:WEST;
+            else if (std::fabs(y)>=std::fabs(z)) faceType=y>0?UP:DOWN;
+            else faceType=z>0?SOUTH:NORTH;
+        }
         faceTypes.push_back(faceType);
     }
 
@@ -1066,20 +1099,12 @@ void processElements(const nlohmann::json& modelJson, ModelData& data,
                 // 在旋转处理部分的缩放逻辑修改如下:
                 bool rescale = rotation.value("rescale", false);
                 if (rescale) {
-                    // 将原始角度转回度数进行比较
-                    float angle_deg_conv = angle_rad * 180.0f / M_PI;
-                    bool applyScaling = false;
-                    float scale = 1.0f;
-
-                    // 检查是否为22.5°或45°的整数倍(考虑浮点精度)
-                    if (std::fabs(angle_deg_conv - 22.5f) < 1e-6 || std::fabs(angle_deg_conv + 22.5f) < 1e-6) {
-                        applyScaling = true;
-                        scale = std::sqrt(2.0f - std::sqrt(2.0f)); // 22.5°对应的缩放因子
-                    }
-                    else if (std::fabs(angle_deg_conv - 45.0f) < 1e-6 || std::fabs(angle_deg_conv + 45.0f) < 1e-6) {
-                        applyScaling = true;
-                        scale = std::sqrt(2.0f);           // 45°对应的缩放因子
-                    }
+                    // Minecraft FaceBakery uses sec(angle) on the two perpendicular axes.
+                    // The old 22.5-degree factor was 0.765 (shrink), not 1.082 (expand).
+                    bool applyScaling = std::fabs(angle_deg) > 0.0001f &&
+                        (std::fabs(std::fabs(angle_deg) - 22.5f) < 0.0001f ||
+                         std::fabs(std::fabs(angle_deg) - 45.0f) < 0.0001f);
+                    float scale = applyScaling ? 1.0f / std::cos(angle_rad) : 1.0f;
 
                     if (applyScaling) {
                         // 根据旋转轴应用缩放,保留原有旋转中心偏移逻辑
@@ -1162,62 +1187,8 @@ void processElements(const nlohmann::json& modelJson, ModelData& data,
                 }
             }
 
-            // --- 新增:检测并移除相反方向的重叠面 ---
-            auto getOppositeFace = [](const std::string& faceName) -> std::string {
-                if (faceName == "north") return "south";
-                if (faceName == "south") return "north";
-                if (faceName == "east") return "west";
-                if (faceName == "west") return "east";
-                if (faceName == "up") return "down";
-                if (faceName == "down") return "up";
-                return "";
-                };
-
-            auto areFacesCoinciding = [](const std::vector<std::vector<float>>& face1,
-                const std::vector<std::vector<float>>& face2) -> bool {
-                    if (face1.size() != face2.size()) return false;
-
-                    auto toKey = [](const std::vector<float>& v) {
-                        char buffer[64];
-                        snprintf(buffer, sizeof(buffer), "%.4f,%.4f,%.4f", v[0], v[1], v[2]);
-                        return std::string(buffer);
-                        };
-
-                    std::unordered_set<std::string> set1;
-                    for (const auto& v : face1) set1.insert(toKey(v));
-                    for (const auto& v : face2) {
-                        if (!set1.count(toKey(v))) return false;
-                    }
-                    return true;
-                };
-
-            std::vector<std::string> facesToRemove;
-            std::unordered_map<std::string, std::string> faceReplacementMap;
-
-            for (const auto& faceEntry : elementVertices) {
-                const std::string& faceName = faceEntry.first;
-                std::string opposite = getOppositeFace(faceName);
-                auto oppositeIt = elementVertices.find(opposite);
-
-                if (oppositeIt != elementVertices.end() &&
-                    areFacesCoinciding(faceEntry.second, oppositeIt->second)) {
-                    if (faceName == "south" || faceName == "west" || faceName == "down") {
-                        facesToRemove.push_back(faceName);
-                        faceReplacementMap[faceName] = opposite;
-                    }
-                    else {
-                        facesToRemove.push_back(opposite);
-                        faceReplacementMap[opposite] = faceName;
-                    }
-                }
-            }
-
-            std::sort(facesToRemove.begin(), facesToRemove.end());
-            auto last = std::unique(facesToRemove.begin(), facesToRemove.end());
-            facesToRemove.erase(last, facesToRemove.end());
-            for (const auto& face : facesToRemove) {
-                elementVertices.erase(face);
-            }
+            // Zero-thickness foliage explicitly defines both windings. Keep
+            // both sides: their texture, UV rotation or tint may differ.
 
             // 遍历每个面的数据,判断面是否存在,如果存在则处理
             for (auto& face : faces.items()) {
@@ -2102,6 +2073,8 @@ ModelData MergeFluidModelData(const ModelData& data1, const ModelData& data2) {
 
 void MergeModelsDirectly(ModelData& data1, const ModelData& data2,
     std::unordered_map<std::string, int>* materialLookup) {
+    // Empty sections contribute neither geometry nor materials to the mesh.
+    if (data2.faces.empty()) return;
     // 优化:预分配并按倍增扩容,减少内存重分配
     {
         size_t oldV = data1.vertices.size();

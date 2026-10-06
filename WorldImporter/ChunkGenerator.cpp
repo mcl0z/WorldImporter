@@ -40,9 +40,12 @@ namespace {
 }
 
 void ChunkGenerator::PrepareBlockNames() {
-    preparedBlockNames.clear();
+    // Palette indices are append-only across export batches. Keep already
+    // prepared names instead of reallocating every block-state string each time.
+    if (preparedBlockNames.size() > globalBlockPalette.size()) preparedBlockNames.clear();
     preparedBlockNames.reserve(globalBlockPalette.size());
-    for (const Block& block : globalBlockPalette) {
+    for (size_t i = preparedBlockNames.size(); i < globalBlockPalette.size(); ++i) {
+        const Block& block = globalBlockPalette[i];
         const std::string full = block.GetModifiedNameWithNamespace();
         const size_t colon = full.find(':');
         preparedBlockNames.push_back({block.GetNamespace(),
