@@ -21,6 +21,7 @@
     "lightBlockSize": 0.05,
     "allowDoubleFace": false,
     "overlayLayerStep": 0.003,
+    "ctmPrefixMatchTiles": true,
     "exportFullModel": true,
     "partitionSize": 4,
     "maxTasksPerBatch": 32768,

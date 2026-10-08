@@ -46,6 +46,8 @@ Config LoadConfig(const std::string& configFile) {
     config.allowDoubleFace = j.value("allowDoubleFace", config.allowDoubleFace);
     // 叠加层外移步长: 过小会在 Eevee 下 z-fighting, 过大在近景会看到层间错位
     config.overlayLayerStep = std::clamp(j.value("overlayLayerStep", config.overlayLayerStep), 0.0002f, 0.05f);
+    // matchTiles 以 '_' 结尾时是否再做前缀族匹配(关掉只保留剥掉下划线后的精确匹配)
+    config.ctmPrefixMatchTiles = j.value("ctmPrefixMatchTiles", config.ctmPrefixMatchTiles);
     config.isLODAutoCenter = j.value("isLODAutoCenter", config.isLODAutoCenter);
     config.LODCenterX = j.value("LODCenterX", config.LODCenterX);
     config.LODCenterZ = j.value("LODCenterZ", config.LODCenterZ);
