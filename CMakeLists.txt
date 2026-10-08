@@ -28,13 +28,20 @@ wi_apply_defaults(WorldImporter)
 wi_apply_defaults(WorldImporterCore)
 
 include(CTest)
-if (BUILD_TESTING)
+option(WI_BUILD_CTM_TESTS "Build CTM texture baking regression tests" ON)
+
+# tests/ 是可选目录：删掉它（例如只发布主程序源码）时必须仍能正常编译主程序。
+set(WI_TESTS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/tests")
+if (BUILD_TESTING AND NOT EXISTS "${WI_TESTS_DIR}")
+    message(STATUS "tests/ 不存在: 跳过测试目标（要跑测试请恢复 tests/，或显式传 -DBUILD_TESTING=OFF）")
+endif()
+
+if (BUILD_TESTING AND EXISTS "${WI_TESTS_DIR}")
     # 跑法（构建目录内）：
     #   ctest                        全部用例
     #   ctest -L ctm                 只跑 CTM 烘焙回归
     #   ctest -R chunk_io            只跑单个用例
     #   ctest --output-on-failure    失败时打印输出
-    option(WI_BUILD_CTM_TESTS "Build CTM texture baking regression tests" ON)
 
     add_executable(chunk_io_tests
         tests/chunk_io_tests.cpp

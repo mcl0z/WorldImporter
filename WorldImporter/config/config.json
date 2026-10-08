@@ -22,6 +22,7 @@
     "allowDoubleFace": false,
     "overlayLayerStep": 0.003,
     "ctmPrefixMatchTiles": true,
+    "mergeModTextures": true,
     "exportFullModel": true,
     "partitionSize": 4,
     "maxTasksPerBatch": 32768,

@@ -811,6 +811,15 @@ void processTextures(const nlohmann::json& modelJson, ModelData& data,
 // 使用更长候选名降级，保证"名字 -> 贴图"唯一。多线程处理方块状态时需要加锁。
 static std::mutex g_materialNameMutex;
 static std::unordered_map<std::string, std::string> g_materialNameToTexture;
+// 贴图路径 -> 该贴图已确定的材质名（先到先得）：模组方块复用同一张贴图时直接沿用，
+// 避免一张零件贴图被几十个方块各建一个材质。原版方块不参与复用，但会作为可复用的目标。
+static std::unordered_map<std::string, std::string> g_textureToMaterialName;
+static size_t g_modMaterialReuseHits = 0;   // 受 g_materialNameMutex 保护
+
+size_t GetModMaterialReuseCount() {
+    std::lock_guard<std::mutex> lock(g_materialNameMutex);
+    return g_modMaterialReuseHits;
+}
 
 namespace {
 std::string TryRegisterMaterialName(const std::string& candidate, const std::string& texturePath) {
@@ -847,9 +856,30 @@ void RenameBlockMaterials(ModelData& model, const std::string& namespaceName, co
     if (model.materials.empty() || baseBlockId.empty()) return;
     const bool singleMaterial = (model.materials.size() == 1);
     const std::string prefix = namespaceName + ":" + baseBlockId;
+    // 原版方块之间始终不合并；模组方块在开关打开时复用同一张贴图已有的材质。
+    const bool vanillaBlock = (namespaceName == "minecraft");
     for (auto& material : model.materials) {
         // 只处理来自模型 textures 的材质；占位/特殊材质(无贴图键)保持原名
         if (material.textureKey.empty()) continue;
+
+        // 可复用的前提：贴图有效、该材质不参与 tint、且这个模型没有共面叠加层
+        // (叠加层元数据按材质名索引，共享材质会把叠加层扩散到别的方块)
+        const bool mergeEligible = config.mergeModTextures
+            && !material.texturePath.empty()
+            && material.texturePath != "None"
+            && material.tintIndex < 0
+            && model.overlayPairs.empty();
+
+        // 模组方块：这张贴图已经有材质了就直接复用，不再新建
+        if (mergeEligible && !vanillaBlock) {
+            std::lock_guard<std::mutex> lock(g_materialNameMutex);
+            auto it = g_textureToMaterialName.find(material.texturePath);
+            if (it != g_textureToMaterialName.end()) {
+                material.name = it->second;
+                ++g_modMaterialReuseHits;
+                continue;
+            }
+        }
 
         std::string resolved;
         // 1. 单材质且贴图就是 block/<方块id>：直接用方块 id（名字最简且稳定）
@@ -869,7 +899,14 @@ void RenameBlockMaterials(ModelData& model, const std::string& namespaceName, co
             }
         }
 
-        if (!resolved.empty()) material.name = resolved;
+        if (!resolved.empty()) {
+            material.name = resolved;
+            // 登记"贴图 -> 材质名"（先到先得）：供后续模组方块复用
+            if (mergeEligible) {
+                std::lock_guard<std::mutex> lock(g_materialNameMutex);
+                g_textureToMaterialName.emplace(material.texturePath, resolved);
+            }
+        }
     }
 }
 
@@ -2191,6 +2228,48 @@ void MergeModelsDirectly(ModelData& data1, const ModelData& data2,
             data1.overlayPairs.push_back(pair);
         }
     }
+}
+
+// 剪掉没有任何面引用的材质, 并重映射面的材质索引(见 model.h 说明)
+size_t PruneUnusedMaterials(ModelData& model, const std::unordered_set<std::string>* keepNames) {
+    const int materialCount = static_cast<int>(model.materials.size());
+    if (materialCount == 0) return 0;
+
+    std::vector<char> used(materialCount, 0);
+    for (const auto& face : model.faces) {
+        if (face.materialIndex >= 0 && face.materialIndex < materialCount) {
+            used[face.materialIndex] = 1;
+        }
+    }
+    // overlay 等元数据按材质名索引: 这些名字即便当前没有面引用也必须保留
+    if (keepNames != nullptr && !keepNames->empty()) {
+        for (int i = 0; i < materialCount; ++i) {
+            if (keepNames->count(model.materials[i].name)) used[i] = 1;
+        }
+    }
+
+    size_t removed = 0;
+    for (int i = 0; i < materialCount; ++i) {
+        if (!used[i]) ++removed;
+    }
+    if (removed == 0) return 0;
+
+    std::vector<int> remap(materialCount, -1);
+    std::vector<Material> kept;
+    kept.reserve(static_cast<size_t>(materialCount) - removed);
+    for (int i = 0; i < materialCount; ++i) {
+        if (!used[i]) continue;
+        remap[i] = static_cast<int>(kept.size());
+        kept.push_back(std::move(model.materials[i]));
+    }
+    model.materials.swap(kept);
+
+    for (auto& face : model.faces) {
+        if (face.materialIndex >= 0 && face.materialIndex < materialCount) {
+            face.materialIndex = remap[face.materialIndex];
+        }
+    }
+    return removed;
 }
 
 // 辅助函数:将字符串方向转换为FaceType枚举

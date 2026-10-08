@@ -201,6 +201,9 @@ void RenameBlockMaterials(ModelData& model,
     const std::string& namespaceName,
     const std::string& baseBlockId);
 
+// 模组方块复用同一贴图材质而省下的次数（导出日志用）
+size_t GetModMaterialReuseCount();
+
 // 取贴图路径的文件名部分并去掉扩展名（textures/minecraft/block/oak_log.png -> oak_log）
 std::string MaterialTextureBasename(const std::string& texturePath);
 
@@ -213,6 +216,13 @@ ModelData MergeFluidModelData(const ModelData& data1, const ModelData& data2);
 // the destination materials are replaced/reordered.
 void MergeModelsDirectly(ModelData& data1, const ModelData& data2,
     std::unordered_map<std::string, int>* materialLookup = nullptr);
+
+// 剪掉没有任何面引用的材质（被剔除方块留下的、以及模型里未被任何面使用的贴图键，
+// 如只作破坏粒子用的 particle 键），并重映射面的材质索引。
+// keepNames: 额外需要保留的材质名（例如 overlay 序列引用到的名字），可为空。
+// return: 被移除的材质个数
+size_t PruneUnusedMaterials(ModelData& model,
+    const std::unordered_set<std::string>* keepNames = nullptr);
 
 // 使用C++20的span来改进参数传递(避免复制)
 void ApplyPositionOffset(ModelData& model, int x, int y, int z);

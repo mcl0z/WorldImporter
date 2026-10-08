@@ -46,6 +46,7 @@ struct Config {
     bool allowDoubleFace;//允许重叠面
     float overlayLayerStep; //共面叠加层(原版 overlay / CTM overlay)的逐层外移步长, 避免 Blender 下 z-fighting
     bool ctmPrefixMatchTiles; //matchTiles 以 '_' 结尾时是否再做前缀族匹配(默认开=保持既有行为; 关掉只保留剥掉下划线后的精确匹配)
+    bool mergeModTextures; //模组方块是否复用同一张贴图已有的材质(原版方块之间始终不合并; 默认开)
     bool activeLOD; //使用LOD
     bool isLODAutoCenter; //是否自动计算LOD中心坐标
     int LODCenterX; //LOD中心坐标X
@@ -93,6 +94,7 @@ struct Config {
         allowDoubleFace(false),
         overlayLayerStep(0.003f),
         ctmPrefixMatchTiles(true),
+        mergeModTextures(true),
         isLODAutoCenter(true),
         LODCenterX(0),
         LODCenterZ(0),

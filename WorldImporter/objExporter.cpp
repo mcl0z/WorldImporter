@@ -691,6 +691,17 @@ void CreateOverlayJsonFile() {
     }
 }
 
+// overlay.json 里引用到的全部材质名（base 与各层 name），供材质剪枝时保留
+std::unordered_set<std::string> GetOverlayReferencedMaterialNames() {
+    std::unordered_set<std::string> names;
+    std::lock_guard<std::mutex> lock(g_overlayMutex);
+    for (const auto& entry : g_overlaySequences) {
+        names.insert(entry.first);
+        for (const auto& layer : entry.second) names.insert(layer.name);
+    }
+    return names;
+}
+
 // 创建 .mtl 文件,接收 textureToPath 作为参数
 void createMtlFile(const ModelData& data, const std::string& mtlFileName) {
     std::string exeDir = getExecutableDir();
