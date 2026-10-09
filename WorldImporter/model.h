@@ -204,6 +204,11 @@ void RenameBlockMaterials(ModelData& model,
 // 模组方块复用同一贴图材质而省下的次数（导出日志用）
 size_t GetModMaterialReuseCount();
 
+// Blender 的网格校验会把"顶点索引集合完全相同"的多边形当成重复面删除（不看绕序），
+// 导致共面正反两面导入后只剩一张。这里给每组重合面里第二张及以后的面复制一个顶点
+// （坐标不变、仅索引不同），让 Blender 保留双面几何。return: 被处理的面数
+size_t SeparateCoincidentFaces(ModelData& model);
+
 // 取贴图路径的文件名部分并去掉扩展名（textures/minecraft/block/oak_log.png -> oak_log）
 std::string MaterialTextureBasename(const std::string& texturePath);
 

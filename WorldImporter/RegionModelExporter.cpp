@@ -392,6 +392,7 @@ void RegionModelExporter::ExportModels(const string& outputName) {
                             {
                                 // 分组模型各自剪掉无面引用的材质，避免写进共享 mtl
                                 const std::unordered_set<std::string> overlayKeep = GetOverlayReferencedMaterialNames();
+                                SeparateCoincidentFaces(groupModel);
                                 PruneUnusedMaterials(groupModel, &overlayKeep);
                             }
                             CreateMultiModelFiles(groupModel, groupFileName, localMaterials, outputName);
@@ -482,6 +483,10 @@ void RegionModelExporter::ExportModels(const string& outputName) {
         { CrafterLog::StageTimer t("顶点去重");
         monitor.SetStatus(TaskStatus::DEDUPLICATING_VERTICES, "DeduplicateModel");
         ModelDeduplicator::DeduplicateModel(finalMergedModel);
+        }
+        { CrafterLog::StageTimer t("分离共面正反面");
+        const size_t separatedFaces = SeparateCoincidentFaces(finalMergedModel);
+        std::cout << "分离共面正反面: 处理 " << separatedFaces << " 张面（避免 Blender 判重时丢面）" << std::endl;
         }
         { CrafterLog::StageTimer t("材质剪枝");
         const std::unordered_set<std::string> overlayKeep = GetOverlayReferencedMaterialNames();

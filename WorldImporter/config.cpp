@@ -44,6 +44,8 @@ Config LoadConfig(const std::string& configFile) {
     config.exportLightBlockOnly = j.value("exportLightBlockOnly", config.exportLightBlockOnly);
     config.lightBlockSize = j.value("lightBlockSize", config.lightBlockSize);
     config.allowDoubleFace = j.value("allowDoubleFace", config.allowDoubleFace);
+    // 是否生成几何双面: 零厚度贴片保留正反两面(关掉则朝向相反的重合面只留一张)
+    config.doubleSidedGeometry = j.value("doubleSidedGeometry", config.doubleSidedGeometry);
     // 叠加层外移步长: 过小会在 Eevee 下 z-fighting, 过大在近景会看到层间错位
     config.overlayLayerStep = std::clamp(j.value("overlayLayerStep", config.overlayLayerStep), 0.0002f, 0.05f);
     // matchTiles 以 '_' 结尾时是否再做前缀族匹配(关掉只保留剥掉下划线后的精确匹配)

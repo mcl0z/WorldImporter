@@ -1226,6 +1226,55 @@ void processElements(const nlohmann::json& modelJson, ModelData& data,
 
             // Zero-thickness foliage explicitly defines both windings. Keep
             // both sides: their texture, UV rotation or tint may differ.
+            // 默认保留正反两面（与游戏一致；Blender 判重问题由 SeparateCoincidentFaces 解决）。
+            // doubleSidedGeometry=false 时退回旧行为：朝向相反且完全重合的两面只留一张。
+            if (!config.doubleSidedGeometry) {
+                auto getOppositeFace = [](const std::string& faceName) -> std::string {
+                    if (faceName == "north") return "south";
+                    if (faceName == "south") return "north";
+                    if (faceName == "east") return "west";
+                    if (faceName == "west") return "east";
+                    if (faceName == "up") return "down";
+                    if (faceName == "down") return "up";
+                    return "";
+                };
+                auto areFacesCoinciding = [](const std::vector<std::vector<float>>& face1,
+                    const std::vector<std::vector<float>>& face2) -> bool {
+                        if (face1.size() != face2.size()) return false;
+                        auto toKey = [](const std::vector<float>& v) {
+                            char buffer[64];
+                            snprintf(buffer, sizeof(buffer), "%.4f,%.4f,%.4f", v[0], v[1], v[2]);
+                            return std::string(buffer);
+                        };
+                        std::unordered_set<std::string> set1;
+                        for (const auto& v : face1) set1.insert(toKey(v));
+                        for (const auto& v : face2) {
+                            if (!set1.count(toKey(v))) return false;
+                        }
+                        return true;
+                };
+
+                std::vector<std::string> facesToRemove;
+                for (const auto& faceEntry : elementVertices) {
+                    const std::string& faceName = faceEntry.first;
+                    const std::string opposite = getOppositeFace(faceName);
+                    if (opposite.empty()) continue;
+                    auto oppositeIt = elementVertices.find(opposite);
+                    if (oppositeIt == elementVertices.end()) continue;
+                    if (areFacesCoinciding(faceEntry.second, oppositeIt->second)) {
+                        if (faceName == "south" || faceName == "west" || faceName == "down") {
+                            facesToRemove.push_back(faceName);
+                        } else {
+                            facesToRemove.push_back(opposite);
+                        }
+                    }
+                }
+                std::sort(facesToRemove.begin(), facesToRemove.end());
+                facesToRemove.erase(std::unique(facesToRemove.begin(), facesToRemove.end()), facesToRemove.end());
+                for (const auto& faceToRemove : facesToRemove) {
+                    elementVertices.erase(faceToRemove);
+                }
+            }
 
             // 遍历每个面的数据,判断面是否存在,如果存在则处理
             for (auto& face : faces.items()) {
@@ -2270,6 +2319,53 @@ size_t PruneUnusedMaterials(ModelData& model, const std::unordered_set<std::stri
         }
     }
     return removed;
+}
+
+// Blender 的网格校验按"顶点索引集合"判重（不看绕序），会把共面正反两面删成一张。
+// 让同一组重合面里第二张及以后的面各持有一个独立顶点（坐标相同、索引不同），
+// 索引集合就不同了，Blender 会保留双面几何。
+namespace {
+struct FaceVertexSet {
+    int v[4];
+    bool operator==(const FaceVertexSet& other) const {
+        return v[0] == other.v[0] && v[1] == other.v[1] &&
+               v[2] == other.v[2] && v[3] == other.v[3];
+    }
+};
+struct FaceVertexSetHash {
+    size_t operator()(const FaceVertexSet& key) const {
+        size_t h = 1469598103934665603ull;
+        for (int i = 0; i < 4; ++i) {
+            h ^= static_cast<size_t>(static_cast<unsigned int>(key.v[i]));
+            h *= 1099511628211ull;
+        }
+        return h;
+    }
+};
+}
+
+size_t SeparateCoincidentFaces(ModelData& model) {
+    if (model.faces.size() < 2) return 0;
+    std::unordered_map<FaceVertexSet, int, FaceVertexSetHash> seen;
+    seen.reserve(model.faces.size());
+    size_t separated = 0;
+    for (auto& face : model.faces) {
+        FaceVertexSet key;
+        for (int k = 0; k < 4; ++k) key.v[k] = face.vertexIndices[k];
+        std::sort(key.v, key.v + 4);
+        if (seen.emplace(key, 1).second) continue;   // 这组顶点第一次出现
+
+        const int srcIndex = face.vertexIndices[0];
+        if (srcIndex < 0 || static_cast<size_t>(srcIndex) * 3 + 2 >= model.vertices.size()) continue;
+        const size_t base = static_cast<size_t>(srcIndex) * 3;
+        const int newIndex = static_cast<int>(model.vertices.size() / 3);
+        model.vertices.push_back(model.vertices[base]);
+        model.vertices.push_back(model.vertices[base + 1]);
+        model.vertices.push_back(model.vertices[base + 2]);
+        face.vertexIndices[0] = newIndex;
+        ++separated;
+    }
+    return separated;
 }
 
 // 辅助函数:将字符串方向转换为FaceType枚举
