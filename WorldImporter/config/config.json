@@ -21,6 +21,7 @@
     "lightBlockSize": 0.05,
     "allowDoubleFace": false,
     "doubleSidedGeometry": true,
+    "doubleSidedFaceOffset": 0.0005,
     "overlayLayerStep": 0.003,
     "ctmPrefixMatchTiles": true,
     "mergeModTextures": true,

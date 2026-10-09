@@ -11,6 +11,7 @@
 // #include <omp.h>
 #include <chrono>
 #include <span>
+#include <cmath>
 
 using namespace std::chrono;  
 
@@ -2322,8 +2323,9 @@ size_t PruneUnusedMaterials(ModelData& model, const std::unordered_set<std::stri
 }
 
 // Blender 的网格校验按"顶点索引集合"判重（不看绕序），会把共面正反两面删成一张。
-// 让同一组重合面里第二张及以后的面各持有一个独立顶点（坐标相同、索引不同），
-// 索引集合就不同了，Blender 会保留双面几何。
+// 让同一组重合面里第二张及以后的面各持有一份独立顶点，索引集合就不同了，Blender 会保留双面几何。
+// config.doubleSidedFaceOffset > 0 时，这份新顶点还会沿该面法线外移一点（两面分开 offset，
+// 关闭背面剔除时不再 z-fighting）；= 0 时坐标保持严格共面，只换索引。
 namespace {
 struct FaceVertexSet {
     int v[4];
@@ -2346,6 +2348,7 @@ struct FaceVertexSetHash {
 
 size_t SeparateCoincidentFaces(ModelData& model) {
     if (model.faces.size() < 2) return 0;
+    const float offset = config.doubleSidedFaceOffset;
     std::unordered_map<FaceVertexSet, int, FaceVertexSetHash> seen;
     seen.reserve(model.faces.size());
     size_t separated = 0;
@@ -2355,14 +2358,52 @@ size_t SeparateCoincidentFaces(ModelData& model) {
         std::sort(key.v, key.v + 4);
         if (seen.emplace(key, 1).second) continue;   // 这组顶点第一次出现
 
-        const int srcIndex = face.vertexIndices[0];
-        if (srcIndex < 0 || static_cast<size_t>(srcIndex) * 3 + 2 >= model.vertices.size()) continue;
-        const size_t base = static_cast<size_t>(srcIndex) * 3;
-        const int newIndex = static_cast<int>(model.vertices.size() / 3);
-        model.vertices.push_back(model.vertices[base]);
-        model.vertices.push_back(model.vertices[base + 1]);
-        model.vertices.push_back(model.vertices[base + 2]);
-        face.vertexIndices[0] = newIndex;
+        float p[4][3];
+        bool valid = true;
+        for (int k = 0; k < 4 && valid; ++k) {
+            const int idx = face.vertexIndices[k];
+            if (idx < 0 || static_cast<size_t>(idx) * 3 + 2 >= model.vertices.size()) {
+                valid = false;
+                break;
+            }
+            const size_t base = static_cast<size_t>(idx) * 3;
+            for (int c = 0; c < 3; ++c) p[k][c] = model.vertices[base + c];
+        }
+        if (!valid) continue;
+
+        // 面法线（按绕序，右手定则）
+        float n[3] = { 0.0f, 0.0f, 0.0f };
+        if (offset > 0.0f) {
+            const float e1[3] = { p[1][0] - p[0][0], p[1][1] - p[0][1], p[1][2] - p[0][2] };
+            const float e2[3] = { p[2][0] - p[0][0], p[2][1] - p[0][1], p[2][2] - p[0][2] };
+            n[0] = e1[1] * e2[2] - e1[2] * e2[1];
+            n[1] = e1[2] * e2[0] - e1[0] * e2[2];
+            n[2] = e1[0] * e2[1] - e1[1] * e2[0];
+            const float len = std::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+            if (len > 1e-12f) {
+                n[0] /= len; n[1] /= len; n[2] /= len;
+            } else {
+                n[0] = n[1] = n[2] = 0.0f;   // 退化面：只换索引，不偏移
+            }
+        }
+
+        if (n[0] != 0.0f || n[1] != 0.0f || n[2] != 0.0f) {
+            // 4 个顶点各自复制一份并沿法线外移，面保持平面
+            for (int k = 0; k < 4; ++k) {
+                const int newIndex = static_cast<int>(model.vertices.size() / 3);
+                model.vertices.push_back(p[k][0] + n[0] * offset);
+                model.vertices.push_back(p[k][1] + n[1] * offset);
+                model.vertices.push_back(p[k][2] + n[2] * offset);
+                face.vertexIndices[k] = newIndex;
+            }
+        } else {
+            // 只复制第一个顶点：索引集合不同即可，坐标严格共面
+            const int newIndex = static_cast<int>(model.vertices.size() / 3);
+            model.vertices.push_back(p[0][0]);
+            model.vertices.push_back(p[0][1]);
+            model.vertices.push_back(p[0][2]);
+            face.vertexIndices[0] = newIndex;
+        }
         ++separated;
     }
     return separated;

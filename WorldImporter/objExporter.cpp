@@ -419,11 +419,14 @@ void createObjFile(const ModelData& data, const std::string& objName, const std:
     oss << "o " << name << "\n\n";
     // 写入顶点数据(每3个元素一个顶点)
     oss << "# Vertices (" << data.vertices.size() / 3 << ")\n";
+    // 固定 6 位小数: 默认精度只有 6 位有效数字, 坐标上千时会把几何双面的微小偏移抹掉
+    oss << std::fixed << std::setprecision(6);
     for (size_t i = 0; i < data.vertices.size(); i += 3) {
         oss << "v " << data.vertices[i] << " "
             << data.vertices[i + 1] << " "
             << data.vertices[i + 2] << "\n";
     }
+    oss << std::defaultfloat;
     oss << "\n";
 
     // 写入UV坐标(每2个元素一个UV)
