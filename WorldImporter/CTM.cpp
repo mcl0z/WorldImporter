@@ -550,11 +550,11 @@ static thread_local std::string t_textureNs;
 static thread_local std::string t_textureName;
 static thread_local std::string t_currentFullName;
 
-static bool NeighborUsesTexture(const Block& nb) {
+static bool NeighborUsesTexture(const Block& nb, int nx, int ny, int nz) {
     std::string full = nb.name;
     size_t c = full.find(':');
     std::string blockId = c == std::string::npos ? full : full.substr(c + 1);
-    ModelData m = GetRandomModelFromCache(nb.GetNamespace(), blockId);
+    ModelData m = GetRandomModelFromCache(nb.GetNamespace(), blockId, BlockPosSeed(nx, ny, nz));
     for (const auto& mat : m.materials) {
         std::string mns = nb.GetNamespace(), path = mat.name;
         size_t mc = path.find(':');
@@ -580,7 +580,7 @@ static bool IsConnected(int x, int y, int z, int dx, int dy, int dz,
     if (mode == "tile" || mode == "material") {
         // 同类方块通常必然使用同一目标贴图，先走快速路径。
         if (nbBase == curBaseName) return true;
-        return NeighborUsesTexture(nb);
+        return NeighborUsesTexture(nb, x + dx, y + dy, z + dz);
     }
     return nbBase == curBaseName;
 }
@@ -1719,7 +1719,8 @@ static bool OverlaySideIsSameOverlay(const CtmRule& rule, int x, int y, int z,
     if (!rule.matchTiles.empty()) {
         std::string full = nb.name;
         size_t c = full.find(':');
-        ModelData m = GetRandomModelFromCache(nb.GetNamespace(), c == std::string::npos ? full : full.substr(c + 1));
+        ModelData m = GetRandomModelFromCache(nb.GetNamespace(), c == std::string::npos ? full : full.substr(c + 1),
+                                              BlockPosSeed(x + off[0], y + off[1], z + off[2]));
         for (const auto& mat : m.materials) {
             std::string mns = nb.GetNamespace(), path = mat.name;
             size_t mc = path.find(':');
@@ -1743,7 +1744,8 @@ static bool OverlayNeighborMatches(const CtmRule& rule, int x, int y, int z, con
     if (!rule.connectBlocks.empty() && BlockMatchesAny(nb.GetNameAndNameSpaceWithoutState(), rule.connectBlocks)) return true;
     if (!rule.connectTiles.empty()) {
         std::string full = nb.name; size_t c = full.find(':');
-        ModelData m = GetRandomModelFromCache(nb.GetNamespace(), c == std::string::npos ? full : full.substr(c+1));
+        ModelData m = GetRandomModelFromCache(nb.GetNamespace(), c == std::string::npos ? full : full.substr(c+1),
+                                              BlockPosSeed(x + off[0], y + off[1], z + off[2]));
         for (const auto& mat : m.materials) {
             std::string mns = nb.GetNamespace(), path = mat.name;
             size_t mc = path.find(':'); if (mc != std::string::npos) { mns=path.substr(0,mc); path=path.substr(mc+1); }

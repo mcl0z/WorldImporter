@@ -33,7 +33,7 @@
     "activeLOD3": false,
     "activeLOD4": false,
     "useBiomeColors": true,
-    "useRandomBlockModels": true,
+    "variantSeedMode": "game",
     "useUnderwaterLOD": false,
     "useGreedyMesh": true,
     "isLODAutoCenter": true,

@@ -104,7 +104,8 @@ std::string GetBlockAverageColor(int blockId, Block currentBlock, int x, int y, 
         AssignFluidMaterials(blockModel, currentBlock.fluidName);
     }
     else {
-        blockModel = GetRandomModelFromCache(ns, blockName);
+        // 加权变体按方块坐标挑选，和游戏一致（此处 x/y/z 即目标方块坐标）
+        blockModel = GetRandomModelFromCache(ns, blockName, BlockPosSeed(x, y, z));
     }
     std::string cacheKey = std::to_string(blockId) + ":" + faceDirection;
     std::string textureAverage;

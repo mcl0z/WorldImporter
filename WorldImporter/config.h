@@ -21,6 +21,14 @@ struct VersionConfig {
     }
 };
 
+// 加权变体的挑选方式。
+//   Game  : 与原版一致 —— 用方块坐标算出渲染种子(Mth.getSeed)，再用
+//           LegacyRandomSource 抽一次 nextInt(总权重)。同一坐标永远同一变体，
+//           因此导出可复现，且与游戏里看到的图案逐格一致。
+//   First : 永远取第一个变体(关掉防重复贴图的观感)。
+//   Random: 旧行为 —— std::random_device 播种的真随机，每次导出结果都不同。
+enum class VariantSeedMode { Game, First, Random };
+
 // 全局配置结构体
 struct Config {
     std::string worldPath;  // Minecraft 世界路径
@@ -63,7 +71,7 @@ struct Config {
     bool activeLOD3; // 是否启用LOD3
     bool activeLOD4; // 是否启用LOD4
     bool useBiomeColors; // 是否启用群系颜色叠加
-    bool useRandomBlockModels; // 是否使用随机方块模型
+    VariantSeedMode variantSeedMode; // 加权变体的挑选方式(默认 Game=与游戏一致且可复现)
     bool importEntities; // 导出区域内生物/实体元数据
 
     bool exportFullModel;  // 是否完整导入
@@ -114,7 +122,7 @@ struct Config {
         activeLOD4(true),
         lod1Blocks({}),
         useBiomeColors(true),
-        useRandomBlockModels(true),
+        variantSeedMode(VariantSeedMode::Game),
         importEntities(false),
 
         exportFullModel(false),

@@ -68,7 +68,18 @@ Config LoadConfig(const std::string& configFile) {
     config.activeLOD3 = j.value("activeLOD3", config.activeLOD3);
     config.activeLOD4 = j.value("activeLOD4", config.activeLOD4);
     config.useBiomeColors = j.value("useBiomeColors", config.useBiomeColors);
-    config.useRandomBlockModels = j.value("useRandomBlockModels", config.useRandomBlockModels);
+    // 加权变体挑选方式。旧开关 useRandomBlockModels 已被 variantSeedMode 取代，
+    // 这里只作为老配置文件的兼容回退读取：显式 false 等价于 First，其余默认 Game
+    // （与游戏一致，且导出可复现）。
+    if (j.contains("variantSeedMode") && j["variantSeedMode"].is_string()) {
+        const std::string mode = j["variantSeedMode"].get<std::string>();
+        if (mode == "random") config.variantSeedMode = VariantSeedMode::Random;
+        else if (mode == "first" || mode == "off") config.variantSeedMode = VariantSeedMode::First;
+        else config.variantSeedMode = VariantSeedMode::Game;
+    } else if (j.contains("useRandomBlockModels") && j["useRandomBlockModels"].is_boolean() &&
+               !j["useRandomBlockModels"].get<bool>()) {
+        config.variantSeedMode = VariantSeedMode::First;
+    }
     config.importEntities = j.value("importEntities", config.importEntities);
     
     // 读取LOD1级别使用原始模型的方块列表
