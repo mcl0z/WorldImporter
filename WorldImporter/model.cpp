@@ -995,7 +995,10 @@ static std::vector<std::vector<float>> ComputeFaceUvCoords(
     if (steps != 0) {
         std::vector<std::vector<float>> rotatedUV(4);
         for (int i = 0; i < 4; i++) {
-            rotatedUV[i] = uvCoords[(i - steps + 4) % 4];
+            // 原版 BlockFaceUV.getShiftedIndex 是 (i + rotation/90)%4，
+            // 顺时针旋转；这里必须是 +steps。用 -steps 会让 90/270 的面差 180°
+            // （180 因 ±2 等价而看不出，故此前未暴露）。
+            rotatedUV[i] = uvCoords[(i + steps) % 4];
         }
         uvCoords = rotatedUV;
     }
@@ -1071,7 +1074,12 @@ void processElements(const nlohmann::json& modelJson, ModelData& data,
                     elementVertices[faceName] = { {x2, y2, z2}, {x2, y2, z1} ,{x1, y2, z1}, {x1, y2, z2}  };
                 }
                 else if (faceName == "down") {
-                    elementVertices[faceName] = {  {x1, y1, z2}, {x1, y1, z1}, {x2, y1, z1},{ x2, y1, z2 }};
+                    // 必须与其他五面一致地相对原版 FaceInfo 循环移 2 位：
+                    // 通用 UV 顺序是 [(u2,v2),(u2,v1),(u1,v1),(u1,v2)]，比原版
+                    // BlockFaceUV 的索引约定正好差 2 位；五面靠角点表移 2 位抵消，
+                    // down 若照抄原版角点表就会整体差 180° 旋转（贴图上下颠倒）。
+                    // 循环移 2 位不改变绕序与法线(仍为 -y)。
+                    elementVertices[faceName] = {  {x2, y1, z1}, {x2, y1, z2}, {x1, y1, z2},{ x1, y1, z1 }};
                 }
             }
 
