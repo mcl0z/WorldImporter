@@ -1,4 +1,5 @@
-﻿#include "blockstate.h"
+#include "blockstate.h"
+#include "blockposseed.h"
 #include "fileutils.h"
 #include "ObjExporter.h"
 #include <regex>
@@ -15,7 +16,7 @@ std::unordered_map<std::string, std::unordered_map<std::string, ModelData>> Bloc
 
 std::unordered_map<std::string,std::unordered_map<std::string,std::vector<WeightedModelData>>> VariantModelCache;
 
-std::unordered_map<std::string,std::unordered_map<std::string,std::vector<std::vector<WeightedModelData>>>> MultipartModelCache;
+std::unordered_map<std::string,std::unordered_map<std::string,std::vector<MultipartGroup>>> MultipartModelCache;
 
 // 将互斥锁类型更改为 std::shared_mutex
 std::shared_mutex blockstateCachesMutex;
@@ -225,9 +226,33 @@ nlohmann::json GetBlockstateJson(const std::string& namespaceName, const std::st
 }
 
 // --------------------------------------------------------------------------------
+// --------------------------------------------------------------------------------
+// 与游戏一致的加权变体挑选
+// --------------------------------------------------------------------------------
+// 种子(Mth.getSeed)与随机数(LegacyRandomSource)放在 blockposseed.h 里，
+// 便于单元测试直接检查这份实现本身。
+namespace {
+// 按权重累加把 [0, totalWeight) 的索引映射到具体模型（原版 WeightedList 的选择器）
+const ModelData* PickByIndex(const std::vector<WeightedModelData>& models, int index) {
+    int cumulative = 0;
+    for (const auto& wm : models) {
+        cumulative += wm.weight;
+        if (index < cumulative) return &wm.model;
+    }
+    return models.empty() ? nullptr : &models.front().model;
+}
+
+int TotalWeight(const std::vector<WeightedModelData>& models) {
+    int total = 0;
+    for (const auto& wm : models) total += wm.weight;
+    return total;
+}
+} // namespace
+
 // 方块状态 JSON 处理
 // --------------------------------------------------------------------------------
-ModelData GetRandomModelFromCache(const std::string& namespaceName, const std::string& blockId) {
+ModelData GetRandomModelFromCache(const std::string& namespaceName, const std::string& blockId,
+                                  std::optional<long long> posSeed) {
     // 加载阶段持锁，模型阶段缓存冻结后直接并发只读，避免每个方块一次 shared_mutex。
     std::shared_lock<std::shared_mutex> lock(blockstateCachesMutex, std::defer_lock);
     if (!blockstateCachesFrozen.load(std::memory_order_acquire)) lock.lock();
@@ -251,10 +276,12 @@ ModelData GetRandomModelFromCache(const std::string& namespaceName, const std::s
         }
 
         if (totalWeight > 0) {
-            if (config.useRandomBlockModels) {
-                thread_local static std::mt19937 gen(std::random_device{}()); // 使用 thread_local 随机数生成器
+            const VariantSeedMode mode = config.variantSeedMode;
+            if (mode == VariantSeedMode::Random) {
+                // 旧行为：真随机（每次导出结果都不同），仅作兼容保留
+                thread_local static std::mt19937 gen(std::random_device{}());
                 std::uniform_int_distribution<> dis(1, totalWeight);
-                int randomWeight = dis(gen);
+                const int randomWeight = dis(gen);
                 int cumulative = 0;
                 for (const auto& wm : models) {
                     cumulative += wm.weight;
@@ -262,47 +289,76 @@ ModelData GetRandomModelFromCache(const std::string& namespaceName, const std::s
                         return wm.model;
                     }
                 }
-            } else {
-                // 当禁用随机时，总是返回第一个模型
                 return models[0].model;
             }
+            if (mode == VariantSeedMode::Game && posSeed.has_value()) {
+                // 与游戏一致：用该方块的渲染种子重播种，再抽一次 nextInt(总权重)。
+                // 坐标相同 → 结果相同，所以导出可复现且与游戏逐格一致。
+                LegacyRandom rng(*posSeed);
+                if (const ModelData* picked = PickByIndex(models, rng.nextInt(totalWeight))) {
+                    return *picked;
+                }
+            }
+            // First 模式，或调用点拿不到坐标（实体方块/create/LOD 等路径）：
+            // 取第一个变体，保证结果依然可复现。
+            return models[0].model;
         }
         }
     }
 
-    // 检查 multipart 缓存:在 multipart 时只进行一次随机,
-    // 对每个组选取对应位置的模型(如果该位置没有则使用第一个)
+    // 检查 multipart 缓存
     auto multipartNsIt = MultipartModelCache.find(namespaceName);
     if (multipartNsIt != MultipartModelCache.end()) {
         auto multipartIt = multipartNsIt->second.find(blockId);
         if (multipartIt == multipartNsIt->second.end()) return ModelData();
         const auto& partList = multipartIt->second;
 
-        // 计算所有组中模型数的最大值作为随机索引的范围
+        // 计算所有组中模型数的最大值（Random 旧行为需要它作为索引范围）
         size_t maxCount = 0;
-        for (const auto& parts : partList) {
-            if (parts.size() > maxCount) {
-                maxCount = parts.size();
+        for (const auto& group : partList) {
+            if (group.models.size() > maxCount) {
+                maxCount = group.models.size();
             }
         }
         if (maxCount == 0) {
             return ModelData();
         }
 
-        int selectedIndex = 0;
-        if (config.useRandomBlockModels) {
-            thread_local static std::mt19937 gen_multi(std::random_device{}()); // 为 multipart 使用单独的 thread_local 生成器
-            std::uniform_int_distribution<> dis(0, maxCount - 1);
-            selectedIndex = dis(gen_multi);
-        }
-
         ModelData merged;
-        for (const auto& parts : partList) {
-            int index = selectedIndex;
-            if (index >= parts.size()) {
-                index = 0; // 如果当前组中没有该位置的模型,则默认选第一个
+        if (config.variantSeedMode == VariantSeedMode::Game && posSeed.has_value()) {
+            // 与游戏一致：同一个随机流按分组顺序【逐组】抽取。
+            // 原版里只有 apply 写成数组的分组是 WeightedVariants（会消耗随机数），
+            // 对象形式是 SingleVariant（不消耗）——消费序列错一位，后面所有组都会错位。
+            LegacyRandom rng(*posSeed);
+            for (const auto& group : partList) {
+                if (group.models.empty()) continue;
+                const ModelData* picked = &group.models.front().model;
+                if (group.weighted) {
+                    const int total = TotalWeight(group.models);
+                    if (total > 0) {
+                        if (const ModelData* byIndex = PickByIndex(group.models, rng.nextInt(total))) {
+                            picked = byIndex;
+                        }
+                    }
+                }
+                merged = MergeModelData(merged, *picked);
             }
-            merged = MergeModelData(merged, parts[index].model);
+        } else {
+            // First / 无坐标 / Random：沿用"一个索引套用到所有组"的旧结构
+            int selectedIndex = 0;
+            if (config.variantSeedMode == VariantSeedMode::Random) {
+                thread_local static std::mt19937 gen_multi(std::random_device{}());
+                std::uniform_int_distribution<> dis(0, static_cast<int>(maxCount) - 1);
+                selectedIndex = dis(gen_multi);
+            }
+            for (const auto& group : partList) {
+                if (group.models.empty()) continue;
+                size_t index = static_cast<size_t>(selectedIndex);
+                if (index >= group.models.size()) {
+                    index = 0; // 如果当前组中没有该位置的模型,则默认选第一个
+                }
+                merged = MergeModelData(merged, group.models[index].model);
+            }
         }
         return merged;
     }
@@ -343,9 +399,9 @@ std::vector<ModelData> GetAllModelsFromCache(const std::string& namespaceName, c
         auto multipartIt = multipartNsIt->second.find(blockId);
         if (multipartIt != multipartNsIt->second.end()) {
             ModelData merged;
-            for (const auto& parts : multipartIt->second) {
-                if (!parts.empty()) {
-                    merged = MergeModelData(merged, parts[0].model);
+            for (const auto& group : multipartIt->second) {
+                if (!group.models.empty()) {
+                    merged = MergeModelData(merged, group.models[0].model);
                 }
             }
             if (!merged.vertices.empty()) {
@@ -535,7 +591,7 @@ void ProcessBlockstate(const std::string& namespaceName, const std::vector<std::
 
             if (useMultipartModelCache) {
                 // 存储所有 multipart 项的模型组,每项都作为列表处理
-                std::vector<std::vector<WeightedModelData>> multipartModelsList;
+                std::vector<MultipartGroup> multipartModelsList;
                 for (const auto& item : multipart) {
                     if (!item.contains("apply"))
                         continue;
@@ -608,12 +664,17 @@ void ProcessBlockstate(const std::string& namespaceName, const std::vector<std::
                     }
 
                     if (!multipartModels.empty()) {
-                        multipartModelsList.push_back(multipartModels);
+                        // 记下该分组的 apply 是不是数组：原版里数组=WeightedVariants
+                        // （取模型时消耗一次随机数），对象=SingleVariant（不消耗）。
+                        MultipartGroup group;
+                        group.models = std::move(multipartModels);
+                        group.weighted = item["apply"].is_array();
+                        multipartModelsList.push_back(std::move(group));
                     }
                 }
                 // 以方块 id 为主重命名材质（每个方块独立材质）
                 for (auto& group : multipartModelsList) {
-                    for (auto& wm : group) {
+                    for (auto& wm : group.models) {
                         RenameBlockMaterials(wm.model, namespaceName, baseBlockId);
                     }
                 }

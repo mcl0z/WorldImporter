@@ -389,6 +389,12 @@ void RegionModelExporter::ExportModels(const string& outputName) {
                             const string groupFileName = outputName +
                                 "_x" + to_string(group.startX) +
                                 "_z" + to_string(group.startZ);
+                            {
+                                // 分组模型各自剪掉无面引用的材质，避免写进共享 mtl
+                                const std::unordered_set<std::string> overlayKeep = GetOverlayReferencedMaterialNames();
+                                SeparateCoincidentFaces(groupModel);
+                                PruneUnusedMaterials(groupModel, &overlayKeep);
+                            }
                             CreateMultiModelFiles(groupModel, groupFileName, localMaterials, outputName);
                             recordMaterials(localMaterials, localTints);
                         }
@@ -453,7 +459,9 @@ void RegionModelExporter::ExportModels(const string& outputName) {
     std::cout << "========== 全部批次处理完成 ==========" << std::endl;
     std::cout << "  统计:唯一材质 " << uniqueMaterials.size()
               << ",唯一 tint " << uniqueTints.size()
-              << ",总顶点 " << finalMergedModel.vertices.size() << std::endl;
+              << ",总顶点 " << finalMergedModel.vertices.size()
+              << ",模组材质复用 " << GetModMaterialReuseCount() << " 次"
+              << "(" << (config.mergeModTextures ? "开" : "关") << ")" << std::endl;
     std::cout.flush();
 
     // 导出不同类型的生物群系颜色图片
@@ -475,6 +483,16 @@ void RegionModelExporter::ExportModels(const string& outputName) {
         { CrafterLog::StageTimer t("顶点去重");
         monitor.SetStatus(TaskStatus::DEDUPLICATING_VERTICES, "DeduplicateModel");
         ModelDeduplicator::DeduplicateModel(finalMergedModel);
+        }
+        { CrafterLog::StageTimer t("分离共面正反面");
+        const size_t separatedFaces = SeparateCoincidentFaces(finalMergedModel);
+        std::cout << "分离共面正反面: 处理 " << separatedFaces << " 张面（避免 Blender 判重时丢面）" << std::endl;
+        }
+        { CrafterLog::StageTimer t("材质剪枝");
+        const std::unordered_set<std::string> overlayKeep = GetOverlayReferencedMaterialNames();
+        const size_t prunedMaterials = PruneUnusedMaterials(finalMergedModel, &overlayKeep);
+        std::cout << "材质剪枝: 移除 " << prunedMaterials << " 个无引用材质, 剩余 "
+                  << finalMergedModel.materials.size() << " 个" << std::endl;
         }
         { CrafterLog::StageTimer t("写入模型文件");
         monitor.SetStatus(TaskStatus::EXPORTING_MODELS, "CreateModelFiles");

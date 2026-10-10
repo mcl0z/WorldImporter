@@ -44,8 +44,16 @@ Config LoadConfig(const std::string& configFile) {
     config.exportLightBlockOnly = j.value("exportLightBlockOnly", config.exportLightBlockOnly);
     config.lightBlockSize = j.value("lightBlockSize", config.lightBlockSize);
     config.allowDoubleFace = j.value("allowDoubleFace", config.allowDoubleFace);
+    // 是否生成几何双面: 零厚度贴片保留正反两面(关掉则朝向相反的重合面只留一张)
+    config.doubleSidedGeometry = j.value("doubleSidedGeometry", config.doubleSidedGeometry);
+    // 几何双面的反面外移量(米): 0 = 严格共面只换索引; 上限 0.05 避免看得出错位
+    config.doubleSidedFaceOffset = std::clamp(j.value("doubleSidedFaceOffset", config.doubleSidedFaceOffset), 0.0f, 0.05f);
     // 叠加层外移步长: 过小会在 Eevee 下 z-fighting, 过大在近景会看到层间错位
     config.overlayLayerStep = std::clamp(j.value("overlayLayerStep", config.overlayLayerStep), 0.0002f, 0.05f);
+    // matchTiles 以 '_' 结尾时是否再做前缀族匹配(关掉只保留剥掉下划线后的精确匹配)
+    config.ctmPrefixMatchTiles = j.value("ctmPrefixMatchTiles", config.ctmPrefixMatchTiles);
+    // 模组方块是否复用同一张贴图已有的材质(原版方块之间始终不合并)
+    config.mergeModTextures = j.value("mergeModTextures", config.mergeModTextures);
     config.isLODAutoCenter = j.value("isLODAutoCenter", config.isLODAutoCenter);
     config.LODCenterX = j.value("LODCenterX", config.LODCenterX);
     config.LODCenterZ = j.value("LODCenterZ", config.LODCenterZ);
@@ -60,7 +68,18 @@ Config LoadConfig(const std::string& configFile) {
     config.activeLOD3 = j.value("activeLOD3", config.activeLOD3);
     config.activeLOD4 = j.value("activeLOD4", config.activeLOD4);
     config.useBiomeColors = j.value("useBiomeColors", config.useBiomeColors);
-    config.useRandomBlockModels = j.value("useRandomBlockModels", config.useRandomBlockModels);
+    // 加权变体挑选方式。旧开关 useRandomBlockModels 已被 variantSeedMode 取代，
+    // 这里只作为老配置文件的兼容回退读取：显式 false 等价于 First，其余默认 Game
+    // （与游戏一致，且导出可复现）。
+    if (j.contains("variantSeedMode") && j["variantSeedMode"].is_string()) {
+        const std::string mode = j["variantSeedMode"].get<std::string>();
+        if (mode == "random") config.variantSeedMode = VariantSeedMode::Random;
+        else if (mode == "first" || mode == "off") config.variantSeedMode = VariantSeedMode::First;
+        else config.variantSeedMode = VariantSeedMode::Game;
+    } else if (j.contains("useRandomBlockModels") && j["useRandomBlockModels"].is_boolean() &&
+               !j["useRandomBlockModels"].get<bool>()) {
+        config.variantSeedMode = VariantSeedMode::First;
+    }
     config.importEntities = j.value("importEntities", config.importEntities);
     
     // 读取LOD1级别使用原始模型的方块列表
