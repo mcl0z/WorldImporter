@@ -20,6 +20,8 @@
 #include "JarReader.h"
 #include "fileutils.h"
 #include "CTM.h"
+#include "ModCT.h"
+#include "CableMesher.h"
 #include <iostream>
 #include <filesystem> 
 #include <chrono>
@@ -417,5 +419,7 @@ void InitializeAllCaches() {
 
         // 解析 CTM 规则并构建索引(在所有资源合并完成后)
         InitializeCtmRules();
+        InitializeModCT();
+        InitializeCableMeshers();
         });
 }

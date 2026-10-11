@@ -21,7 +21,7 @@
 #include "chunk.h"
 #include "nbtutils.h"
 #include "hashutils.h"
-#include "Fluid.h"
+#include "fluid.h"
 #include "GlobalCache.h"
 extern Config config;
 
@@ -243,7 +243,7 @@ struct Block {
             std::transform(key.begin(), key.end(), key.begin(), ::tolower); // 转换为小写
 
             // 修改这里：保留waterlogged属性，只过滤distance和persistent
-            if (key != "distance" && key != "persistent") {
+            if ((key != "distance" && key != "persistent") || name.find("leaves") == std::string::npos) {
                 filteredPairs.push_back(pairStr);
             }
         }
@@ -317,7 +317,7 @@ struct Block {
                 // 判断是否需要保留该键值对
                 bool keep = true;
                 // 修改这里：保留waterlogged属性，只过滤distance和persistent
-                if (key == "distance" || key == "persistent") {
+                if ((key == "distance" || key == "persistent") && name.find("leaves") != std::string::npos) {
                     keep = false; // 移除这些键
                 }
 
@@ -399,7 +399,7 @@ struct Block {
             std::transform(key.begin(), key.end(), key.begin(), ::tolower); // 转换为小写
 
             // 修改这里：保留waterlogged属性，只过滤distance和persistent
-            if (key != "distance" && key != "persistent") {
+            if ((key != "distance" && key != "persistent") || name.find("leaves") == std::string::npos) {
                 filteredPairs.push_back(pairStr);
             }
         }

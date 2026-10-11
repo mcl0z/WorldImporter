@@ -1,5 +1,6 @@
 // ==================== OptiFine CTM 连接材质实现 ====================
 #include "CTM.h"
+#include "ModCT.h"
 #include "block.h"          // GetBlockId / GetBlockById / Block
 #include "blockstate.h"     // GetRandomModelFromCache (connect=tile)
 #include "model.h"          // ModelData / Face / Material / FaceType
@@ -348,6 +349,12 @@ void InitializeCtmRules() {
     for (const auto& entry : GlobalCache::mcmetaIndex) {
         auto it = GlobalCache::mcmetaCache.find(entry.second);
         if (it == GlobalCache::mcmetaCache.end() || !it->second.is_object()) continue;
+        // LDLib / GTCEu connection sheets
+        if (it->second.contains("ldlib") && it->second["ldlib"].is_object() &&
+            it->second["ldlib"].contains("connection")) {
+            g_hasCtmRules = true;
+            break;
+        }
         if (!it->second.contains("ctm") || !it->second["ctm"].is_object()) continue;
         const auto& ctm = it->second["ctm"];
         if (ctm.value("ctm_version", 0) != 1) continue;
@@ -368,6 +375,108 @@ void InitializeCtmRules() {
 }
 
 bool HasCtmRules() { return g_hasCtmRules; }
+
+bool RegisterSyntheticCompactCtmRule(
+    const std::string& ruleNs,
+    const std::string& baseDir,
+    const std::vector<std::string>& matchBlocks,
+    const std::string& matchTileNs,
+    const std::string& matchTilePath,
+    const std::array<std::vector<unsigned char>, 5>& tilePngs) {
+    if (ruleNs.empty() || baseDir.empty() || matchTilePath.empty()) return false;
+    for (int i = 0; i < 5; ++i) {
+        if (tilePngs[i].empty()) return false;
+    }
+
+    // Inject tile PNGs into CTM texture cache (modId "modct").
+    {
+        std::unique_lock<std::shared_mutex> lock(GlobalCache::cacheMutex);
+        for (int i = 0; i < 5; ++i) {
+            std::string rel = baseDir + "/" + std::to_string(i);
+            std::string cacheKey = std::string("modct:") + ruleNs + ":" + rel;
+            std::string indexKey = std::string("ctmtextures:") + ruleNs + ":" + rel;
+            if (GlobalCache::ctmTextures.find(cacheKey) == GlobalCache::ctmTextures.end()) {
+                GlobalCache::ctmTextures.emplace(cacheKey, tilePngs[i]);
+            }
+            GlobalCache::ctmTexturesIndex[indexKey] = cacheKey;
+        }
+    }
+
+    CtmRule rule;
+    rule.ns = ruleNs;
+    rule.baseDir = baseDir;
+    rule.method = CtmMethod::CtmCompact;
+    rule.tiles = {0, 1, 2, 3, 4};
+    rule.matchBlocks = matchBlocks;
+    rule.matchTiles = {matchTilePath};
+    rule.matchTileNamespaces = {matchTileNs};
+    rule.propertiesPath = "modct/" + baseDir + ".synthetic";
+    rule.connect = "block";
+
+    size_t idx = g_ctmRules.size();
+    g_ctmRules.push_back(std::move(rule));
+    for (const auto& fullBlock : g_ctmRules[idx].matchBlocks) {
+        g_rulesByBlock[fullBlock].push_back(idx);
+    }
+    g_rulesByTile[matchTileNs + ":" + matchTilePath].push_back(idx);
+    g_hasCtmRules = true;
+    return true;
+}
+
+bool RegisterSyntheticCtmRule(
+    CtmMethod method,
+    const std::string& ruleNs,
+    const std::string& baseDir,
+    const std::vector<std::string>& matchBlocks,
+    const std::string& matchTileNs,
+    const std::string& matchTilePath,
+    const std::vector<std::vector<unsigned char>>& tilePngs,
+    int width,
+    int height) {
+    if (ruleNs.empty() || baseDir.empty() || matchTilePath.empty()) return false;
+    if (tilePngs.empty()) return false;
+    for (const auto& t : tilePngs) if (t.empty()) return false;
+    if (method == CtmMethod::None || method == CtmMethod::Unknown) return false;
+
+    {
+        std::unique_lock<std::shared_mutex> lock(GlobalCache::cacheMutex);
+        for (size_t i = 0; i < tilePngs.size(); ++i) {
+            std::string rel = baseDir + "/" + std::to_string(i);
+            std::string cacheKey = std::string("modct:") + ruleNs + ":" + rel;
+            std::string indexKey = std::string("ctmtextures:") + ruleNs + ":" + rel;
+            if (GlobalCache::ctmTextures.find(cacheKey) == GlobalCache::ctmTextures.end()) {
+                GlobalCache::ctmTextures.emplace(cacheKey, tilePngs[i]);
+            }
+            GlobalCache::ctmTexturesIndex[indexKey] = cacheKey;
+        }
+    }
+
+    CtmRule rule;
+    rule.ns = ruleNs;
+    rule.baseDir = baseDir;
+    rule.method = method;
+    rule.tiles.clear();
+    for (size_t i = 0; i < tilePngs.size(); ++i) rule.tiles.push_back(static_cast<int>(i));
+    rule.matchBlocks = matchBlocks;
+    rule.matchTiles = {matchTilePath};
+    rule.matchTileNamespaces = {matchTileNs};
+    rule.propertiesPath = "modct/" + baseDir + ".synthetic";
+    rule.connect = "block";
+    if (method == CtmMethod::Repeat) {
+        rule.width = width > 0 ? width : static_cast<int>(tilePngs.size());
+        rule.height = height > 0 ? height : 1;
+    }
+
+    size_t idx = g_ctmRules.size();
+    g_ctmRules.push_back(std::move(rule));
+    for (const auto& fullBlock : g_ctmRules[idx].matchBlocks) {
+        g_rulesByBlock[fullBlock].push_back(idx);
+    }
+    g_rulesByTile[matchTileNs + ":" + matchTilePath].push_back(idx);
+    g_hasCtmRules = true;
+    return true;
+}
+
 
 // matchBlocks 通配匹配:以 '_' 开头表示匹配任意前缀(如 _stained_glass 匹配 white_stained_glass)
 static bool MatchBlockName(const std::string& pattern, const std::string& blockName) {
@@ -572,7 +681,30 @@ static bool IsConnected(int x, int y, int z, int dx, int dy, int dz,
     if (id < 0) return false;
     Block nb = GetBlockById(id);
     std::string nbBase = nb.GetNameAndNameSpaceWithoutState();
-    if (!t_activeRule) return nbBase == curBaseName;
+    if (!t_activeRule) {
+        // CTM-mod mcmeta / industrial connect groups (Mek connect_to, JSON tables).
+        // Texture-level connect_to: framed@steel_casing uses Mek steel texture so
+        // connect against mekanism:steel_casing neighbors via the texture's group.
+        if (!t_textureNs.empty() && !t_textureName.empty() &&
+            ModCT_TextureConnectsTo(t_textureNs, t_textureName, nbBase)) return true;
+        // Neighbor may be a framed block whose camo joins this connect group.
+        std::string nbCamo = ModCT_GetPositionCamo(x + dx, y + dy, z + dz);
+        if (!nbCamo.empty()) {
+            if (ModCT_BlocksConnect(curBaseName, nbCamo)) return true;
+            if (!t_textureNs.empty() && !t_textureName.empty() &&
+                ModCT_TextureConnectsTo(t_textureNs, t_textureName, nbCamo)) return true;
+            if (nbCamo == curBaseName) return true;
+        }
+        // Current block may be framed with a camo id (position alias).
+        std::string curCamo = ModCT_GetPositionCamo(x, y, z);
+        if (!curCamo.empty()) {
+            if (ModCT_BlocksConnect(curCamo, nbBase)) return true;
+            if (!nbCamo.empty() && ModCT_BlocksConnect(curCamo, nbCamo)) return true;
+            if (!nbCamo.empty() && curCamo == nbCamo) return true;
+        }
+        if (ModCT_BlocksConnect(curBaseName, nbBase)) return true;
+        return nbBase == curBaseName;
+    }
 
     std::string mode = t_activeRule->connect;
     if (mode.empty()) mode = t_activeRule->matchBlocks.empty() ? "tile" : "block";
@@ -820,20 +952,20 @@ static void EnsureDir(const std::string& path) {
 static std::string BuildCtmTextureFilePath(const std::string& ns,
     const std::string& baseDir, const std::string& fileName) {
     std::string exeDir = ExeDir();
-    std::string root = exeDir + "\\textures\\" + ns + "\\ctm";
+    std::string root = JoinPath(exeDir, "textures", ns, "ctm");
     // 逐级创建目录(Windows CreateDirectoryW 不会递归创建)
-    EnsureDir(exeDir + "\\textures");
-    EnsureDir(exeDir + "\\textures\\" + ns);
+    EnsureDir(JoinPath(exeDir, "textures"));
+    EnsureDir(JoinPath(exeDir, "textures", ns));
     EnsureDir(root);
     std::string dir = root;
     std::stringstream ss(baseDir);
     std::string seg;
     while (std::getline(ss, seg, '/')) {
         if (seg.empty()) continue;
-        dir += "\\" + seg;
+        dir = JoinPath(dir, seg);
         EnsureDir(dir);
     }
-    return dir + "\\" + fileName + ".png";
+    return JoinPath(dir, fileName + ".png");
 }
 
 // 对应的相对路径(写入 MTL 用)

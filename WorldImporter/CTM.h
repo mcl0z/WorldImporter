@@ -23,6 +23,7 @@
 #include <string>
 #include <vector>
 #include <unordered_map>
+#include <array>
 
 // 前向声明:模型数据
 struct ModelData;
@@ -120,5 +121,32 @@ void ApplyCtmToBlockModel(ModelData& model,
 
 // 是否有任何 CTM 规则被加载(用于快速跳过 CTM 处理)
 bool HasCtmRules();
+
+// Register a synthetic Continuity-compact (5-tile) CTM rule after InitializeCtmRules.
+// Used by ModCT for Athena blockstate loaders and Fusion pieced mcmeta.
+// tilePngs[i] must be PNG bytes for compact roles:
+//   0=unconnected, 1=fully connected, 2=vertical, 3=horizontal, 4=corner-gap
+// matchBlocks may be empty (tile-only match). matchTilePath is normalized (no .png / textures/).
+bool RegisterSyntheticCompactCtmRule(
+    const std::string& ruleNs,
+    const std::string& baseDir,
+    const std::vector<std::string>& matchBlocks,
+    const std::string& matchTileNs,
+    const std::string& matchTilePath,
+    const std::array<std::vector<unsigned char>, 5>& tilePngs);
+
+// Generic synthetic CTM rule (vertical / horizontal / repeat / compact).
+// tilePngs indexed in Continuity tile order for the method.
+// For Repeat, width/height set the grid; tiles.size() should be width*height.
+bool RegisterSyntheticCtmRule(
+    CtmMethod method,
+    const std::string& ruleNs,
+    const std::string& baseDir,
+    const std::vector<std::string>& matchBlocks,
+    const std::string& matchTileNs,
+    const std::string& matchTilePath,
+    const std::vector<std::vector<unsigned char>>& tilePngs,
+    int width = 0,
+    int height = 0);
 
 #endif // CTM_H

@@ -91,3 +91,15 @@ if (BUILD_TESTING AND EXISTS "${WI_TESTS_DIR}")
         endforeach()
     endif()
 endif()
+
+
+# Mek CTM-mod + ModCT connect_to harness (optional; needs tests/modct_mek_test.cpp).
+option(WI_BUILD_MODCT_MEK_TEST "Build Mek industrial CT adapter harness" OFF)
+if (WI_BUILD_MODCT_MEK_TEST AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/modct_mek_test.cpp")
+    add_executable(modct_mek_test tests/modct_mek_test.cpp)
+    target_link_libraries(modct_mek_test PRIVATE libzip::zip ZLIB::ZLIB)
+    wi_apply_defaults(modct_mek_test)
+    if (NOT MSVC)
+        target_compile_definitions(modct_mek_test PRIVATE _GLIBCXX_ASSERTIONS)
+    endif()
+endif()

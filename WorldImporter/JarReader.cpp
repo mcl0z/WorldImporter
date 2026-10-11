@@ -223,7 +223,7 @@ void JarReader::cacheAllResources(
             // Cache OBJ/MTL model assets used by custom NeoForge model loaders.
             size_t modelsPos = filePath.find("/models/", nsEnd);
             if (modelsPos != std::string::npos &&
-                (filePath.ends_with(".obj") || filePath.ends_with(".mtl"))) {
+                (filePath.ends_with(".obj") || filePath.ends_with(".obj.mek") || filePath.ends_with(".mtl"))) {
                 size_t resStart = modelsPos + 8;
                 std::string resourcePath = filePath.substr(resStart);
                 std::string cacheKey = namespaceName + ":" + resourcePath;

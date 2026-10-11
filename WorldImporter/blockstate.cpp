@@ -1,7 +1,7 @@
 #include "blockstate.h"
 #include "blockposseed.h"
 #include "fileutils.h"
-#include "ObjExporter.h"
+#include "objExporter.h"
 #include <regex>
 #include <random>
 #include <numeric>

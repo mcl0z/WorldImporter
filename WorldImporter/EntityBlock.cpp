@@ -1,11 +1,13 @@
 #include "EntityBlock.h"
 #include "RegionModelExporter.h"  // 包含必要的头文件,确保相关函数可用
-#include "blockstate.h"         // 为了调用 ProcessBlockstate
+#include "blockstate.h"
+#include "blocktint.h"         // 为了调用 ProcessBlockstate
 #include <span>                  // 为了 std::span (C++20)
 #include <iostream>            // 为了 std::cout, std::cerr (如果尚未包含)
 #include <map>
 #include <vector>
 #include <string>
+#include <cstdint>
 
 
 void EntityBlock::PrintDetails() const {
@@ -220,7 +222,9 @@ ModelData CreateCube(float minX, float minY, float minZ, float maxX, float maxY,
         {SOUTH, {20, 21, 22, 23}, {20, 21, 22, 23}}
     };
 
-    // 根据 EntityBlock.h 中的注释, faceStates 的顺序是 EAST, WEST, UP, DOWN, SOUTH, NORTH
+    // faceStates order after ParseLittleTilesTiles nibble split:
+    //   [0]=UP [1]=DOWN [2]=SOUTH [3]=NORTH [4]=EAST [5]=WEST
+    // (matches CreativeCore Facing pack DOWN,UP,NORTH,SOUTH,WEST,EAST via byte/nibble extract)
     std::map<FaceType, LittleFaceState> stateMap;
     if (faceStates.size() >= 6) {
         stateMap[FaceType::UP] = static_cast<LittleFaceState>(faceStates[0]);
@@ -279,6 +283,20 @@ static ModelData GenerateModelFromTiles(const std::vector<LittleTilesTileEntry>&
             dummyMaterial.name = "dummy";
             dummyMaterial.texturePath = "None";
             templateModel.materials.push_back(dummyMaterial);
+        }
+
+        // LittleTiles color tint (ARGB). -1 = ColorUtils default / no tint.
+        if (!tile.color.empty() && tile.color[0] != -1) {
+            const uint32_t argb = static_cast<uint32_t>(tile.color[0]);
+            TintResult fixed;
+            fixed.kind = TintKind::Fixed;
+            fixed.color = argb & 0xFFFFFFu;
+            for (auto& mat : templateModel.materials) {
+                if (mat.tintLocked) continue;
+                mat.tint = fixed;
+                mat.tintLocked = true;
+                mat.name += TintSuffix(fixed);
+            }
         }
 
         for (const auto& boxData : tile.boxDataList) {
