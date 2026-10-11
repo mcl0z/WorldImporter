@@ -636,6 +636,14 @@ nlohmann::json MergeModelJson(const nlohmann::json& parentModelJson, const nlohm
         mergedModelJson["ambientocclusion"] = parentModelJson["ambientocclusion"];
     }
 
+    // porting_lib:composite — inherit children + loader from parent when child has neither.
+    if (!currentModelJson.contains("children") && parentModelJson.contains("children")) {
+        mergedModelJson["children"] = parentModelJson["children"];
+    }
+    if (!currentModelJson.contains("porting_lib:loader") && parentModelJson.contains("porting_lib:loader")) {
+        mergedModelJson["porting_lib:loader"] = parentModelJson["porting_lib:loader"];
+    }
+
     return mergedModelJson;
 }
 
@@ -1524,16 +1532,39 @@ void processElements(const nlohmann::json& modelJson, ModelData& data,
 // 处理模型数据的方法
 ModelData ProcessModelData(const nlohmann::json& modelJson, const std::string& blockName) {
     ModelData data;
+    nlohmann::json effective = modelJson;
 
     // 处理纹理和材质
     std::unordered_map<std::string, int> textureKeyToMaterialIndex;
 
-    if (modelJson.contains("elements")) {
+    // porting_lib:composite: flatten children[].elements into one elements array so the
+    // normal element baker can run (nixie_tube etc.). Child textures fill gaps only.
+    if (!effective.contains("elements") && effective.contains("children") &&
+        effective["children"].is_object()) {
+        nlohmann::json flat = nlohmann::json::array();
+        if (!effective.contains("textures") || !effective["textures"].is_object())
+            effective["textures"] = nlohmann::json::object();
+        for (auto& childItem : effective["children"].items()) {
+            const auto& child = childItem.value();
+            if (child.contains("textures") && child["textures"].is_object()) {
+                for (auto& tex : child["textures"].items()) {
+                    if (!effective["textures"].contains(tex.key()))
+                        effective["textures"][tex.key()] = tex.value();
+                }
+            }
+            if (child.contains("elements") && child["elements"].is_array()) {
+                for (const auto& el : child["elements"]) flat.push_back(el);
+            }
+        }
+        if (!flat.empty()) effective["elements"] = std::move(flat);
+    }
+
+    if (effective.contains("elements")) {
         // 处理元素生成材质数据
-        processTextures(modelJson, data, textureKeyToMaterialIndex);
+        processTextures(effective, data, textureKeyToMaterialIndex);
 
         // 处理元素生成几何数据
-        processElements(modelJson, data, textureKeyToMaterialIndex);
+        processElements(effective, data, textureKeyToMaterialIndex);
     }
     else {
         // 当模型中没有 "elements" 字段时,生成实体方块模型

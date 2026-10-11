@@ -3,6 +3,7 @@
 #include "include/stb_image_write.h"
 #include "include/stb_image.h"
 #include "biome.h"
+#include "fileutils.h"
 #include "block.h"
 #include "GlobalCache.h"
 #include "locutil.h"
@@ -67,11 +68,11 @@ static std::string getExecutableDir() {
         exePath = fs::path(buffer);
 #endif
         // 获取父目录
-        return exePath.parent_path().string() + "/";
+        return exePath.parent_path().string() + PathSepStr();
     }
     catch (const std::exception& e) {
         std::cerr << "获取可执行文件目录失败: " << e.what() << std::endl;
-        return fs::current_path().string() + "/"; // 失败时返回当前目录
+        return fs::current_path().string() + PathSepStr(); // 失败时返回当前目录
     }
 }
 
@@ -88,10 +89,10 @@ bool SaveColormapToFile(const std::vector<unsigned char>& pixelData,const std::s
 
         // 如果传入了 savePath, 则使用 savePath 作为保存目录,否则默认使用当前 exe 目录
         if (savePath.empty()) {
-            savePath = exeDir + "\\colormap";  // 默认保存到 exe 目录下的 textures 文件夹
+            savePath = JoinPath(exeDir, "colormap");  // 默认保存到 exe 目录下的 textures 文件夹
         }
         else {
-            savePath = exeDir + "\\" + savePath;  // 使用提供的 savePath 路径
+            savePath = JoinPath(exeDir, savePath);  // 使用提供的 savePath 路径
         }
 
         // 创建保存目录(如果不存在)
@@ -108,7 +109,7 @@ bool SaveColormapToFile(const std::vector<unsigned char>& pixelData,const std::s
         std::string fileName = (lastSlashPos == std::string::npos) ? colormapName : colormapName.substr(lastSlashPos + 1);
 
         // 构建保存路径,使用处理后的 blockId 作为文件名
-        std::string filePath = savePath + "\\" + fileName + ".png";
+        std::string filePath = JoinPath(savePath, fileName + ".png");
         std::ofstream outputFile(filePath, std::ios::binary);
 
         //返回savePath,作为value
@@ -685,7 +686,7 @@ bool Biome::ExportToPNG(const std::string& filename, BiomeColorType colorType)
     const std::string exportFolderName = "biomeTex";
 
     // 创建完整的文件夹路径
-    std::string folderPath = exeDir + "\\" + exportFolderName;
+    std::string folderPath = JoinPath(exeDir, exportFolderName);
 
     // 创建文件夹(如果不存在)
     if (!std::filesystem::exists(folderPath)) {
@@ -696,6 +697,6 @@ bool Biome::ExportToPNG(const std::string& filename, BiomeColorType colorType)
     }
 
     // 创建完整的文件路径
-    std::string filePath = folderPath + "\\" + filename;    // 写入PNG文件
+    std::string filePath = JoinPath(folderPath, filename);    // 写入PNG文件
     return stbi_write_png(filePath.c_str(), width, height, 3, imageData.data(), width * 3);
 }

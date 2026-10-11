@@ -170,8 +170,9 @@ std::string wstring_to_string(const std::wstring& wstr) {
         return "";
     }
     #endif
-    
+#ifdef _WIN32
     return str;
+#endif
 }
 
 std::wstring string_to_wstring(const std::string& str) {

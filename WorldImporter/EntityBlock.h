@@ -51,11 +51,15 @@ enum class LittleFaceState {
 
 // 定义 littletiles:tiles 需要的额外数据结构
 struct LittleTilesTileEntry {
-    // 若 color 数组中第一个数为 -1,则使用 key(即 tiles 下的名字)作为区分,否则可用于覆盖 block 名称
+    // color[0]==-1 (ColorUtils.WHITE/default): no tint. Otherwise ARGB; RGB applied as Fixed tint.
     std::string blockName;
     std::vector<int> color;
     // 用列表保存任意多个 boxData,每个 boxData 是一个 int 数组
-    std::vector<std::vector<int>> boxDataList; // 每个boxData包含12个整数。前6个为面状态(顺序:EAST,WEST,UP,DOWN,SOUTH,NORTH),后6个为边界(minX,minY,minZ,maxX,maxY,maxZ)
+    // boxDataList entries are expanded to 12 ints: 6 face states + 6 bounds.
+    // Face-state order after nibble split matches CreativeCore Facing VALUES:
+    //   UP, DOWN, SOUTH, NORTH, EAST, WEST  (see EntityBlock.cpp CreateCube).
+    // Packed faceCache in NBT is DOWN,UP,NORTH,SOUTH,WEST,EAST (4 bits each).
+    std::vector<std::vector<int>> boxDataList; // 12 ints: faceStates[6] + min/max XYZ
 };
 
 struct LittleTilesChildEntry {

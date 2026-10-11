@@ -2,15 +2,16 @@
 #include "ChunkGenerator.h"
 #include "RegionModelExporter.h"
 #include "locutil.h"
-#include "ObjExporter.h"
+#include "objExporter.h"
 #include "include/stb_image.h"
 #include "biome.h"
 #include "model.h"
 #include "blocktint.h"
-#include "Fluid.h"
+#include "fluid.h"
 #include "LODManager.h"
 #include "CTM.h"
 #include "CreateCT.h"
+#include "ModCT.h"
 #include "texture.h"
 #include "Occlusion.h"
 #include <iomanip>
@@ -29,6 +30,7 @@
 #include "hashutils.h"
 #include "ChunkLoader.h"
 #include "SpecialBlock.h"
+#include "CableMesher.h"
 #include "BbsModelSupport.h"
 using namespace std;
 using namespace std::chrono;
@@ -204,6 +206,9 @@ void ChunkGenerator::ProcessBlockForModel(ModelData& chunkModel, int x, int y, i
         prepared ? prepared->full : currentBlock.GetModifiedNameWithNamespace(), x, y, z,
             blockEntityNbt, blockModel);
     }
+    if (!specialHandled) {
+        specialHandled = TryGenerateCableModel(blockModel, ns, blockName, x, y, z, blockEntityNbt);
+    }
     if (specialHandled) {
         for (auto& face : blockModel.faces) face.faceDirection = FaceType::DO_NOT_CULL;
     }
@@ -358,14 +363,38 @@ void ChunkGenerator::ProcessBlockForModel(ModelData& chunkModel, int x, int y, i
         blockModel = GetRandomModelFromCache(ns, blockName, BlockPosSeed(x, y, z));
     }
 
+    // Copycats / Create copycat: material camo may rebuild empty air placeholders.
+    if (blockEntityNbt && (ns == "copycats" ||
+        (ns == "create" && blockName.rfind("copycat_", 0) == 0))) {
+        ApplyCopycatCamoToBlockModel(blockModel, blockEntityNbt, ns, blockName, x, y, z);
+    }
+
     if (blockModel.vertices.empty()) return;
+
+    // FramedBlocks: retexture frame materials from BE camo (shape stays).
+    // Double/fluid camo + position camo alias for Mek CT connect groups.
+    if (ns == "framedblocks" && blockEntityNbt) {
+        ApplyFramedCamoToBlockModel(blockModel, blockEntityNbt, blockName, x, y, z);
+    }
 
     // Preserve Yuushya's block-state geometry for partial blocks, while full
     // cubes still use their CTM rules like other blocks.
     // Create 的连接纹理是运行时 UV 重映射(自带 *_connected.png), 与 OptiFine CTM
     // 是两套系统, 单独走 CreateCT 路径。
     bool useCtm = false;
-    if (!specialHandled && ns == "create") {
+    // Gearbox / clutch / gearshift are SpecialBlock-handled only to append
+    // SHAFT_HALF partials; their casing still needs CreateCT (EncasedCTBehaviour).
+    bool createSpecialNeedsCT = false;
+    if (specialHandled && ns == "create") {
+        std::string base = "create:" + blockName;
+        size_t br = base.find('[');
+        if (br != std::string::npos) base = base.substr(0, br);
+        createSpecialNeedsCT =
+            base == "create:gearbox" || base == "create:clutch" ||
+            base == "create:gearshift" || base == "create:sequenced_gearshift" ||
+            base == "create:encased_fluid_pipe";
+    }
+    if ((!specialHandled || createSpecialNeedsCT) && ns == "create") {
         useCtm = ApplyCreateCTToBlockModel(blockModel, ns, blockName, x, y, z);
     }
     if (!useCtm && !specialHandled && HasCtmRules() && ns != "create" &&

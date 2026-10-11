@@ -1,6 +1,6 @@
 #include "RegionModelExporter.h"
 #include "locutil.h"
-#include "ObjExporter.h"
+#include "objExporter.h"
 #include "include/stb_image.h"
 #include "LODManager.h"
 #include "biome.h"

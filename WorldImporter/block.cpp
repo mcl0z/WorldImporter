@@ -504,6 +504,57 @@ void ProcessEntityBlocks(int chunkX, int chunkZ, const NbtTagPtr& blockEntitiesT
 
             entityBlocks.push_back(yuushyaEntity);
         }
+        else if (false && (id.rfind("copycats:", 0) == 0 || id.rfind("create:copycat_", 0) == 0)) { // warm disabled: ProcessBlockstate during region load segfaults
+            auto matTag = getChildByName(entityTag, "Material");
+            if (matTag && matTag->type == TagType::COMPOUND) {
+                auto nameTag = getChildByName(matTag, "Name");
+                if (nameTag && nameTag->type == TagType::STRING) {
+                    std::string full(nameTag->payload.begin(), nameTag->payload.end());
+                    std::string cns = "minecraft", clocal = full;
+                    size_t c = full.find(':');
+                    if (c != std::string::npos) {
+                        cns = full.substr(0, c);
+                        clocal = full.substr(c + 1);
+                    }
+                    size_t br = clocal.find('[');
+                    if (br != std::string::npos) clocal = clocal.substr(0, br);
+                    if (!clocal.empty() && clocal != "copycat_base")
+                        ProcessBlockstate(cns, { clocal });
+                }
+            }
+        }
+        else if (id.rfind("framedblocks:", 0) == 0) {
+            // Warm camo / camo_two block models during load (before blockstateCachesFrozen).
+            auto warmFramedCamo = [&](const NbtTagPtr& camoTag) {
+                if (!camoTag || camoTag->type != TagType::COMPOUND) return;
+                auto typeTag = getChildByName(camoTag, "type");
+                std::string typ;
+                if (typeTag && typeTag->type == TagType::STRING)
+                    typ.assign(typeTag->payload.begin(), typeTag->payload.end());
+                if (typ != "framedblocks:block") return;
+                auto stateTag = getChildByName(camoTag, "state");
+                auto nameTag = stateTag ? getChildByName(stateTag, "Name") : nullptr;
+                if (!nameTag || nameTag->type != TagType::STRING) return;
+                std::string full(nameTag->payload.begin(), nameTag->payload.end());
+                std::string cns = "minecraft", clocal = full;
+                size_t c = full.find(':');
+                if (c != std::string::npos) {
+                    cns = full.substr(0, c);
+                    clocal = full.substr(c + 1);
+                }
+                size_t br = clocal.find('[');
+                if (br != std::string::npos) clocal = clocal.substr(0, br);
+                if (!clocal.empty()) ProcessBlockstate(cns, { clocal });
+            };
+            warmFramedCamo(getChildByName(entityTag, "camo"));
+            warmFramedCamo(getChildByName(entityTag, "camo_two"));
+            auto basicEntity = std::make_shared<YuushyaShowBlockEntity>();
+            basicEntity->id = id;
+            basicEntity->x = x;
+            basicEntity->y = y;
+            basicEntity->z = z;
+            entityBlocks.push_back(basicEntity);
+        }
         else if (id == "littletiles:tiles") {
             auto littleTilesEntity = std::make_shared<LittleTilesTilesEntity>();
             littleTilesEntity->id = id;
@@ -522,6 +573,15 @@ void ProcessEntityBlocks(int chunkX, int chunkZ, const NbtTagPtr& blockEntitiesT
                 // 解析顶层的 tiles
                 auto tilesTag = getChildByName(contentTag, "tiles");
                 littleTilesEntity->tiles = ParseLittleTilesTiles(tilesTag);
+                for (const auto& te : littleTilesEntity->tiles) {
+                    std::string full = te.blockName;
+                    std::string cns = "minecraft", clocal = full;
+                    size_t c = full.find(':');
+                    if (c != std::string::npos) { cns = full.substr(0, c); clocal = full.substr(c + 1); }
+                    size_t br = clocal.find('[');
+                    if (br != std::string::npos) clocal = clocal.substr(0, br);
+                    if (!clocal.empty()) ProcessBlockstate(cns, { clocal });
+                }
 
                 // 解析 children 列表
                 auto childrenTag = getChildByName(contentTag, "children");
