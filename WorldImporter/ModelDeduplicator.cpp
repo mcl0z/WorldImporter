@@ -779,10 +779,20 @@ void ModelDeduplicator::GreedyMesh(ModelData& data) {
                     e.rotation = (dotWx_Uy >= 0) ? 90 : 270;
                 }
             }
-            // 周期 atlas: 从该面自身的顶点/UV 对应关系推出"世界 (W,H) -> UV"
-            // 的仿射映射(每格步进)。合并后按世界坐标重排 UV, 天然覆盖
-            // 旋转/镜像 UV, 且与合并顺序无关。
-            if (groupMat.uvPeriodic && uv_valid_for_rotation) {
+            // 从该面自身的顶点/UV 对应关系推出"世界 (W,H) -> UV" 的仿射映射
+            // (每格步进)。合并后按世界坐标重排 UV, 天然覆盖旋转/镜像 UV,
+            // 且与合并顺序无关。
+            //
+            // 这里必须对所有材质启用, 不能只给 uvPeriodic:
+            //   e.rotation 只有 {0,90,180,270} 四种取值, 判定时只比较主方向,
+            //   因此"镜像"和"非镜像"会得到同一个 rotation, 发射时被强行还原成
+            //   非镜像版本。而 down 面(以及 glow_lichen / vine / lily_pad /
+            //   leaf_litter 这类显式反写 uv 的面)恰恰是镜像的 —— 一旦参与合并
+            //   就会整体差 180° 或镜像。仿射映射的 stepW_u/stepH_u 带符号,
+            //   旋转与镜像都能精确表达。
+            // 推导失败的退化面(如 45° 交叉贴片的非轴对齐边)保持 anchorValid=false,
+            // 仍走下面的 rotation 回退路径。
+            if (uv_valid_for_rotation) {
                 Vector2 eA{ pts_proj[1].x - pts_proj[0].x, pts_proj[1].y - pts_proj[0].y };
                 Vector2 eB{ pts_proj[3].x - pts_proj[0].x, pts_proj[3].y - pts_proj[0].y };
                 Vector2 dA{ uvs_rot_calc[1].x - uvs_rot_calc[0].x, uvs_rot_calc[1].y - uvs_rot_calc[0].y };

@@ -11,6 +11,7 @@
 // #include <omp.h>
 #include <chrono>
 #include <span>
+#include <cmath>
 
 using namespace std::chrono;  
 
@@ -811,6 +812,15 @@ void processTextures(const nlohmann::json& modelJson, ModelData& data,
 // 使用更长候选名降级，保证"名字 -> 贴图"唯一。多线程处理方块状态时需要加锁。
 static std::mutex g_materialNameMutex;
 static std::unordered_map<std::string, std::string> g_materialNameToTexture;
+// 贴图路径 -> 该贴图已确定的材质名（先到先得）：模组方块复用同一张贴图时直接沿用，
+// 避免一张零件贴图被几十个方块各建一个材质。原版方块不参与复用，但会作为可复用的目标。
+static std::unordered_map<std::string, std::string> g_textureToMaterialName;
+static size_t g_modMaterialReuseHits = 0;   // 受 g_materialNameMutex 保护
+
+size_t GetModMaterialReuseCount() {
+    std::lock_guard<std::mutex> lock(g_materialNameMutex);
+    return g_modMaterialReuseHits;
+}
 
 namespace {
 std::string TryRegisterMaterialName(const std::string& candidate, const std::string& texturePath) {
@@ -847,9 +857,30 @@ void RenameBlockMaterials(ModelData& model, const std::string& namespaceName, co
     if (model.materials.empty() || baseBlockId.empty()) return;
     const bool singleMaterial = (model.materials.size() == 1);
     const std::string prefix = namespaceName + ":" + baseBlockId;
+    // 原版方块之间始终不合并；模组方块在开关打开时复用同一张贴图已有的材质。
+    const bool vanillaBlock = (namespaceName == "minecraft");
     for (auto& material : model.materials) {
         // 只处理来自模型 textures 的材质；占位/特殊材质(无贴图键)保持原名
         if (material.textureKey.empty()) continue;
+
+        // 可复用的前提：贴图有效、该材质不参与 tint、且这个模型没有共面叠加层
+        // (叠加层元数据按材质名索引，共享材质会把叠加层扩散到别的方块)
+        const bool mergeEligible = config.mergeModTextures
+            && !material.texturePath.empty()
+            && material.texturePath != "None"
+            && material.tintIndex < 0
+            && model.overlayPairs.empty();
+
+        // 模组方块：这张贴图已经有材质了就直接复用，不再新建
+        if (mergeEligible && !vanillaBlock) {
+            std::lock_guard<std::mutex> lock(g_materialNameMutex);
+            auto it = g_textureToMaterialName.find(material.texturePath);
+            if (it != g_textureToMaterialName.end()) {
+                material.name = it->second;
+                ++g_modMaterialReuseHits;
+                continue;
+            }
+        }
 
         std::string resolved;
         // 1. 单材质且贴图就是 block/<方块id>：直接用方块 id（名字最简且稳定）
@@ -869,7 +900,14 @@ void RenameBlockMaterials(ModelData& model, const std::string& namespaceName, co
             }
         }
 
-        if (!resolved.empty()) material.name = resolved;
+        if (!resolved.empty()) {
+            material.name = resolved;
+            // 登记"贴图 -> 材质名"（先到先得）：供后续模组方块复用
+            if (mergeEligible) {
+                std::lock_guard<std::mutex> lock(g_materialNameMutex);
+                g_textureToMaterialName.emplace(material.texturePath, resolved);
+            }
+        }
     }
 }
 
@@ -957,7 +995,10 @@ static std::vector<std::vector<float>> ComputeFaceUvCoords(
     if (steps != 0) {
         std::vector<std::vector<float>> rotatedUV(4);
         for (int i = 0; i < 4; i++) {
-            rotatedUV[i] = uvCoords[(i - steps + 4) % 4];
+            // 原版 BlockFaceUV.getShiftedIndex 是 (i + rotation/90)%4，
+            // 顺时针旋转；这里必须是 +steps。用 -steps 会让 90/270 的面差 180°
+            // （180 因 ±2 等价而看不出，故此前未暴露）。
+            rotatedUV[i] = uvCoords[(i + steps) % 4];
         }
         uvCoords = rotatedUV;
     }
@@ -1033,7 +1074,12 @@ void processElements(const nlohmann::json& modelJson, ModelData& data,
                     elementVertices[faceName] = { {x2, y2, z2}, {x2, y2, z1} ,{x1, y2, z1}, {x1, y2, z2}  };
                 }
                 else if (faceName == "down") {
-                    elementVertices[faceName] = {  {x1, y1, z2}, {x1, y1, z1}, {x2, y1, z1},{ x2, y1, z2 }};
+                    // 必须与其他五面一致地相对原版 FaceInfo 循环移 2 位：
+                    // 通用 UV 顺序是 [(u2,v2),(u2,v1),(u1,v1),(u1,v2)]，比原版
+                    // BlockFaceUV 的索引约定正好差 2 位；五面靠角点表移 2 位抵消，
+                    // down 若照抄原版角点表就会整体差 180° 旋转（贴图上下颠倒）。
+                    // 循环移 2 位不改变绕序与法线(仍为 -y)。
+                    elementVertices[faceName] = {  {x2, y1, z1}, {x2, y1, z2}, {x1, y1, z2},{ x1, y1, z1 }};
                 }
             }
 
@@ -1189,6 +1235,55 @@ void processElements(const nlohmann::json& modelJson, ModelData& data,
 
             // Zero-thickness foliage explicitly defines both windings. Keep
             // both sides: their texture, UV rotation or tint may differ.
+            // 默认保留正反两面（与游戏一致；Blender 判重问题由 SeparateCoincidentFaces 解决）。
+            // doubleSidedGeometry=false 时退回旧行为：朝向相反且完全重合的两面只留一张。
+            if (!config.doubleSidedGeometry) {
+                auto getOppositeFace = [](const std::string& faceName) -> std::string {
+                    if (faceName == "north") return "south";
+                    if (faceName == "south") return "north";
+                    if (faceName == "east") return "west";
+                    if (faceName == "west") return "east";
+                    if (faceName == "up") return "down";
+                    if (faceName == "down") return "up";
+                    return "";
+                };
+                auto areFacesCoinciding = [](const std::vector<std::vector<float>>& face1,
+                    const std::vector<std::vector<float>>& face2) -> bool {
+                        if (face1.size() != face2.size()) return false;
+                        auto toKey = [](const std::vector<float>& v) {
+                            char buffer[64];
+                            snprintf(buffer, sizeof(buffer), "%.4f,%.4f,%.4f", v[0], v[1], v[2]);
+                            return std::string(buffer);
+                        };
+                        std::unordered_set<std::string> set1;
+                        for (const auto& v : face1) set1.insert(toKey(v));
+                        for (const auto& v : face2) {
+                            if (!set1.count(toKey(v))) return false;
+                        }
+                        return true;
+                };
+
+                std::vector<std::string> facesToRemove;
+                for (const auto& faceEntry : elementVertices) {
+                    const std::string& faceName = faceEntry.first;
+                    const std::string opposite = getOppositeFace(faceName);
+                    if (opposite.empty()) continue;
+                    auto oppositeIt = elementVertices.find(opposite);
+                    if (oppositeIt == elementVertices.end()) continue;
+                    if (areFacesCoinciding(faceEntry.second, oppositeIt->second)) {
+                        if (faceName == "south" || faceName == "west" || faceName == "down") {
+                            facesToRemove.push_back(faceName);
+                        } else {
+                            facesToRemove.push_back(opposite);
+                        }
+                    }
+                }
+                std::sort(facesToRemove.begin(), facesToRemove.end());
+                facesToRemove.erase(std::unique(facesToRemove.begin(), facesToRemove.end()), facesToRemove.end());
+                for (const auto& faceToRemove : facesToRemove) {
+                    elementVertices.erase(faceToRemove);
+                }
+            }
 
             // 遍历每个面的数据,判断面是否存在,如果存在则处理
             for (auto& face : faces.items()) {
@@ -2191,6 +2286,135 @@ void MergeModelsDirectly(ModelData& data1, const ModelData& data2,
             data1.overlayPairs.push_back(pair);
         }
     }
+}
+
+// 剪掉没有任何面引用的材质, 并重映射面的材质索引(见 model.h 说明)
+size_t PruneUnusedMaterials(ModelData& model, const std::unordered_set<std::string>* keepNames) {
+    const int materialCount = static_cast<int>(model.materials.size());
+    if (materialCount == 0) return 0;
+
+    std::vector<char> used(materialCount, 0);
+    for (const auto& face : model.faces) {
+        if (face.materialIndex >= 0 && face.materialIndex < materialCount) {
+            used[face.materialIndex] = 1;
+        }
+    }
+    // overlay 等元数据按材质名索引: 这些名字即便当前没有面引用也必须保留
+    if (keepNames != nullptr && !keepNames->empty()) {
+        for (int i = 0; i < materialCount; ++i) {
+            if (keepNames->count(model.materials[i].name)) used[i] = 1;
+        }
+    }
+
+    size_t removed = 0;
+    for (int i = 0; i < materialCount; ++i) {
+        if (!used[i]) ++removed;
+    }
+    if (removed == 0) return 0;
+
+    std::vector<int> remap(materialCount, -1);
+    std::vector<Material> kept;
+    kept.reserve(static_cast<size_t>(materialCount) - removed);
+    for (int i = 0; i < materialCount; ++i) {
+        if (!used[i]) continue;
+        remap[i] = static_cast<int>(kept.size());
+        kept.push_back(std::move(model.materials[i]));
+    }
+    model.materials.swap(kept);
+
+    for (auto& face : model.faces) {
+        if (face.materialIndex >= 0 && face.materialIndex < materialCount) {
+            face.materialIndex = remap[face.materialIndex];
+        }
+    }
+    return removed;
+}
+
+// Blender 的网格校验按"顶点索引集合"判重（不看绕序），会把共面正反两面删成一张。
+// 让同一组重合面里第二张及以后的面各持有一份独立顶点，索引集合就不同了，Blender 会保留双面几何。
+// config.doubleSidedFaceOffset > 0 时，这份新顶点还会沿该面法线外移一点（两面分开 offset，
+// 关闭背面剔除时不再 z-fighting）；= 0 时坐标保持严格共面，只换索引。
+namespace {
+struct FaceVertexSet {
+    int v[4];
+    bool operator==(const FaceVertexSet& other) const {
+        return v[0] == other.v[0] && v[1] == other.v[1] &&
+               v[2] == other.v[2] && v[3] == other.v[3];
+    }
+};
+struct FaceVertexSetHash {
+    size_t operator()(const FaceVertexSet& key) const {
+        size_t h = 1469598103934665603ull;
+        for (int i = 0; i < 4; ++i) {
+            h ^= static_cast<size_t>(static_cast<unsigned int>(key.v[i]));
+            h *= 1099511628211ull;
+        }
+        return h;
+    }
+};
+}
+
+size_t SeparateCoincidentFaces(ModelData& model) {
+    if (model.faces.size() < 2) return 0;
+    const float offset = config.doubleSidedFaceOffset;
+    std::unordered_map<FaceVertexSet, int, FaceVertexSetHash> seen;
+    seen.reserve(model.faces.size());
+    size_t separated = 0;
+    for (auto& face : model.faces) {
+        FaceVertexSet key;
+        for (int k = 0; k < 4; ++k) key.v[k] = face.vertexIndices[k];
+        std::sort(key.v, key.v + 4);
+        if (seen.emplace(key, 1).second) continue;   // 这组顶点第一次出现
+
+        float p[4][3];
+        bool valid = true;
+        for (int k = 0; k < 4 && valid; ++k) {
+            const int idx = face.vertexIndices[k];
+            if (idx < 0 || static_cast<size_t>(idx) * 3 + 2 >= model.vertices.size()) {
+                valid = false;
+                break;
+            }
+            const size_t base = static_cast<size_t>(idx) * 3;
+            for (int c = 0; c < 3; ++c) p[k][c] = model.vertices[base + c];
+        }
+        if (!valid) continue;
+
+        // 面法线（按绕序，右手定则）
+        float n[3] = { 0.0f, 0.0f, 0.0f };
+        if (offset > 0.0f) {
+            const float e1[3] = { p[1][0] - p[0][0], p[1][1] - p[0][1], p[1][2] - p[0][2] };
+            const float e2[3] = { p[2][0] - p[0][0], p[2][1] - p[0][1], p[2][2] - p[0][2] };
+            n[0] = e1[1] * e2[2] - e1[2] * e2[1];
+            n[1] = e1[2] * e2[0] - e1[0] * e2[2];
+            n[2] = e1[0] * e2[1] - e1[1] * e2[0];
+            const float len = std::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+            if (len > 1e-12f) {
+                n[0] /= len; n[1] /= len; n[2] /= len;
+            } else {
+                n[0] = n[1] = n[2] = 0.0f;   // 退化面：只换索引，不偏移
+            }
+        }
+
+        if (n[0] != 0.0f || n[1] != 0.0f || n[2] != 0.0f) {
+            // 4 个顶点各自复制一份并沿法线外移，面保持平面
+            for (int k = 0; k < 4; ++k) {
+                const int newIndex = static_cast<int>(model.vertices.size() / 3);
+                model.vertices.push_back(p[k][0] + n[0] * offset);
+                model.vertices.push_back(p[k][1] + n[1] * offset);
+                model.vertices.push_back(p[k][2] + n[2] * offset);
+                face.vertexIndices[k] = newIndex;
+            }
+        } else {
+            // 只复制第一个顶点：索引集合不同即可，坐标严格共面
+            const int newIndex = static_cast<int>(model.vertices.size() / 3);
+            model.vertices.push_back(p[0][0]);
+            model.vertices.push_back(p[0][1]);
+            model.vertices.push_back(p[0][2]);
+            face.vertexIndices[0] = newIndex;
+        }
+        ++separated;
+    }
+    return separated;
 }
 
 // 辅助函数:将字符串方向转换为FaceType枚举

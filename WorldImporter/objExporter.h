@@ -43,4 +43,7 @@ void RegisterOverlaySequence(const std::string& baseName, const std::vector<Over
 
 // 输出 overlay.json（base 材质全名 -> [{name, texture, kind, color?}, ...]）
 void CreateOverlayJsonFile();
+
+// overlay.json 里引用到的全部材质名（base 与各层 name），供材质剪枝时保留
+std::unordered_set<std::string> GetOverlayReferencedMaterialNames();
 #endif

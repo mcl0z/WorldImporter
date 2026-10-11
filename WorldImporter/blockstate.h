@@ -7,7 +7,9 @@
 #include <string>
 #include <fstream>
 #include <iostream>
+#include <optional>
 #include "include/json.hpp"
+#include "blockposseed.h"
 #include "model.h"
 #include "block.h"
 #include "config.h"
@@ -22,6 +24,14 @@ struct WeightedModelData {
     int weight;
 };
 
+// multipart 的一个分组。weighted 记录原版里该分组的 apply 是"数组"还是"对象":
+// 数组 → WeightedVariants，取模型时会消耗一次随机数；对象 → SingleVariant，不消耗。
+// 复刻原版的抽取序列时必须区分这两者，否则每组会多抽/少抽，后续分组全部错位。
+struct MultipartGroup {
+    std::vector<WeightedModelData> models;
+    bool weighted = false;
+};
+
 // 全局缓存,键为 namespace,值为 blockId 到 ModelData 的映射
 extern  std::unordered_map<std::string, std::unordered_map<std::string, ModelData>> BlockModelCache;
 
@@ -31,7 +41,7 @@ extern std::unordered_map<std::string,
 
 extern std::unordered_map<std::string,
     std::unordered_map<std::string,
-    std::vector<std::vector<WeightedModelData>>>> MultipartModelCache; // multipart部件缓存
+    std::vector<MultipartGroup>>> MultipartModelCache; // multipart部件缓存
 extern std::atomic<bool> blockstateCachesFrozen;
 
 bool matchConditions(const std::unordered_map<std::string, std::string>& blockConditions, const nlohmann::json& when);
@@ -48,7 +58,12 @@ void ProcessBlockstateForBlocks(const std::vector<Block>& blocks);
 // 获取方块状态 JSON 文件内容
 nlohmann::json GetBlockstateJson(const std::string& namespaceName,const std::string& blockId);
 
-ModelData GetRandomModelFromCache(const std::string& namespaceName, const std::string& blockId);
+// 方块坐标的渲染种子见 blockposseed.h（BlockPosSeed / LegacyRandom）。
+
+// posSeed 为 nullopt 表示调用点拿不到方块坐标（实体方块 / create / LOD 等路径）。
+// 此时 Game 模式退回"取第一个变体"，保证结果依然可复现。
+ModelData GetRandomModelFromCache(const std::string& namespaceName, const std::string& blockId,
+                                  std::optional<long long> posSeed = std::nullopt);
 
 // 获取该 block state 的全部模型（普通模型=1 个；加权 variant=全部变体；
 // multipart=按第 0 组选中的合并结果）。供运行时遮挡表做保守判定使用。

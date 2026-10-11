@@ -320,7 +320,7 @@ void ChunkGenerator::ProcessBlockForModel(ModelData& chunkModel, int x, int y, i
         liquidModel = GenerateFluidModel(params, fluidName);
         AssignFluidMaterials(liquidModel, fluidName);
 
-        ModelData waterloggedBlockModel = GetRandomModelFromCache(ns, blockName);
+        ModelData waterloggedBlockModel = GetRandomModelFromCache(ns, blockName, BlockPosSeed(x, y, z));
         if (waterloggedBlockModel.vertices.empty()) {
             blockModel = liquidModel;
         }
@@ -355,7 +355,7 @@ void ChunkGenerator::ProcessBlockForModel(ModelData& chunkModel, int x, int y, i
     else
     {
         // 处理其他方块
-        blockModel = GetRandomModelFromCache(ns, blockName);
+        blockModel = GetRandomModelFromCache(ns, blockName, BlockPosSeed(x, y, z));
     }
 
     if (blockModel.vertices.empty()) return;

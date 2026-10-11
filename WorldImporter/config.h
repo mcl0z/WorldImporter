@@ -21,6 +21,14 @@ struct VersionConfig {
     }
 };
 
+// 加权变体的挑选方式。
+//   Game  : 与原版一致 —— 用方块坐标算出渲染种子(Mth.getSeed)，再用
+//           LegacyRandomSource 抽一次 nextInt(总权重)。同一坐标永远同一变体，
+//           因此导出可复现，且与游戏里看到的图案逐格一致。
+//   First : 永远取第一个变体(关掉防重复贴图的观感)。
+//   Random: 旧行为 —— std::random_device 播种的真随机，每次导出结果都不同。
+enum class VariantSeedMode { Game, First, Random };
+
 // 全局配置结构体
 struct Config {
     std::string worldPath;  // Minecraft 世界路径
@@ -44,7 +52,11 @@ struct Config {
     bool exportLightBlockOnly;//仅导出光源方块
     float lightBlockSize; //光源方块半径大小
     bool allowDoubleFace;//允许重叠面
+    bool doubleSidedGeometry;//是否生成几何双面: 零厚度贴片保留正反两面(关掉则朝向相反的重合面只留一张)
+    float doubleSidedFaceOffset; //几何双面里反面沿法线的外移量(米): 0=严格共面只换索引, 需大于该坐标处 float 精度
     float overlayLayerStep; //共面叠加层(原版 overlay / CTM overlay)的逐层外移步长, 避免 Blender 下 z-fighting
+    bool ctmPrefixMatchTiles; //matchTiles 以 '_' 结尾时是否再做前缀族匹配(默认开=保持既有行为; 关掉只保留剥掉下划线后的精确匹配)
+    bool mergeModTextures; //模组方块是否复用同一张贴图已有的材质(原版方块之间始终不合并; 默认开)
     bool activeLOD; //使用LOD
     bool isLODAutoCenter; //是否自动计算LOD中心坐标
     int LODCenterX; //LOD中心坐标X
@@ -59,7 +71,7 @@ struct Config {
     bool activeLOD3; // 是否启用LOD3
     bool activeLOD4; // 是否启用LOD4
     bool useBiomeColors; // 是否启用群系颜色叠加
-    bool useRandomBlockModels; // 是否使用随机方块模型
+    VariantSeedMode variantSeedMode; // 加权变体的挑选方式(默认 Game=与游戏一致且可复现)
     bool importEntities; // 导出区域内生物/实体元数据
 
     bool exportFullModel;  // 是否完整导入
@@ -91,6 +103,10 @@ struct Config {
         lightBlockSize(0.05f),
         allowDoubleFace(false),
         overlayLayerStep(0.003f),
+        ctmPrefixMatchTiles(true),
+        mergeModTextures(true),
+        doubleSidedGeometry(true),
+        doubleSidedFaceOffset(0.0005f),
         isLODAutoCenter(true),
         LODCenterX(0),
         LODCenterZ(0),
@@ -106,7 +122,7 @@ struct Config {
         activeLOD4(true),
         lod1Blocks({}),
         useBiomeColors(true),
-        useRandomBlockModels(true),
+        variantSeedMode(VariantSeedMode::Game),
         importEntities(false),
 
         exportFullModel(false),

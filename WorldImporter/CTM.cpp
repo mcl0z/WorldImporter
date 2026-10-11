@@ -1,4 +1,4 @@
-﻿// ==================== OptiFine CTM 连接材质实现 ====================
+// ==================== OptiFine CTM 连接材质实现 ====================
 #include "CTM.h"
 #include "block.h"          // GetBlockId / GetBlockById / Block
 #include "blockstate.h"     // GetRandomModelFromCache (connect=tile)
@@ -36,8 +36,9 @@ static std::unordered_map<std::string, std::vector<size_t>> g_rulesByTile;
 // 通配 matchBlocks(以 '_' 开头)单独存放,避免对普通方块做全量扫描
 // 元素: {ns, pattern, ruleIndex}
 static std::vector<std::tuple<std::string, std::string, size_t>> g_wildcardBlockRules;
-// OptiFine matchTiles 前缀规则: 以 '_' 结尾表示匹配任意同名前缀贴图
-// (如 white_worn_concrete_ 匹配 white_worn_concrete)。单独存放避免全量扫描。
+// 以 '_' 结尾的 matchTiles 规则单独存放, 避免对普通贴图做全量扫描:
+// 它们至少接受"剥掉末尾下划线"的等值匹配, 是否再做前缀族匹配(如 foo_ 命中 foo_bar)
+// 由 config.ctmPrefixMatchTiles 控制, 匹配实现见 MatchTileEntry。
 static std::vector<std::tuple<std::string, std::string, size_t>> g_prefixTileRules;
 static std::atomic<bool> g_ctmInitialized{ false };
 static std::mutex g_ctmPngMutex;        // 保护 PNG 合成/保存
@@ -379,6 +380,38 @@ static bool MatchBlockName(const std::string& pattern, const std::string& blockN
     return pattern == blockName;
 }
 
+// 前缀族命中只提示一次, 避免逐面刷屏
+static void LogPrefixTileMatchOnce(const std::string& ns, const std::string& entry) {
+    static std::mutex logMutex;
+    static std::unordered_set<std::string> logged;
+    std::lock_guard<std::mutex> lock(logMutex);
+    if (logged.insert(ns + ":" + entry).second) {
+        std::cout << "[CTM] matchTiles 前缀族命中: " << ns << ":" << entry
+                  << " (ctmPrefixMatchTiles=true; 若属误命中请关掉)" << std::endl;
+    }
+}
+
+// matchTiles 单条目匹配(普通匹配与 overlay 匹配共用, 避免两处语义分叉):
+//  - 精确匹配贴图全名或短名;
+//  - 条目以 '_' 结尾时, 额外接受"剥掉末尾下划线"的等值匹配
+//    (Yuushya 等资源包用带下划线的目录名指到实际贴图, 见 prefix_tile 用例);
+//  - 是否再做前缀族匹配由 config.ctmPrefixMatchTiles 决定, 命中会记录一次日志。
+static bool MatchTileEntry(const std::string& entry, const std::string& entryNs,
+    const std::string& textureNs, const std::string& textureName, const std::string& shortName) {
+    if (entryNs != textureNs) return false;
+    if (entry == textureName || entry == shortName) return true;
+    if (entry.empty() || entry.back() != '_') return false;
+
+    const std::string base = entry.substr(0, entry.size() - 1);
+    if (textureName == base || shortName == base) return true;
+
+    if (!config.ctmPrefixMatchTiles) return false;
+    if (textureName.rfind(entry, 0) != 0 && shortName.rfind(entry, 0) != 0) return false;
+
+    LogPrefixTileMatchOnce(entryNs, entry);
+    return true;
+}
+
 const CtmRule* FindCtmRule(const std::string& blockNs,
     const std::string& blockName,
     const std::string& textureNs,
@@ -405,16 +438,8 @@ const CtmRule* FindCtmRule(const std::string& blockNs,
             size_t slash = textureName.find_last_of('/');
             std::string shortName = slash == std::string::npos ? textureName : textureName.substr(slash + 1);
             for (size_t i = 0; i < r.matchTiles.size(); ++i) {
-                if (r.matchTileNamespaces[i] != textureNs) continue;
-                const std::string& tile = r.matchTiles[i];
-                if (tile == textureName || tile == shortName) { ok = true; break; }
-                if (!tile.empty() && tile.back() == '_') {
-                    std::string base = tile.substr(0, tile.size() - 1);
-                    if (textureName == base || shortName == base ||
-                        textureName.rfind(tile, 0) == 0 || shortName.rfind(tile, 0) == 0) {
-                        ok = true; break;
-                    }
-                }
+                if (MatchTileEntry(r.matchTiles[i], r.matchTileNamespaces[i],
+                        textureNs, textureName, shortName)) { ok = true; break; }
             }
             if (!ok) return false;
         }
@@ -440,17 +465,13 @@ const CtmRule* FindCtmRule(const std::string& blockNs,
         }
     }
     {
-        // OptiFine 前缀 matchTiles(以 '_' 结尾): 命中即按注册顺序取首条
+        // 以 '_' 结尾的 matchTiles: 命中即按注册顺序取首条(前缀族是否生效见 MatchTileEntry)
+        size_t slash = textureName.find_last_of('/');
+        std::string shortName = slash == std::string::npos ? textureName : textureName.substr(slash + 1);
         for (const auto& pr : g_prefixTileRules) {
-            if (std::get<0>(pr) != textureNs) continue;
-            const std::string& prefix = std::get<1>(pr);
-            size_t slash = textureName.find_last_of('/');
-            std::string shortName = slash == std::string::npos ? textureName : textureName.substr(slash + 1);
-            std::string base = prefix.substr(0, prefix.size() - 1);
-            if (textureName == base || shortName == base ||
-                textureName.rfind(prefix, 0) == 0 || shortName.rfind(prefix, 0) == 0) {
-                if (eligible(std::get<2>(pr))) return &g_ctmRules[std::get<2>(pr)];
-            }
+            if (!MatchTileEntry(std::get<1>(pr), std::get<0>(pr), textureNs, textureName, shortName))
+                continue;
+            if (eligible(std::get<2>(pr))) return &g_ctmRules[std::get<2>(pr)];
         }
     }
     {
@@ -487,13 +508,8 @@ static std::vector<const CtmRule*> FindOverlayRules(const std::string& blockNs,
         size_t slash = textureName.find_last_of('/');
         std::string shortName = slash == std::string::npos ? textureName : textureName.substr(slash + 1);
         for (const auto& pr : g_prefixTileRules) {
-            if (std::get<0>(pr) != textureNs) continue;
-            const std::string& prefix = std::get<1>(pr);
-            std::string pbase = prefix.substr(0, prefix.size() - 1);
-            size_t slash = textureName.find_last_of('/');
-            std::string shortName = slash == std::string::npos ? textureName : textureName.substr(slash + 1);
-            if (textureName != pbase && shortName != pbase &&
-                textureName.rfind(prefix, 0) != 0 && shortName.rfind(prefix, 0) != 0) continue;
+            if (!MatchTileEntry(std::get<1>(pr), std::get<0>(pr), textureNs, textureName, shortName))
+                continue;
             size_t idx = std::get<2>(pr);
             if (g_ctmRules[idx].method == CtmMethod::Overlay && seen.insert(idx).second)
                 out.push_back(&g_ctmRules[idx]);
@@ -534,11 +550,11 @@ static thread_local std::string t_textureNs;
 static thread_local std::string t_textureName;
 static thread_local std::string t_currentFullName;
 
-static bool NeighborUsesTexture(const Block& nb) {
+static bool NeighborUsesTexture(const Block& nb, int nx, int ny, int nz) {
     std::string full = nb.name;
     size_t c = full.find(':');
     std::string blockId = c == std::string::npos ? full : full.substr(c + 1);
-    ModelData m = GetRandomModelFromCache(nb.GetNamespace(), blockId);
+    ModelData m = GetRandomModelFromCache(nb.GetNamespace(), blockId, BlockPosSeed(nx, ny, nz));
     for (const auto& mat : m.materials) {
         std::string mns = nb.GetNamespace(), path = mat.name;
         size_t mc = path.find(':');
@@ -564,7 +580,7 @@ static bool IsConnected(int x, int y, int z, int dx, int dy, int dz,
     if (mode == "tile" || mode == "material") {
         // 同类方块通常必然使用同一目标贴图，先走快速路径。
         if (nbBase == curBaseName) return true;
-        return NeighborUsesTexture(nb);
+        return NeighborUsesTexture(nb, x + dx, y + dy, z + dz);
     }
     return nbBase == curBaseName;
 }
@@ -1703,7 +1719,8 @@ static bool OverlaySideIsSameOverlay(const CtmRule& rule, int x, int y, int z,
     if (!rule.matchTiles.empty()) {
         std::string full = nb.name;
         size_t c = full.find(':');
-        ModelData m = GetRandomModelFromCache(nb.GetNamespace(), c == std::string::npos ? full : full.substr(c + 1));
+        ModelData m = GetRandomModelFromCache(nb.GetNamespace(), c == std::string::npos ? full : full.substr(c + 1),
+                                              BlockPosSeed(x + off[0], y + off[1], z + off[2]));
         for (const auto& mat : m.materials) {
             std::string mns = nb.GetNamespace(), path = mat.name;
             size_t mc = path.find(':');
@@ -1727,7 +1744,8 @@ static bool OverlayNeighborMatches(const CtmRule& rule, int x, int y, int z, con
     if (!rule.connectBlocks.empty() && BlockMatchesAny(nb.GetNameAndNameSpaceWithoutState(), rule.connectBlocks)) return true;
     if (!rule.connectTiles.empty()) {
         std::string full = nb.name; size_t c = full.find(':');
-        ModelData m = GetRandomModelFromCache(nb.GetNamespace(), c == std::string::npos ? full : full.substr(c+1));
+        ModelData m = GetRandomModelFromCache(nb.GetNamespace(), c == std::string::npos ? full : full.substr(c+1),
+                                              BlockPosSeed(x + off[0], y + off[1], z + off[2]));
         for (const auto& mat : m.materials) {
             std::string mns = nb.GetNamespace(), path = mat.name;
             size_t mc = path.find(':'); if (mc != std::string::npos) { mns=path.substr(0,mc); path=path.substr(mc+1); }
