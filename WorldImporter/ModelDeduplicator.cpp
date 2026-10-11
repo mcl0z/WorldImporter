@@ -645,10 +645,32 @@ void ModelDeduplicator::GreedyMesh(ModelData& data) {
     // 标记可分组面及记录UV轴
     std::vector<bool> eligible(faceCount, false);
     std::vector<UVAxis> faceAxis(faceCount, NONE);
+    // processGroup 用 (W,H) 投影的 min/max 重建矩形, 只对边平行于该法线
+    // 所导出的 T1/T2 基的矩形面成立。被旋转(如 showblock ShowRotation、
+    // 模型 element rotation)后在自身平面内转过一个角度的面(法线仍可能轴对齐),
+    // 会被重建成包围盒 -> 拉伸的"碎片"。这类面不参与合并, 原样保留。
+    auto isGridAlignedRect = [&](int fi) -> bool {
+        const auto& vs = data.faces[fi].vertexIndices;
+        Vector3 N = faceNormals[fi];
+        Vector3 arbi = std::fabs(N.x) > std::fabs(N.z) ? Vector3{0,0,1} : Vector3{1,0,0};
+        Vector3 T1 = normalize(cross(arbi, N));
+        Vector3 T2 = normalize(cross(N, T1));
+        for (int k = 0; k < 4; ++k) {
+            Vector3 a = getVertex(vs[k]), b = getVertex(vs[(k+1)%4]);
+            Vector3 d{ b.x-a.x, b.y-a.y, b.z-a.z };
+            float len = std::sqrt(dot3(d,d));
+            if (len < 1e-5f) return false; // 退化面
+            float c1 = std::fabs(dot3(d,T1)) / len, c2 = std::fabs(dot3(d,T2)) / len;
+            if (std::min(c1, c2) > 1e-3f) return false; // 边不沿 T1/T2
+        }
+        return true;
+    };
+    size_t skippedRotated = 0;
     for (int i = 0; i < (int)faceCount; ++i) {
         const Face& f = data.faces[i];
         if (f.materialIndex < 0 || (size_t)f.materialIndex >= data.materials.size()) continue;
         if (data.materials[f.materialIndex].type == ANIMATED) continue;
+        if (!isGridAlignedRect(i)) { ++skippedRotated; continue; }
         UVAxis ax = checkUV(i);
         if (ax == NONE) continue;
         eligible[i] = true;
@@ -692,6 +714,7 @@ void ModelDeduplicator::GreedyMesh(ModelData& data) {
         }
     }
     auto t5_end = Clock::now();
+    std::cerr << "GreedyMesh: non-grid-aligned (rotated) faces kept unmerged: " << skippedRotated << "\n";
     std::cerr << "GreedyMesh Step5 grouping (UF): " << Ms(t5_end - t5_start).count() << " ms\n";
 
     // 6. 处理每个可合并组 (串行化)
@@ -781,17 +804,11 @@ void ModelDeduplicator::GreedyMesh(ModelData& data) {
             }
             // 从该面自身的顶点/UV 对应关系推出"世界 (W,H) -> UV" 的仿射映射
             // (每格步进)。合并后按世界坐标重排 UV, 天然覆盖旋转/镜像 UV,
-            // 且与合并顺序无关。
-            //
-            // 这里必须对所有材质启用, 不能只给 uvPeriodic:
-            //   e.rotation 只有 {0,90,180,270} 四种取值, 判定时只比较主方向,
-            //   因此"镜像"和"非镜像"会得到同一个 rotation, 发射时被强行还原成
-            //   非镜像版本。而 down 面(以及 glow_lichen / vine / lily_pad /
-            //   leaf_litter 这类显式反写 uv 的面)恰恰是镜像的 —— 一旦参与合并
-            //   就会整体差 180° 或镜像。仿射映射的 stepW_u/stepH_u 带符号,
-            //   旋转与镜像都能精确表达。
-            // 推导失败的退化面(如 45° 交叉贴片的非轴对齐边)保持 anchorValid=false,
-            // 仍走下面的 rotation 回退路径。
+            // 且与合并顺序无关。对所有材质启用 (不只 uvPeriodic):
+            //   e.rotation 只区分 {0,90,180,270}, 镜像 UV (down 面、显式反写 uv、
+            //   镜像模型如 stone_mirrored/iron_trapdoor) 会被重建成非镜像版本;
+            //   仿射步进带符号, 旋转与镜像都能精确表达 (同 PR #3 f3329c6)。
+            // 推导失败的退化面保持 anchorValid=false, 走下面的 rotation 回退路径。
             if (uv_valid_for_rotation) {
                 Vector2 eA{ pts_proj[1].x - pts_proj[0].x, pts_proj[1].y - pts_proj[0].y };
                 Vector2 eB{ pts_proj[3].x - pts_proj[0].x, pts_proj[3].y - pts_proj[0].y };
@@ -846,6 +863,22 @@ void ModelDeduplicator::GreedyMesh(ModelData& data) {
                 }
             }
             
+            // 两个面合并后只用 cur 的 UV 映射重建, 所以要求 other 的 UV 在世界上与
+            // cur 连续: 仿射步进相同, 且 cur 的映射在 other 锚点处给出的 UV 与
+            // other 实际 UV 只差整数 (贴图 REPEAT)。显式 uv 的模型面 (铁栏杆边、
+            // 活板门、Yuushya 框架等) 常常相邻但 UV 不连续, 合并会贴错纹理。
+            auto uvCompatible = [&](const Entry& a, const Entry& b) -> bool {
+                if (!a.anchorValid || !b.anchorValid) return true; // 退化面: 维持原行为
+                const float stepEps = 1e-4f, uvEps = 2e-3f;
+                if (std::fabs(a.stepW_u - b.stepW_u) > stepEps || std::fabs(a.stepW_v - b.stepW_v) > stepEps ||
+                    std::fabs(a.stepH_u - b.stepH_u) > stepEps || std::fabs(a.stepH_v - b.stepH_v) > stepEps)
+                    return false;
+                float pu = a.anchorU + a.stepW_u * (b.anchorW - a.anchorW) + a.stepH_u * (b.anchorH - a.anchorH);
+                float pv = a.anchorV + a.stepW_v * (b.anchorW - a.anchorW) + a.stepH_v * (b.anchorH - a.anchorH);
+                float du = pu - b.anchorU, dv = pv - b.anchorV;
+                return std::fabs(du - std::round(du)) < uvEps && std::fabs(dv - std::round(dv)) < uvEps;
+            };
+
             for (size_t i_pass = 0; i_pass < current_entries_ref.size(); ++i_pass) {
                 if (processed_mask[i_pass] != 0) continue; 
                 
@@ -864,6 +897,7 @@ void ModelDeduplicator::GreedyMesh(ModelData& data) {
                     if (current_entries_ref[j_pass].rotation != cur_pass.rotation) continue;
                     
                     Entry& other_entry = current_entries_ref[j_pass];
+                    if (!uvCompatible(cur_pass, other_entry)) continue;
                     bool merged_now = false;
                     
                     if (mergeW_axis) {

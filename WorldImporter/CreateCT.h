@@ -11,8 +11,8 @@
 //   OMNIDIRECTIONAL          8x8 格子
 //
 // 本模块移植 Create 的 CTSpriteShiftEntry + AllCTTypes 算法:
-//   - 按贴图路径注册 (方块模型引用该贴图的面即启用)
-//   - 根据世界邻居关系计算 CTContext (up/down/left/right + 4 角)
+//   - 按方块注册 CT 行为 (同 Create 的 ConnectedTextureBehaviour), 行为按面/原贴图选 sprite shift
+//   - 根据世界邻居关系计算 CTContext (up/down/left/right + 4 角, connectsTo/isBeingBlocked)
 //   - 调用 getTextureIndex 得到 sheet 格子编号
 //   - 把面 UV 重映射到该格子 (u'=(u+col)/size, v'=(sheetSize-1-row+v)/size)
 //   - 材质换成整张 connected 贴图
@@ -38,19 +38,8 @@ enum class CreateCTType {
     RECTANGLE             // 4x4  矩形
 };
 
-// 一条 Create CT 规则: 按"命名空间:贴图路径"匹配
-struct CreateCTEntry {
-    std::string ns;                 // 命名空间, 例如 "create"
-    std::string texturePath;        // 原始贴图路径(不含 textures/ 前缀), 例如 "block/brass_casing"
-    CreateCTType type;
-    int sheetSize;                  // 2 / 4 / 8
-};
-
-// 注册表查询: 返回匹配的规则, 无匹配返回 nullptr
-const CreateCTEntry* FindCreateCTEntry(const std::string& ns, const std::string& texturePath);
-
 // 对单个方块模型应用 Create CT。
-// 只处理材质贴图命中注册表的面: 换 connected 材质 + 重映射 UV。
+// 只处理 sprite == shift.original 的面: 换 connected 材质 + 重映射 UV。
 // 返回 true 表示至少有一个面应用了 CT。
 bool ApplyCreateCTToBlockModel(ModelData& model, const std::string& ns,
     const std::string& blockName, int x, int y, int z);

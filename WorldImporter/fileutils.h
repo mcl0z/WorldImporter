@@ -47,4 +47,83 @@ void RegisterFluidTextures();
  */
 void DeleteTexturesFolder();
 
+
+/**
+ * @brief Native path separator: '\\' on _WIN32, '/' elsewhere.
+ */
+inline char PathSep() {
+#ifdef _WIN32
+    return '\\';
+#else
+    return '/';
+#endif
+}
+
+inline wchar_t PathSepW() {
+#ifdef _WIN32
+    return L'\\';
+#else
+    return L'/';
+#endif
+}
+
+inline const char* PathSepStr() {
+#ifdef _WIN32
+    return "\\";
+#else
+    return "/";
+#endif
+}
+
+inline const wchar_t* PathSepWStr() {
+#ifdef _WIN32
+    return L"\\";
+#else
+    return L"/";
+#endif
+}
+
+/**
+ * @brief Join path components with the native separator.
+ * Empty parts are skipped; redundant leading/trailing separators on
+ * intermediate parts are trimmed. Does not rewrite Minecraft resource
+ * paths (those stay '/'-separated by convention).
+ */
+inline std::string JoinPath(std::initializer_list<std::string> parts) {
+    std::string out;
+    bool first = true;
+    for (const std::string& part : parts) {
+        if (part.empty()) continue;
+        if (first) {
+            // Preserve absolute roots (leading '/', '\\', or drive letters).
+            out = part;
+            while (out.size() > 1 && (out.back() == '/' || out.back() == '\\')) out.pop_back();
+            first = false;
+            continue;
+        }
+        size_t start = 0;
+        size_t end = part.size();
+        while (start < end && (part[start] == '/' || part[start] == '\\')) ++start;
+        while (end > start && (part[end - 1] == '/' || part[end - 1] == '\\')) --end;
+        if (start >= end) continue;
+        if (!out.empty() && out.back() != '/' && out.back() != '\\') {
+            out.push_back(PathSep());
+        }
+        out.append(part, start, end - start);
+    }
+    return out;
+}
+
+inline std::string JoinPath(const std::string& a, const std::string& b) {
+    return JoinPath({a, b});
+}
+
+inline std::string JoinPath(const std::string& a, const std::string& b, const std::string& c) {
+    return JoinPath({a, b, c});
+}
+
+inline std::string JoinPath(const std::string& a, const std::string& b, const std::string& c, const std::string& d) {
+    return JoinPath({a, b, c, d});
+}
+
 #endif // FILEUTILS_H

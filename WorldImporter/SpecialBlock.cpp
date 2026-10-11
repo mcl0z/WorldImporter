@@ -6,6 +6,7 @@
 #include "texture.h"
 #include "blockstate.h"
 #include <unordered_map>
+#include <unordered_set>
 #include <cmath>
 
 using namespace std;
@@ -119,7 +120,11 @@ namespace {
         string currentMaterial;
         objStream.clear();
         objStream.seekg(0);
-        bool flipV = modelJson.value("flip_v", false);
+        // Create JSON sets flip_v for Minecraft (V=0 at top). WI exports for Blender/
+        // OpenGL (V=0 at bottom), matching the JSON model path's `1 - uv/16` convention.
+        // Keep Blender-native OBJ V so cage bars / flywheel rims hit the right atlas cells.
+        // (Applying flip_v here mapped blaze_cage bars onto the transparent half of
+        // blaze_heater_brazier — casing looked like a flat base only.)
         while (getline(objStream, line)) {
             stringstream values(line);
             string type;
@@ -132,7 +137,6 @@ namespace {
             else if (type == "vt") {
                 array<float, 2> value{};
                 values >> value[0] >> value[1];
-                if (flipV) value[1] = 1.0f - value[1];
                 uvs.push_back(value);
             }
             else if (type == "usemtl") values >> currentMaterial;
@@ -386,6 +390,419 @@ namespace {
         }
         return result;
     }
+
+    // Create GearboxRenderer / SplitShaftRenderer place SHAFT_HALF partials via Flywheel.
+    // shaft_half.json extends toward +Z (south); RotateFromSouth aims it.
+    ModelData MakeShaftHalfFacing(const string& direction) {
+        ModelData half = LoadCreateModel("block/shaft_half", 133);
+        RotateFromSouth(half, direction);
+        return half;
+    }
+
+    // Gearbox: casing from blockstate + half-shafts on every direction NOT on the box axis.
+    ModelData GenerateCreateGearbox(const string& blockName,
+        const unordered_map<string, string>& states) {
+        ModelData result = LoadBlockstateModel(blockName);
+        string axis = states.contains("axis") ? states.at("axis") : "y";
+        static const char* dirs[] = {"down","up","north","south","west","east"};
+        static const char* dirAxis[] = {"y","y","z","z","x","x"};
+        for (int i = 0; i < 6; ++i) {
+            if (axis == dirAxis[i]) continue;
+            Append(result, MakeShaftHalfFacing(dirs[i]));
+        }
+        return result;
+    }
+
+    // Clutch / gearshift / sequenced_gearshift: casing + half-shafts ON the rotation axis.
+    ModelData GenerateCreateSplitShaft(const string& blockName,
+        const unordered_map<string, string>& states) {
+        ModelData result = LoadBlockstateModel(blockName);
+        string axis = states.contains("axis") ? states.at("axis") : "y";
+        if (axis == "x") {
+            Append(result, MakeShaftHalfFacing("west"));
+            Append(result, MakeShaftHalfFacing("east"));
+        } else if (axis == "z") {
+            Append(result, MakeShaftHalfFacing("north"));
+            Append(result, MakeShaftHalfFacing("south"));
+        } else {
+            Append(result, MakeShaftHalfFacing("down"));
+            Append(result, MakeShaftHalfFacing("up"));
+        }
+        return result;
+    }
+
+    // Flywheel / crushing_wheel / blaze cage use porting_lib:obj (same as water wheels).
+    // Blaze also gets inert/idle blaze + rods (+ static flame) from heat property "blaze".
+    ModelData GenerateCreateObjKinetic(const string& id, const string& blockName,
+        const unordered_map<string, string>& states) {
+        string jsonPath;
+        if (id == "flywheel") jsonPath = "block/flywheel/block";
+        else if (id == "crushing_wheel") jsonPath = "block/crushing_wheel/block";
+        else if (id == "blaze_burner") jsonPath = "block/blaze_burner/block";
+        else return {};
+        ModelData result = LoadCreateObjModel(jsonPath, 140);
+        if (result.vertices.empty()) return result;
+        if (id == "blaze_burner") {
+            // Property is "blaze" (HeatLevel): none|smouldering|fading|kindled|seething.
+            string heat = states.contains("blaze") ? states.at("blaze") : "none";
+            if (heat != "none") {
+                string blazePath = "block/blaze_burner/blaze/inert";
+                bool seething = heat == "seething";
+                bool fadingPlus = heat == "fading" || heat == "kindled" || seething;
+                if (seething) blazePath = "block/blaze_burner/blaze/super";
+                else if (heat == "kindled") blazePath = "block/blaze_burner/blaze/idle";
+                else if (heat == "fading") blazePath = "block/blaze_burner/blaze/idle";
+                Append(result, LoadCreateModel(blazePath, 141));
+                if (fadingPlus) {
+                    string rods = seething ? "block/blaze_burner/superheated_rods_small"
+                                           : "block/blaze_burner/rods_small";
+                    string rods2 = seething ? "block/blaze_burner/superheated_rods_large"
+                                            : "block/blaze_burner/rods_large";
+                    Append(result, LoadCreateObjModel(rods, 142));
+                    Append(result, LoadCreateObjModel(rods2, 143));
+                    // Static flame (no UV scroll) at resting pose.
+                    Append(result, LoadCreateObjModel("block/blaze_burner/flame", 144));
+                }
+            }
+            return result;
+        }
+        string axis = states.contains("axis") ? states.at("axis") : "y";
+        RotateKineticAxis(result, axis);
+        return result;
+    }
+
+    void TranslateModel(ModelData& model, float dx, float dy, float dz) {
+        for (size_t i = 0; i + 2 < model.vertices.size(); i += 3) {
+            model.vertices[i] += dx;
+            model.vertices[i + 1] += dy;
+            model.vertices[i + 2] += dz;
+        }
+    }
+
+    // Rotate around world origin (0,0,0), unlike ApplyRotationToVertices which uses 0.5.
+    void RotateModelOrigin(ModelData& model, float rx, float ry, float rz) {
+        if (model.vertices.empty()) return;
+        const float radX = rx * (float)M_PI / 180.0f;
+        const float radY = ry * (float)M_PI / 180.0f;
+        const float radZ = rz * (float)M_PI / 180.0f;
+        const float cosX = cosf(radX), sinX = sinf(radX);
+        const float cosY = cosf(radY), sinY = sinf(radY);
+        const float cosZ = cosf(radZ), sinZ = sinf(radZ);
+        for (size_t i = 0; i + 2 < model.vertices.size(); i += 3) {
+            float x = model.vertices[i], y = model.vertices[i + 1], z = model.vertices[i + 2];
+            if (rx != 0.0f) {
+                float ny = y * cosX - z * sinX;
+                float nz = y * sinX + z * cosX;
+                y = ny; z = nz;
+            }
+            if (ry != 0.0f) {
+                float nx = x * cosY + z * sinY;
+                float nz = -x * sinY + z * cosY;
+                x = nx; z = nz;
+            }
+            if (rz != 0.0f) {
+                float nx = x * cosZ - y * sinZ;
+                float ny = x * sinZ + y * cosZ;
+                x = nx; y = ny;
+            }
+            model.vertices[i] = x;
+            model.vertices[i + 1] = y;
+            model.vertices[i + 2] = z;
+        }
+        DisableCulling(model);
+    }
+
+    // Models authored pointing NORTH (-Z), e.g. encased_fan propeller.
+    void RotateFromNorth(ModelData& model, const string& direction) {
+        if (direction == "south") Rotate(model, 0.0f, 180.0f, 0.0f);
+        else if (direction == "east") Rotate(model, 0.0f, 270.0f, 0.0f);
+        else if (direction == "west") Rotate(model, 0.0f, 90.0f, 0.0f);
+        else if (direction == "up") Rotate(model, 90.0f, 0.0f, 0.0f);
+        else if (direction == "down") Rotate(model, 270.0f, 0.0f, 0.0f);
+        // north: identity
+    }
+
+    // Fluid-capability neighbors (approx; Create uses FluidStorage.SIDED).
+    // Hose pulley is explicitly excluded from DRAIN in FluidTransportBehaviour.
+    bool IsCreateFluidCapable(const string& id) {
+        return id == "create:fluid_tank" || id == "create:creative_fluid_tank" ||
+            id == "create:item_drain" || id == "create:spout" ||
+            id == "create:portable_fluid_interface" || id == "create:basin" ||
+            id == "create:blender" || id == "create:steam_engine" ||
+            id == "create:hose_pulley"; // listed so callers can special-case
+    }
+
+    // FluidPipe: multipart body is in the blockstate; rims/connectors come from
+    // PipeAttachmentModel (BE AttachmentTypes). Approximate from open faces + neighbors.
+    // DRAIN vs RIM: fluid-capable neighbor (not hose_pulley) → drain; pipe-like → connection;
+    // else → rim (+ connector). Matches FluidTransportBehaviour.getRenderedRimAttachment.
+    ModelData GenerateCreateFluidPipe(const string& blockName,
+        const unordered_map<string, string>& states, int x, int y, int z) {
+        ModelData result = LoadBlockstateModel(blockName);
+        static const char* dirs[] = {"down", "up", "north", "south", "west", "east"};
+        static const int dxyz[6][3] = {{0,-1,0},{0,1,0},{0,0,-1},{0,0,1},{-1,0,0},{1,0,0}};
+        auto isPipeLike = [](const string& id) -> bool {
+            return id == "create:fluid_pipe" || id == "create:glass_fluid_pipe" ||
+                id == "create:encased_fluid_pipe" || id == "create:smart_fluid_pipe" ||
+                id == "create:mechanical_pump" || id == "create:fluid_valve";
+        };
+        // Which faces are open: explicit bool props, or both ends of glass pipe axis.
+        bool open[6] = {};
+        bool anyExplicit = false;
+        for (int i = 0; i < 6; ++i) {
+            auto it = states.find(dirs[i]);
+            if (it != states.end()) {
+                anyExplicit = true;
+                open[i] = it->second == "true";
+            }
+        }
+        if (!anyExplicit) {
+            string axis = states.contains("axis") ? states.at("axis") : "";
+            if (axis == "y") { open[0] = open[1] = true; }
+            else if (axis == "z") { open[2] = open[3] = true; }
+            else if (axis == "x") { open[4] = open[5] = true; }
+        }
+        for (int i = 0; i < 6; ++i) {
+            if (!open[i]) continue;
+            Block nb = GetBlockById(GetBlockId(x + dxyz[i][0], y + dxyz[i][1], z + dxyz[i][2]));
+            string nbId = nb.name;
+            size_t br = nbId.find('[');
+            if (br != string::npos) nbId = nbId.substr(0, br);
+            if (isPipeLike(nbId)) {
+                Append(result, LoadCreateModel(string("block/fluid_pipe/connection/") + dirs[i], 150 + i));
+            } else if (IsCreateFluidCapable(nbId) && nbId != "create:hose_pulley") {
+                // AttachmentTypes.DRAIN = rim_connector + drain
+                Append(result, LoadCreateModel(string("block/fluid_pipe/rim_connector/") + dirs[i], 160 + i));
+                Append(result, LoadCreateModel(string("block/fluid_pipe/drain/") + dirs[i], 170 + i));
+            } else {
+                // AttachmentTypes.RIM = rim_connector + rim
+                Append(result, LoadCreateModel(string("block/fluid_pipe/rim_connector/") + dirs[i], 160 + i));
+                Append(result, LoadCreateModel(string("block/fluid_pipe/rim/") + dirs[i], 175 + i));
+            }
+        }
+        // Pipe casing when >2 connections off one axis (FluidPipeBlock.shouldDrawCasing).
+        // Only for the copper-casing variant of fluid_pipe (not glass/encased).
+        string base = BaseBlockName(blockName);
+        if (base == "create:fluid_pipe") {
+            for (int axis = 0; axis < 3; ++axis) {
+                int connections = 0;
+                for (int i = 0; i < 6; ++i) {
+                    int a = (i <= 1) ? 1 : (i <= 3) ? 2 : 0;
+                    if (a == axis) continue;
+                    if (open[i]) connections++;
+                }
+                if (connections > 2) {
+                    Append(result, LoadCreateModel("block/fluid_pipe/casing", 180));
+                    break;
+                }
+            }
+        }
+        return result;
+    }
+
+    // Toolbox body is in the blockstate; lid (+ drawer) are Flywheel partials.
+    ModelData GenerateCreateToolbox(const string& blockName,
+        const unordered_map<string, string>& states) {
+        ModelData result = LoadBlockstateModel(blockName);
+        string base = BaseBlockName(blockName);
+        // create:brown_toolbox → brown
+        string color = "brown";
+        size_t colon = base.find(':');
+        string local = colon == string::npos ? base : base.substr(colon + 1);
+        const string suffix = "_toolbox";
+        if (local.size() > suffix.size() &&
+            local.compare(local.size() - suffix.size(), suffix.size(), suffix) == 0) {
+            color = local.substr(0, local.size() - suffix.size());
+        }
+        Append(result, LoadCreateModel("block/toolbox/lid/" + color, 190));
+        ModelData drawer = LoadCreateModel("block/toolbox/drawer", 191);
+        if (!drawer.vertices.empty()) {
+            // Drawer JSON hardcodes brown; remap to this toolbox's dye sheet.
+            ReplaceTexture(drawer, "block/toolbox/brown", "block/toolbox/" + color);
+            Append(result, std::move(drawer));
+        }
+        (void)states;
+        return result;
+    }
+
+    // mechanical_mixer: casing JSON + shaftless cog + pole + head at rest (offset 0, angle 0).
+    ModelData GenerateCreateMixer(const string& blockName) {
+        ModelData result = LoadBlockstateModel(blockName);
+        Append(result, LoadCreateModel("block/cogwheel_shaftless", 200));
+        Append(result, LoadCreateModel("block/mechanical_mixer/pole", 201));
+        Append(result, LoadCreateModel("block/mechanical_mixer/head", 202));
+        return result;
+    }
+
+    // mechanical_press: casing (blockstate) + shaft on facing axis + head facing horizontal.
+    ModelData GenerateCreatePress(const string& blockName,
+        const unordered_map<string, string>& states) {
+        ModelData result = LoadBlockstateModel(blockName);
+        string facing = states.contains("facing") ? states.at("facing") : "north";
+        string axis = (facing == "east" || facing == "west") ? "x" : "z";
+        ModelData shaft = LoadCreateModel("block/shaft", 210);
+        RotateKineticAxis(shaft, axis);
+        Append(result, std::move(shaft));
+        ModelData head = LoadCreateModel("block/mechanical_press/head", 211);
+        Rotate(head, 0.0f, FacingY(facing), 0.0f);
+        Append(result, std::move(head));
+        return result;
+    }
+
+    // encased_fan: casing (blockstate) + SHAFT_HALF + propeller on opposite face, rest angle 0.
+    ModelData GenerateCreateEncasedFan(const string& blockName,
+        const unordered_map<string, string>& states) {
+        ModelData result = LoadBlockstateModel(blockName);
+        string facing = states.contains("facing") ? states.at("facing") : "south";
+        static const unordered_map<string, string> opposite = {
+            {"north","south"},{"south","north"},{"east","west"},
+            {"west","east"},{"up","down"},{"down","up"}
+        };
+        string back = opposite.contains(facing) ? opposite.at(facing) : "north";
+        Append(result, MakeShaftHalfFacing(back));
+        ModelData prop = LoadCreateModel("block/encased_fan/propeller", 220);
+        // Propeller JSON faces NORTH (-Z); aim at the back (intake) side like EncasedFanRenderer.
+        RotateFromNorth(prop, back);
+        Append(result, std::move(prop));
+        return result;
+    }
+
+    // deployer: casing (blockstate) + shaft + pole + hand_pointing at offset 0.
+    ModelData GenerateCreateDeployer(const string& blockName,
+        const unordered_map<string, string>& states) {
+        ModelData result = LoadBlockstateModel(blockName);
+        string facing = states.contains("facing") ? states.at("facing") : "south";
+        bool axisAlongFirst = states.contains("axis_along_first") &&
+            states.at("axis_along_first") == "true";
+        // Rotation axis — DirectionalAxisKineticBlock.getRotationAxis:
+        //   facing X → alongFirst ? Y : Z
+        //   facing Y → alongFirst ? X : Z
+        //   facing Z → alongFirst ? X : Y
+        string axis = "y";
+        if (facing == "east" || facing == "west")
+            axis = axisAlongFirst ? "y" : "z";
+        else if (facing == "up" || facing == "down")
+            axis = axisAlongFirst ? "x" : "z";
+        else // north/south
+            axis = axisAlongFirst ? "x" : "y";
+        ModelData shaft = LoadCreateModel("block/shaft", 230);
+        RotateKineticAxis(shaft, axis);
+        Append(result, std::move(shaft));
+
+        // DeployerRenderer.transform: rotateCentered Y, then X(EAST), then Z(SOUTH).
+        auto deployOrient = [&](ModelData& part, bool axisDirectionMatters) {
+            float yRot = FacingY(facing); // 0 for up/down (AngleHelper.horizontalAngle)
+            float xRot = facing == "up" ? 270.0f : facing == "down" ? 90.0f : 0.0f;
+            bool facingAxisZ = (facing == "north" || facing == "south");
+            float zRot = 0.0f;
+            if (axisDirectionMatters && (axisAlongFirst ^ facingAxisZ)) zRot = 90.0f;
+            if (yRot != 0.0f) Rotate(part, 0.0f, yRot, 0.0f);
+            if (xRot != 0.0f) Rotate(part, xRot, 0.0f, 0.0f);
+            if (zRot != 0.0f) Rotate(part, 0.0f, 0.0f, zRot);
+        };
+        ModelData pole = LoadCreateModel("block/deployer/pole", 231);
+        deployOrient(pole, true);
+        Append(result, std::move(pole));
+        ModelData hand = LoadCreateModel("block/deployer/hand_pointing", 232);
+        deployOrient(hand, false);
+        Append(result, std::move(hand));
+        return result;
+    }
+
+    // Apply ArmRenderer transform stack (resting NO_TARGET pose) to one arm partial.
+    // Create: center → [ceiling Rx180] → base(Ty 4/16, Ry) → lower(Ty 2/16, Rx+135) →
+    // upper(Tz -14/16, Rx-90) → head(Tz -15/16, Rx-45) → claw grips.
+    // Renderer feeds lowerArmAngle-135 / upperArmAngle-90; NO_TARGET raw is 135/45/0/0 →
+    // passed angles base=0, lower=0, upper=-45, head=0.
+    void ApplyArmRestPose(ModelData& part, int stage, bool ceiling, float clawFlip = 0.0f) {
+        // stage: 0=base, 1=lower, 2=upper, 3=clawBase, 4=clawGrip
+        const float baseAngle = 0.0f;
+        const float lowerPassed = 0.0f;   // 135 - 135
+        const float upperPassed = -45.0f; // 45 - 90
+        const float headPassed = 0.0f;
+
+        // Apply innermost first (vertex = M_outer * ... * M_inner * v).
+        if (stage >= 4) {
+            // transformClawHalf: translate(0, -flip * 1/16, -6/16) for empty hand
+            TranslateModel(part, 0.0f, -clawFlip * (1.0f / 16.0f), -6.0f / 16.0f);
+        }
+        if (stage >= 3) {
+            // transformHead
+            RotateModelOrigin(part, headPassed - 45.0f, 0.0f, 0.0f);
+            TranslateModel(part, 0.0f, 0.0f, -15.0f / 16.0f);
+        }
+        if (stage >= 2) {
+            RotateModelOrigin(part, upperPassed - 90.0f, 0.0f, 0.0f);
+            TranslateModel(part, 0.0f, 0.0f, -14.0f / 16.0f);
+        }
+        if (stage >= 1) {
+            RotateModelOrigin(part, lowerPassed + 135.0f, 0.0f, 0.0f);
+            TranslateModel(part, 0.0f, 2.0f / 16.0f, 0.0f);
+        }
+        // transformBase
+        RotateModelOrigin(part, 0.0f, baseAngle, 0.0f);
+        TranslateModel(part, 0.0f, 4.0f / 16.0f, 0.0f);
+        if (ceiling) RotateModelOrigin(part, 180.0f, 0.0f, 0.0f);
+        TranslateModel(part, 0.5f, 0.5f, 0.5f);
+    }
+
+    // mechanical_arm: base plate (blockstate) + ARM_COG + full arm at resting pose.
+    ModelData GenerateCreateMechanicalArm(const string& blockName,
+        const unordered_map<string, string>& states) {
+        ModelData result = LoadBlockstateModel(blockName);
+        bool ceiling = states.contains("ceiling") && states.at("ceiling") == "true";
+        Append(result, LoadCreateModel("block/mechanical_arm/cog", 240));
+
+        ModelData base = LoadCreateModel("block/mechanical_arm/base", 241);
+        ApplyArmRestPose(base, 0, ceiling);
+        Append(result, std::move(base));
+
+        ModelData lower = LoadCreateModel("block/mechanical_arm/lower_body", 242);
+        ApplyArmRestPose(lower, 1, ceiling);
+        Append(result, std::move(lower));
+
+        ModelData upper = LoadCreateModel("block/mechanical_arm/upper_body", 243);
+        ApplyArmRestPose(upper, 2, ceiling);
+        Append(result, std::move(upper));
+
+        ModelData claw = LoadCreateModel("block/mechanical_arm/claw_base", 244);
+        ApplyArmRestPose(claw, 3, ceiling);
+        Append(result, std::move(claw));
+
+        for (int flip : {1, -1}) {
+            ModelData grip = LoadCreateModel(
+                flip > 0 ? "block/mechanical_arm/lower_claw_grip"
+                         : "block/mechanical_arm/upper_claw_grip", 245);
+            ApplyArmRestPose(grip, 4, ceiling, static_cast<float>(flip));
+            Append(result, std::move(grip));
+        }
+        return result;
+    }
+
+    // hand_crank: short axis stub (blockstate) + handle facing opposite, rest angle 0.
+    ModelData GenerateCreateHandCrank(const string& blockName,
+        const unordered_map<string, string>& states) {
+        ModelData result = LoadBlockstateModel(blockName);
+        string facing = states.contains("facing") ? states.at("facing") : "up";
+        static const unordered_map<string, string> opposite = {
+            {"north","south"},{"south","north"},{"east","west"},
+            {"west","east"},{"up","down"},{"down","up"}
+        };
+        string back = opposite.contains(facing) ? opposite.at(facing) : "down";
+        ModelData handle = LoadCreateModel("block/hand_crank/handle", 250);
+        // Handle JSON points UP by default (axis along +Y from bottom); HandCrank uses
+        // partialFacing(..., facing.opposite). RotateFromSouth-style for UP-default:
+        // map via blockstate-like x/y rotations from facing=up identity.
+        if (back == "down") Rotate(handle, 180.0f, 0.0f, 0.0f);
+        else if (back == "east") Rotate(handle, 90.0f, 90.0f, 0.0f);
+        else if (back == "west") Rotate(handle, 90.0f, 270.0f, 0.0f);
+        else if (back == "north") Rotate(handle, 90.0f, 0.0f, 0.0f);
+        else if (back == "south") Rotate(handle, 90.0f, 180.0f, 0.0f);
+        // up: identity
+        Append(result, std::move(handle));
+        return result;
+    }
+
 }
 
 bool SpecialBlock::TryGenerateCreateBlockModel(const string& blockName,
@@ -419,6 +836,63 @@ bool SpecialBlock::TryGenerateCreateBlockModel(const string& blockName,
             ParseBlockStates(blockName), x, y, z);
         return !outModel.vertices.empty();
     }
+    // Gearbox casing is in the blockstate; protruding shafts are Flywheel SHAFT_HALF partials.
+    if (baseName == "create:gearbox") {
+        outModel = GenerateCreateGearbox(blockName, ParseBlockStates(blockName));
+        return !outModel.vertices.empty();
+    }
+    // Clutch / gearshift / sequenced_gearshift: SplitShaftRenderer places SHAFT_HALF on the axis.
+    if (baseName == "create:clutch" || baseName == "create:gearshift" ||
+        baseName == "create:sequenced_gearshift") {
+        outModel = GenerateCreateSplitShaft(blockName, ParseBlockStates(blockName));
+        return !outModel.vertices.empty();
+    }
+    if (baseName == "create:flywheel" || baseName == "create:crushing_wheel" ||
+        baseName == "create:blaze_burner") {
+        outModel = GenerateCreateObjKinetic(baseName.substr(7), blockName,
+            ParseBlockStates(blockName));
+        return !outModel.vertices.empty();
+    }
+    if (baseName == "create:fluid_pipe" || baseName == "create:glass_fluid_pipe" ||
+        baseName == "create:encased_fluid_pipe") {
+        outModel = GenerateCreateFluidPipe(blockName, ParseBlockStates(blockName), x, y, z);
+        return !outModel.vertices.empty();
+    }
+    if (baseName == "create:mechanical_mixer") {
+        outModel = GenerateCreateMixer(blockName);
+        return !outModel.vertices.empty();
+    }
+    if (baseName == "create:mechanical_press") {
+        outModel = GenerateCreatePress(blockName, ParseBlockStates(blockName));
+        return !outModel.vertices.empty();
+    }
+    if (baseName == "create:encased_fan") {
+        outModel = GenerateCreateEncasedFan(blockName, ParseBlockStates(blockName));
+        return !outModel.vertices.empty();
+    }
+    if (baseName == "create:deployer") {
+        outModel = GenerateCreateDeployer(blockName, ParseBlockStates(blockName));
+        return !outModel.vertices.empty();
+    }
+    if (baseName == "create:mechanical_arm") {
+        outModel = GenerateCreateMechanicalArm(blockName, ParseBlockStates(blockName));
+        return !outModel.vertices.empty();
+    }
+    if (baseName == "create:hand_crank") {
+        outModel = GenerateCreateHandCrank(blockName, ParseBlockStates(blockName));
+        return !outModel.vertices.empty();
+    }
+    {
+        // create:<color>_toolbox
+        size_t colon = baseName.find(':');
+        string local = colon == string::npos ? baseName : baseName.substr(colon + 1);
+        if (local.size() > 8 && local.compare(local.size() - 8, 8, "_toolbox") == 0) {
+            outModel = GenerateCreateToolbox(blockName, ParseBlockStates(blockName));
+            return !outModel.vertices.empty();
+        }
+    }
+    // nixie_tube: porting_lib:composite — flattened in ProcessModelData; no SpecialBlock needed.
+    // Colored variants share the same composite parent.
     return false;
 }
 
