@@ -115,10 +115,10 @@ bool SaveTextureToFile(const std::string& namespaceName, const std::string& bloc
     std::string exeDir = exePath.substr(0, pos);
 
     if (savePath.empty()) {
-        savePath = exeDir + "\\textures";
+        savePath = JoinPath(exeDir, "textures");
     }
     else {
-        savePath = exeDir + "\\" + savePath;
+        savePath = JoinPath(exeDir, savePath);
     }
 
     // 创建保存目录（用 W 版支持中文路径）
@@ -132,7 +132,7 @@ bool SaveTextureToFile(const std::string& namespaceName, const std::string& bloc
     std::string fileName = (lastSlashPos == std::string::npos) ? blockId : blockId.substr(lastSlashPos + 1);
 
     // 创建 namespace 目录
-    std::wstring wNsDir = string_to_wstring(savePath + "\\" + namespaceName);
+    std::wstring wNsDir = string_to_wstring(JoinPath(savePath, namespaceName));
     CreateDirectoryW(wNsDir.c_str(), NULL);
 
     // 递归创建子目录
@@ -142,15 +142,15 @@ bool SaveTextureToFile(const std::string& namespaceName, const std::string& bloc
     size_t end;
     while ((end = pathPart.find('/', start)) != std::string::npos) {
         std::string dir = pathPart.substr(start, end - start);
-        wCurrentPath += L"\\" + string_to_wstring(dir);
+        wCurrentPath += PathSepWStr() + string_to_wstring(dir);
         CreateDirectoryW(wCurrentPath.c_str(), NULL);
         start = end + 1;
     }
-    std::wstring wFinalDir = wCurrentPath + L"\\" + string_to_wstring(pathPart.substr(start));
+    std::wstring wFinalDir = wCurrentPath + PathSepWStr() + string_to_wstring(pathPart.substr(start));
     CreateDirectoryW(wFinalDir.c_str(), NULL);
 
     // 保存主 PNG 文件
-    std::string filePath = wstring_to_string(wFinalDir) + "\\" + fileName + ".png";
+    std::string filePath = JoinPath(wstring_to_string(wFinalDir), fileName + ".png");
     std::ofstream outputFile(filePath, std::ios::binary);
     savePath = filePath;
 
@@ -226,7 +226,7 @@ bool SaveTextureToFile(const std::string& namespaceName, const std::string& bloc
 
             if (!pbrTextureData.empty()) {
                 // 保存 PBR 贴图
-                std::string pbrFilePath = wstring_to_string(wFinalDir) + "\\" + fileName + suffix + ".png";
+                std::string pbrFilePath = JoinPath(wstring_to_string(wFinalDir), fileName + suffix + ".png");
                 std::ofstream pbrOutputFile(pbrFilePath, std::ios::binary);
                 if (pbrOutputFile.is_open()) {
                     pbrOutputFile.write(reinterpret_cast<const char*>(pbrTextureData.data()), pbrTextureData.size());
@@ -430,8 +430,10 @@ bool LoadTexturePixels(const std::string& namespaceName, const std::string& text
     if (!pixels) {
         const std::string exeDir = GetTextureExeDir();
         if (!exeDir.empty()) {
+            std::string texFs = texturePath;
+            for (char& ch : texFs) { if (ch == '/') ch = PathSep(); }
             const std::string filePath =
-                exeDir + "\\textures\\" + namespaceName + "\\" + texturePath + ".png";
+                JoinPath(exeDir, "textures", namespaceName, texFs + ".png");
             pixels = stbi_load(filePath.c_str(), &outWidth, &outHeight, &channels, 4);
         }
     }

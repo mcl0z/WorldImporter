@@ -1,4 +1,5 @@
 #include "init.h"
+#include "fileutils.h"
 #include "RegionModelExporter.h"
 #include "logutil.h"
 #include <thread>
@@ -49,7 +50,7 @@ void init() {
     { CrafterLog::StageTimer t("清理纹理文件夹"); DeleteTexturesFolder(); }
     {
         CrafterLog::StageTimer t("加载配置 config.json");
-        config = LoadConfig("config\\config.json");
+        config = LoadConfig(JoinPath("config", "config.json"));
     }
     std::cout << "  配置摘要: worldPath=" << config.worldPath
               << " | status=" << config.status
