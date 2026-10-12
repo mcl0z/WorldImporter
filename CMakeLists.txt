@@ -73,6 +73,12 @@ if (BUILD_TESTING AND EXISTS "${WI_TESTS_DIR}")
     add_test(NAME foliage_model COMMAND foliage_model_tests WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
     set_tests_properties(foliage_model PROPERTIES TIMEOUT 30)
 
+    add_executable(variant_seed_tests tests/variant_seed_tests.cpp)
+    target_link_libraries(variant_seed_tests PRIVATE WorldImporterCore)
+    wi_apply_defaults(variant_seed_tests)
+    add_test(NAME variant_seed COMMAND variant_seed_tests WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+    set_tests_properties(variant_seed PROPERTIES TIMEOUT 30)
+
     # 独立 CTM 回归（自包含：直接编译 CTM.cpp）。烘焙产物写在测试可执行文件旁边，
     # 用例之间用 RESOURCE_LOCK 串行化，避免互相覆盖。
     if (WI_BUILD_CTM_TESTS)

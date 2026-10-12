@@ -24,10 +24,14 @@ void ChunkLoader::LoadChunks(int chunkXStart, int chunkXEnd, int chunkZStart, in
                 continue;
             }
             LoadAndCacheBlockData(chunkX, chunkZ);
-            for (int sectionY = sectionYStart; sectionY <= sectionYEnd; ++sectionY) {
-                auto key = std::make_tuple(chunkX, sectionY, chunkZ);
+            // One lock per chunk instead of per section — large vanilla exports
+            // touch tens of thousands of sectionY entries.
+            {
                 std::unique_lock<std::shared_mutex> lock(g_chunkSectionInfoMapMutex);
-                g_chunkSectionInfoMap[key].isLoaded.store(true, std::memory_order_release);
+                for (int sectionY = sectionYStart; sectionY <= sectionYEnd; ++sectionY) {
+                    auto key = std::make_tuple(chunkX, sectionY, chunkZ);
+                    g_chunkSectionInfoMap[key].isLoaded.store(true, std::memory_order_release);
+                }
             }
         }
     }
@@ -146,10 +150,11 @@ void ChunkLoader::CalculateChunkLODs(int expandedChunkXStart, int expandedChunkX
                     }
                 }
             }
-            for (int sy = sectionYStart; sy <= sectionYEnd; ++sy) {
-                // isLoaded 状态将由 ChunkLoader::LoadChunks 设置
-                {
-                    std::unique_lock<std::shared_mutex> lock(g_chunkSectionInfoMapMutex);
+            // isLoaded is set later by LoadChunks. Batch section inserts under
+            // one lock per chunk — unique_lock-per-section dominated huge maps.
+            {
+                std::unique_lock<std::shared_mutex> lock(g_chunkSectionInfoMapMutex);
+                for (int sy = sectionYStart; sy <= sectionYEnd; ++sy) {
                     g_chunkSectionInfoMap[std::make_tuple(cx, sy, cz)].lodLevel = chunkLOD;
                 }
             }

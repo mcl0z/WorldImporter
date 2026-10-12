@@ -12,6 +12,7 @@
 #include <string>
 #include <set>
 #include <unordered_set>
+#include <unordered_map>
 #include "TaskMonitor.h"
 #include <future> // 新增: 用于 std::async, std::future
 #include <mutex>  // 新增: 用于 std::mutex, std::lock_guard
@@ -844,25 +845,56 @@ void ModelDeduplicator::GreedyMesh(ModelData& data) {
             entries.push_back(e);
         }
 
-        // 回归使用原始但更安全的合并函数
+        // Spatial-hash neighbor lookup for rectangle merge.
+        // Same adjacency + UV rules as before, but avoid O(n^2) scans inside
+        // large coplanar groups (vanilla stone/dirt/grass floors blow up there).
         auto performLimitedMergePass = [&](std::vector<Entry>& current_entries_ref, bool mergeW_axis) -> bool {
             if (current_entries_ref.size() <= 1) return false;
-            
+
             bool any_merge_overall = false;
-            std::vector<char> processed_mask(current_entries_ref.size(), 0); 
+            std::vector<char> processed_mask(current_entries_ref.size(), 0);
             std::vector<Entry> next_entries_list;
             next_entries_list.reserve(current_entries_ref.size());
-            
-            // 预处理：按旋转角度分组
-            std::vector<std::vector<size_t>> rotationGroups(4); // 0, 90, 180, 270度
-            for (size_t i = 0; i < current_entries_ref.size(); ++i) {
-                int rot = current_entries_ref[i].rotation;
-                int idx = rot / 90;
-                if (idx >= 0 && idx < 4) {
-                    rotationGroups[idx].push_back(i);
+
+            // Quantize shared-axis bounds so adjacency is an exact key match.
+            // eps is 1e-6; use a slightly coarser bin so float noise still hits.
+            const float qScale = 1e4f; // 0.0001 world units
+            auto qf = [&](float v) -> long long {
+                return static_cast<long long>(std::llround(static_cast<double>(v) * qScale));
+            };
+
+            struct BandKey {
+                int rot;
+                long long a, b; // shared-axis (min,max) of the NON-merge axis
+                bool operator==(const BandKey& o) const { return rot==o.rot && a==o.a && b==o.b; }
+            };
+            struct BandKeyHash {
+                size_t operator()(const BandKey& k) const {
+                    size_t h = std::hash<int>{}(k.rot);
+                    h ^= std::hash<long long>{}(k.a) + 0x9e3779b97f4a7c15ULL + (h<<6) + (h>>2);
+                    h ^= std::hash<long long>{}(k.b) + 0x9e3779b97f4a7c15ULL + (h<<6) + (h>>2);
+                    return h;
                 }
+            };
+            // Edge maps: for W-merge, minW/maxW edges within an H-band.
+            std::unordered_map<BandKey, std::unordered_map<long long, std::vector<size_t>>, BandKeyHash> byMinEdge, byMaxEdge;
+            byMinEdge.reserve(current_entries_ref.size()*2);
+            byMaxEdge.reserve(current_entries_ref.size()*2);
+
+            auto bandOf = [&](const Entry& e) -> BandKey {
+                if (mergeW_axis) return BandKey{e.rotation, qf(e.minH), qf(e.maxH)};
+                return BandKey{e.rotation, qf(e.minW), qf(e.maxW)};
+            };
+            auto minEdge = [&](const Entry& e) -> long long { return mergeW_axis ? qf(e.minW) : qf(e.minH); };
+            auto maxEdge = [&](const Entry& e) -> long long { return mergeW_axis ? qf(e.maxW) : qf(e.maxH); };
+
+            for (size_t i = 0; i < current_entries_ref.size(); ++i) {
+                const Entry& e = current_entries_ref[i];
+                BandKey band = bandOf(e);
+                byMinEdge[band][minEdge(e)].push_back(i);
+                byMaxEdge[band][maxEdge(e)].push_back(i);
             }
-            
+
             // 两个面合并后只用 cur 的 UV 映射重建, 所以要求 other 的 UV 在世界上与
             // cur 连续: 仿射步进相同, 且 cur 的映射在 other 锚点处给出的 UV 与
             // other 实际 UV 只差整数 (贴图 REPEAT)。显式 uv 的模型面 (铁栏杆边、
@@ -879,109 +911,106 @@ void ModelDeduplicator::GreedyMesh(ModelData& data) {
                 return std::fabs(du - std::round(du)) < uvEps && std::fabs(dv - std::round(dv)) < uvEps;
             };
 
-            for (size_t i_pass = 0; i_pass < current_entries_ref.size(); ++i_pass) {
-                if (processed_mask[i_pass] != 0) continue; 
-                
-                Entry cur_pass = current_entries_ref[i_pass];
-                processed_mask[i_pass] = 1;
-                
-                // 仅在同一旋转组内查找匹配项
-                int rotGroup = cur_pass.rotation / 90;
-                if (rotGroup < 0 || rotGroup >= 4) rotGroup = 0;
-                
-                bool found_match = false;
-                for (size_t idx : rotationGroups[rotGroup]) {
-                    size_t j_pass = idx;
-                    
-                    if (i_pass == j_pass || processed_mask[j_pass] != 0) continue;
-                    if (current_entries_ref[j_pass].rotation != cur_pass.rotation) continue;
-                    
-                    Entry& other_entry = current_entries_ref[j_pass];
-                    if (!uvCompatible(cur_pass, other_entry)) continue;
-                    bool merged_now = false;
-                    
-                    if (mergeW_axis) {
-                        // 检查两个面是否在W轴方向相邻
-                        if (std::fabs(cur_pass.maxW - other_entry.minW) < eps && 
-                            std::fabs(cur_pass.minH - other_entry.minH) < eps && 
-                            std::fabs(cur_pass.maxH - other_entry.maxH) < eps) {
-                            
-                            float deltaU = other_entry.uMax - other_entry.uMin;
-                            float deltaV = other_entry.vMax - other_entry.vMin;
-                            if (cur_pass.rotation == 90 || cur_pass.rotation == 270) 
-                                cur_pass.vMax += deltaV; 
-                            else 
-                                cur_pass.uMax += deltaU;
-                                
-                            cur_pass.maxW = other_entry.maxW;
-                            merged_now = true;
-                        } 
-                        // 检查另一个方向是否相邻
-                        else if (std::fabs(cur_pass.minW - other_entry.maxW) < eps && 
-                                 std::fabs(cur_pass.minH - other_entry.minH) < eps && 
-                                 std::fabs(cur_pass.maxH - other_entry.maxH) < eps) {
-                            
-                            float deltaU = other_entry.uMax - other_entry.uMin;
-                            float deltaV = other_entry.vMax - other_entry.vMin;
-                            if (cur_pass.rotation == 90 || cur_pass.rotation == 270) 
-                                cur_pass.vMin -= deltaV; 
-                            else 
-                                cur_pass.uMin -= deltaU;
-                            
-                            cur_pass.minW = other_entry.minW;
-                            merged_now = true;
-                        }
+            // Classify adjacency without mutating: 1 = +axis (cur.max↔other.min),
+            // -1 = -axis (cur.min↔other.max), 0 = no geometric match.
+            auto classifyAdj = [&](const Entry& cur, const Entry& other) -> int {
+                if (mergeW_axis) {
+                    if (std::fabs(cur.maxW - other.minW) < eps &&
+                        std::fabs(cur.minH - other.minH) < eps &&
+                        std::fabs(cur.maxH - other.maxH) < eps) return 1;
+                    if (std::fabs(cur.minW - other.maxW) < eps &&
+                        std::fabs(cur.minH - other.minH) < eps &&
+                        std::fabs(cur.maxH - other.maxH) < eps) return -1;
+                } else {
+                    if (std::fabs(cur.maxH - other.minH) < eps &&
+                        std::fabs(cur.minW - other.minW) < eps &&
+                        std::fabs(cur.maxW - other.maxW) < eps) return 1;
+                    if (std::fabs(cur.minH - other.maxH) < eps &&
+                        std::fabs(cur.minW - other.minW) < eps &&
+                        std::fabs(cur.maxW - other.maxW) < eps) return -1;
+                }
+                return 0;
+            };
+
+            auto applyMerge = [&](Entry& cur, const Entry& other, int dir) {
+                float deltaU = other.uMax - other.uMin;
+                float deltaV = other.vMax - other.vMin;
+                if (mergeW_axis) {
+                    if (dir > 0) {
+                        if (cur.rotation == 90 || cur.rotation == 270) cur.vMax += deltaV;
+                        else cur.uMax += deltaU;
+                        cur.maxW = other.maxW;
                     } else {
-                        // 检查两个面是否在H轴方向相邻
-                        if (std::fabs(cur_pass.maxH - other_entry.minH) < eps && 
-                            std::fabs(cur_pass.minW - other_entry.minW) < eps && 
-                            std::fabs(cur_pass.maxW - other_entry.maxW) < eps) {
-                            
-                            float deltaU = other_entry.uMax - other_entry.uMin;
-                            float deltaV = other_entry.vMax - other_entry.vMin;
-                            if (cur_pass.rotation == 90 || cur_pass.rotation == 270) 
-                                cur_pass.uMax += deltaU; 
-                            else 
-                                cur_pass.vMax += deltaV;
-                            
-                            cur_pass.maxH = other_entry.maxH;
-                            merged_now = true;
-                        } 
-                        // 检查另一个方向是否相邻
-                        else if (std::fabs(cur_pass.minH - other_entry.maxH) < eps && 
-                                 std::fabs(cur_pass.minW - other_entry.minW) < eps && 
-                                 std::fabs(cur_pass.maxW - other_entry.maxW) < eps) {
-                            
-                            float deltaU = other_entry.uMax - other_entry.uMin;
-                            float deltaV = other_entry.vMax - other_entry.vMin;
-                            if (cur_pass.rotation == 90 || cur_pass.rotation == 270) 
-                                cur_pass.uMin -= deltaU; 
-                            else 
-                                cur_pass.vMin -= deltaV;
-                            
-                            cur_pass.minH = other_entry.minH;
-                            merged_now = true;
-                        }
+                        if (cur.rotation == 90 || cur.rotation == 270) cur.vMin -= deltaV;
+                        else cur.uMin -= deltaU;
+                        cur.minW = other.minW;
                     }
-                    
-                    if (merged_now) {
-                        processed_mask[j_pass] = 2;
-                        any_merge_overall = true;
-                        found_match = true;
-                        break;
+                } else {
+                    if (dir > 0) {
+                        if (cur.rotation == 90 || cur.rotation == 270) cur.uMax += deltaU;
+                        else cur.vMax += deltaV;
+                        cur.maxH = other.maxH;
+                    } else {
+                        if (cur.rotation == 90 || cur.rotation == 270) cur.uMin -= deltaU;
+                        else cur.vMin -= deltaV;
+                        cur.minH = other.minH;
                     }
                 }
-                
+            };
+
+            // Pick the lowest-index spatial neighbor (same as old rotation-group scan
+            // order). Among ties at the same index path, +axis wins via if/else-if.
+            auto findFirstNeighbor = [&](Entry& cur, size_t i_pass) -> size_t {
+                BandKey band = bandOf(cur);
+                size_t best = static_cast<size_t>(-1);
+                int bestDir = 0;
+                auto consider = [&](const std::vector<size_t>* bucket) {
+                    if (!bucket) return;
+                    for (size_t j : *bucket) {
+                        if (j == i_pass || processed_mask[j] != 0) continue;
+                        if (best != static_cast<size_t>(-1) && j >= best) continue;
+                        const Entry& other = current_entries_ref[j];
+                        int dir = classifyAdj(cur, other);
+                        if (dir == 0) continue;
+                        if (!uvCompatible(cur, other)) continue;
+                        best = j;
+                        bestDir = dir;
+                    }
+                };
+                auto lookup = [&](auto& edgeMap, long long edge) -> const std::vector<size_t>* {
+                    auto itBand = edgeMap.find(band);
+                    if (itBand == edgeMap.end()) return nullptr;
+                    auto it = itBand->second.find(edge);
+                    if (it == itBand->second.end()) return nullptr;
+                    return &it->second;
+                };
+                consider(lookup(byMinEdge, maxEdge(cur)));
+                consider(lookup(byMaxEdge, minEdge(cur)));
+                if (best != static_cast<size_t>(-1)) applyMerge(cur, current_entries_ref[best], bestDir);
+                return best;
+            };
+
+            for (size_t i_pass = 0; i_pass < current_entries_ref.size(); ++i_pass) {
+                if (processed_mask[i_pass] != 0) continue;
+
+                Entry cur_pass = current_entries_ref[i_pass];
+                processed_mask[i_pass] = 1;
+
+                size_t j_pass = findFirstNeighbor(cur_pass, i_pass);
+                if (j_pass != static_cast<size_t>(-1)) {
+                    processed_mask[j_pass] = 2;
+                    any_merge_overall = true;
+                }
+
                 next_entries_list.push_back(cur_pass);
             }
-            
-            // 添加未处理的条目
+
             for (size_t k_pass = 0; k_pass < current_entries_ref.size(); ++k_pass) {
                 if (processed_mask[k_pass] == 0) {
                     next_entries_list.push_back(current_entries_ref[k_pass]);
                 }
             }
-            
+
             current_entries_ref.swap(next_entries_list);
             return any_merge_overall;
         };
