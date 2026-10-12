@@ -216,6 +216,13 @@ void InitializeAllCaches() {
             GlobalCache::jarOrder.push_back("minecraft");
             };
 
+        if (config.jarPath.empty()) {
+            throw std::runtime_error("Config jarPath is empty: set the vanilla Minecraft jar path");
+        }
+        if (!std::filesystem::exists(config.jarPath)) {
+            throw std::runtime_error(std::string("Config jarPath does not exist: ") + config.jarPath);
+        }
+
         prepareQueue();
 
         // 将 jarQueue 中的 jar 路径复制到 vector 中,保证顺序与 GlobalCache::jarOrder 保持一致
@@ -233,6 +240,9 @@ void InitializeAllCaches() {
         // 用 vector 保存所有任务的结果,顺序与 jarPaths 和 jarOrder 对应
         std::vector<TaskResult> taskResults(taskCount);
         std::atomic<size_t> atomicIndex{ 0 };
+        // 配置里的原版 jar（jarOrder 里 id 为 "minecraft"）打不开时必须失败退出，
+        // 不能只警告后继续导出无材质/无模型的空壳网格。
+        std::atomic<bool> vanillaJarFailed{ false };
 
         // 工作线程函数：处理JAR文件并提取资源
         auto worker = [&]() {
@@ -246,7 +256,14 @@ void InitializeAllCaches() {
 
                 JarReader reader(jarPath);
                 if (!reader.open()) {
-                    std::cerr << "Warning: Failed to open jar, skipping resources for: " << currentModId << std::endl;
+                    if (currentModId == "minecraft") {
+                        vanillaJarFailed.store(true, std::memory_order_release);
+                        std::cerr << "Error: Failed to open vanilla jarPath, aborting: "
+                                  << config.jarPath << std::endl;
+                    } else {
+                        std::cerr << "Warning: Failed to open jar, skipping resources for: "
+                                  << currentModId << std::endl;
+                    }
                     continue;  // 跳过此JAR文件
                 }
                 
@@ -288,6 +305,10 @@ void InitializeAllCaches() {
             }
         }
         GlobalCache::stopFlag.store(true);
+
+        if (vanillaJarFailed.load(std::memory_order_acquire)) {
+            throw std::runtime_error(std::string("Failed to open vanilla jarPath: ") + config.jarPath);
+        }
 
         // 按照加载顺序(优先级)合并资源到全局缓存
         // 后加载的资源优先级更高(minecraft原版资源优先级最高)

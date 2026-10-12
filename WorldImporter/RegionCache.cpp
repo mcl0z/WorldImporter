@@ -5,6 +5,8 @@
 #include <fstream>
 #include <iostream>
 #include <filesystem> // 用于检测目录是否存在
+#include <mutex>
+#include <unordered_map>
 #include <cstdint> // 用于 uint8_t, uint32_t
 #include <vector>
 #include "locutil.h"
@@ -92,13 +94,14 @@ static std::string GetRegionDirectory() {
         }
     }
 
-    // 所有候选路径都不存在,打印警告并列出尝试过的路径
-    std::cerr << "警告: 维度目录不存在,已尝试以下路径:" << std::endl;
+    // 所有候选路径都不存在：空世界 / 错误 worldPath 应干净失败，而不是导出 0 面后 exit 0。
+    std::ostringstream oss;
+    oss << "Dimension region directory not found for worldPath='" << base
+        << "' selectedDimension='" << sel << "'. Tried:";
     for (const auto& dir : candidates) {
-        std::cerr << "  - " << dir << std::endl;
+        oss << "\n  - " << dir;
     }
-    // 回退到主世界 region(保持原有兜底行为)
-    return base + "/region";
+    throw std::runtime_error(oss.str());
 }
 
 // 维度目录在一次运行内不变,缓存结果避免每个区块都重复扫描文件系统
@@ -176,15 +179,33 @@ std::shared_ptr<const std::vector<char>> GetRegionFromCache(int regionX, int reg
     return dataPtr;
 }
 
+// Cache region-file existence. Large vanilla exports probe many empty
+// chunk coords; repeated filesystem::exists on the same r.X.Z.mca dominated
+// LoadChunks wall time once mesh work was no longer the bottleneck.
+static bool RegionFileExistsCached(int regionX, int regionZ) {
+    static std::mutex m;
+    static std::unordered_map<uint64_t, bool> cache;
+    const uint64_t key = (static_cast<uint64_t>(static_cast<uint32_t>(regionX)) << 32) |
+                         static_cast<uint32_t>(regionZ);
+    {
+        std::lock_guard<std::mutex> lock(m);
+        auto it = cache.find(key);
+        if (it != cache.end()) return it->second;
+    }
+    std::string regionDir = GetRegionDirectoryCached();
+    std::ostringstream filePathStream;
+    filePathStream << regionDir << "/r." << regionX << "." << regionZ << ".mca";
+    bool exists = std::filesystem::exists(filePathStream.str());
+    std::lock_guard<std::mutex> lock(m);
+    cache.emplace(key, exists);
+    return exists;
+}
+
 // 新增:判断指定 chunk 是否存在于 region 文件中
 bool HasChunk(int chunkX, int chunkZ) {
     int regionX, regionZ;
     chunkToRegion(chunkX, chunkZ, regionX, regionZ);
-    std::string regionDir = GetRegionDirectoryCached();
-    std::ostringstream filePathStream;
-    filePathStream << regionDir << "/r." << regionX << "." << regionZ << ".mca";
-    std::string filePath = filePathStream.str();
-    if (!std::filesystem::exists(filePath)) {
+    if (!RegionFileExistsCached(regionX, regionZ)) {
         return false;
     }
     auto dataPtr = GetRegionFromCache(regionX, regionZ);
