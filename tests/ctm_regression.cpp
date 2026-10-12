@@ -46,7 +46,11 @@ bool LoadTexturePixels(const std::string& namespaceName, const std::string& text
 static bool connectLeft = false;
 int GetBlockId(int x, int, int) { return connectLeft && x == -1 ? 1 : -1; }
 Block GetBlockById(int) { return Block("minecraft:glass", false); }
-ModelData GetRandomModelFromCache(const std::string&, const std::string&) { return {}; }
+ModelData GetRandomModelFromCache(const std::string&, const std::string&, std::optional<long long>) { return {}; }
+// ModCT 连接查询: 本 harness 不模拟模组连接组, 一律按"不连接"处理。
+bool ModCT_BlocksConnect(const std::string&, const std::string&) { return false; }
+bool ModCT_TextureConnectsTo(const std::string&, const std::string&, const std::string&) { return false; }
+std::string ModCT_GetPositionCamo(int, int, int) { return {}; }
 std::wstring string_to_wstring(const std::string& s) {
     int n = MultiByteToWideChar(CP_UTF8, 0, s.data(), (int)s.size(), nullptr, 0);
     std::wstring result(n, L'\0');
@@ -73,12 +77,14 @@ static std::vector<unsigned char> Png(int w, int h, unsigned char value) {
     STBIW_FREE(data);
     return result;
 }
-static void AddTexture(const std::string& path, int w, int h, unsigned char value, bool ctm) {
-    std::string key = "test:minecraft:" + path;
+static void AddTexture(const std::string& path, int w, int h, unsigned char value, bool ctm,
+    const std::string& ns = "minecraft") {
+    std::string key = "test:" + ns + ":" + path;
     auto& data = ctm ? GlobalCache::ctmTextures : GlobalCache::textures;
     auto& index = ctm ? GlobalCache::ctmTexturesIndex : GlobalCache::textureIndex;
     data[key] = Png(w, h, value);
-    index[(ctm ? "ctmtextures:" : "textures:") + std::string("minecraft:") + path] = key;
+    index[(ctm ? "ctmtextures:" : "textures:") + ns + ":" + path] = key;
+    if (!ctm) BuildTileNameAliasTable();   // 贴图名解析表要在规则初始化前反映新增贴图
 }
 static void AddMetadata(const std::string& path, const nlohmann::json& data) {
     std::string key = "test:minecraft:" + path;
@@ -283,6 +289,69 @@ static void PrefixTile() {
     RequireTextureFile(material.texturePath, 0, 0);
 }
 
+// matchTiles 按完整贴图路径匹配, 缺失的路径不会退化成按文件名匹配。
+// 场景取自 Yuushya: random/asphalt 规则 matchTiles=yuushya:stone_ yuushya:road
+// yuushya:textures/block/asphalt, 而 road_marking_0 的顶面贴图是
+// yuushya:0extra_building_block/road —— 只因为文件名同为 road, 曾被误套上
+// asphalt 的随机 CTM。
+static void RoadTileScope() {
+    const std::string dir = "optifine/ctm/regression_road_scope";
+    AddProperties(dir + "/r.properties",
+        "matchTiles=yuushya:stone_ yuushya:road yuushya:textures/block/asphalt\n"
+        "method=fixed\ntiles=0\n");
+    AddTexture(dir + "/0", 8, 8, 90, true, "yuushya");
+    // 这些贴图真实存在, 条目里的 yuushya:road 指的就是 block/road
+    AddTexture("block/road", 16, 16, 200, false, "yuushya");
+    AddTexture("block/asphalt", 16, 16, 210, false, "yuushya");
+    AddTexture("block_/concrete/white_worn_concrete", 16, 16, 220, false, "yuushya");
+    // 0extra_building_block/road 也存在, 但与 matchTiles=yuushya:road 不是同一个路径
+    AddTexture("0extra_building_block/road", 16, 16, 230, false, "yuushya");
+    // 图集声明: 资源包用 prefix "block_/" 对外暴露真实目录 block_
+    // (Yuushya 的做法), matchTiles 可以直接写这个名字。
+    nlohmann::json atlasDoc;
+    atlasDoc["sources"] = nlohmann::json::array({
+        nlohmann::json{{"type", "directory"}, {"source", "block_"}, {"prefix", "block_/"}}
+    });
+    std::unordered_map<std::string, nlohmann::json> atlasJson;
+    atlasJson["test:yuushya:blocks"] = atlasDoc;
+    LoadAtlasDirPrefixes(atlasJson);
+    InitializeCtmRules();
+
+    Check(FindCtmRule("yuushya", "road_marking_0", "yuushya", "0extra_building_block/road", "up") == nullptr,
+        "matchTiles=yuushya:road wrongly matched 0extra_building_block/road");
+    Check(FindCtmRule("yuushya", "road_marking_0", "yuushya", "block/road", "up") != nullptr,
+        "matchTiles=yuushya:road no longer matches block/road");
+    Check(FindCtmRule("yuushya", "asphalt", "yuushya", "block/asphalt", "up") != nullptr,
+        "matchTiles=yuushya:textures/block/asphalt no longer matches block/asphalt");
+    // 末尾下划线剥离 + 前缀族: 条目 block/stone_ 解析到真实存在的 block/stone_,
+    // 前缀族只在这条真实路径上展开, 不会蔓延到别的目录。
+    AddTexture("block/stone_", 16, 16, 240, false, "yuushya");
+    AddTexture("block/stone_bricks", 16, 16, 250, false, "yuushya");
+    Check(FindCtmRule("yuushya", "stone_block", "yuushya", "block/stone_bricks", "up") != nullptr,
+        "trailing-underscore prefix family no longer matches block/stone_bricks");
+    // 图集声明驱动: 贴图只在 block_/ 下, 裸名条目也能解析到它
+    AddTexture("block_/only_here", 16, 16, 255, false, "yuushya");
+    InitializeCtmRules();   // 合成规则要在贴图登记之后注册
+    std::array<std::vector<unsigned char>, 5> tilePngs;
+    for (int i = 0; i < 5; ++i) tilePngs[i] = Png(8, 8, (unsigned char)(60 + i * 20));
+    Check(RegisterSyntheticCompactCtmRule("yuushya", dir + "/atlas", {"yuushya:atlas_block"},
+        "yuushya", "only_here", tilePngs), "synthetic rule for atlas-declared name not registered");
+    Check(FindCtmRule("yuushya", "atlas_block", "yuushya", "block_/only_here", "up") != nullptr,
+        "bare matchTiles name did not resolve through the atlas directory declaration");
+
+    ModelData model;
+    model.materials.emplace_back("yuushya:road_marking_0#top~road",
+        "textures/yuushya/0extra_building_block/road.png", -1);
+    model.faces.push_back({{0,1,2,3}, {0,1,2,3}, 0, UP});
+    model.vertices = {0,0,0, 1,0,0, 1,1,0, 0,1,0};
+    model.uvCoordinates = {0,0, 1,0, 1,1, 0,1};
+    ApplyCtmToBlockModel(model, "yuushya", "road_marking_0", 1, -53, -110);
+    Check(model.faces[0].materialIndex == 0,
+        "road_marking_0 top face was replaced by the asphalt CTM");
+    Check(model.materials[0].texturePath == "textures/yuushya/0extra_building_block/road.png",
+        "road_marking_0 top face lost its own texture");
+}
+
 static void Invalid() {
     CtmRule rule;
     rule.tiles = {0};
@@ -316,6 +385,7 @@ int main(int argc, char** argv) {
         else if (test == "grid_random") GridRandom();
         else if (test == "pillar") Pillar();
         else if (test == "prefix_tile") PrefixTile();
+        else if (test == "road_tile_scope") RoadTileScope();
         else if (test == "invalid") Invalid();
         else throw std::runtime_error("unknown test");
         std::cout << "PASS " << test << '\n';

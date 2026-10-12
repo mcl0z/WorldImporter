@@ -88,7 +88,7 @@ if (BUILD_TESTING AND EXISTS "${WI_TESTS_DIR}")
         if (NOT MSVC)
             target_compile_definitions(ctm_regression PRIVATE _GLIBCXX_ASSERTIONS)
         endif()
-        foreach(case plain padded tiny odd mixed mcmeta lowercase matching identity invalid prefix_tile prefix_scope proxy_pattern grid_random pillar)
+        foreach(case plain padded tiny odd mixed mcmeta lowercase matching identity invalid prefix_tile road_tile_scope proxy_pattern grid_random pillar)
             add_test(NAME ctm_${case} COMMAND ctm_regression ${case}
                      WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
             set_tests_properties(ctm_${case} PROPERTIES
