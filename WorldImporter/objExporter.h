@@ -46,4 +46,11 @@ void CreateOverlayJsonFile();
 
 // overlay.json 里引用到的全部材质名（base 与各层 name），供材质剪枝时保留
 std::unordered_set<std::string> GetOverlayReferencedMaterialNames();
+
+// ---------- 双面几何元数据（doubleSided.json） ----------
+// 输出 doubleSided.json：一个纯 JSON 数组，元素是使用了双面几何（零厚度贴片被
+// SeparateCoincidentFaces 分离出正反两面）的材质基础全名（已剥掉 @tint 后缀，
+// 与 Crafter 侧 material_base_name() 的查询口径一致）。
+// 供 Blender 侧按材质名判断是否关闭背面剔除；未使用双面几何时输出空数组 []。
+void CreateDoubleSidedJsonFile();
 #endif

@@ -67,6 +67,10 @@ struct Face {
     int materialIndex;                // 材质索引
     FaceType faceDirection;           // 剔除方向
     int8_t tintIndex = -1;            // 面级 tintindex（-1 表示不染色）
+    // 来自零厚度贴片显式定义的正反两面（同一元素内朝向相反且完全重合）。
+    // 这是"双面几何"唯一可靠的依据：合并后网格里相邻方块的接触面虽然同样共面
+    // 重合，但那不是双面几何，必须靠这个标记区分（见 doubleSided.json 的收录口径）。
+    bool bothSided = false;
 };
 
 // 共面叠加层配对(如草方块侧面的 overlay 元素):
@@ -204,10 +208,19 @@ void RenameBlockMaterials(ModelData& model,
 // 模组方块复用同一贴图材质而省下的次数（导出日志用）
 size_t GetModMaterialReuseCount();
 
+// 剥掉材质名末尾的 tint/CTM 后缀（@grass/@foliage/@cRRGGBB 等），得到基础规范全名。
+// 与 Crafter 侧 Defs.material_base_name() 的 @ 处理对称：同一方块的不同 tint 变体在
+// Blender 里是不同的材质，但双面几何清单只需要基础名一条。
+std::string StripTintSuffix(const std::string& name);
+
 // Blender 的网格校验会把"顶点索引集合完全相同"的多边形当成重复面删除（不看绕序），
 // 导致共面正反两面导入后只剩一张。这里给每组重合面里第二张及以后的面复制一个顶点
 // （坐标不变、仅索引不同），让 Blender 保留双面几何。return: 被处理的面数
 size_t SeparateCoincidentFaces(ModelData& model);
+
+// 登记一个使用了双面几何的材质（内部剥掉 @ 后缀后按材质名去重，多线程安全）。
+// 供 SeparateCoincidentFaces 命中重合面时调用，结果由 CreateDoubleSidedJsonFile 写出。
+void RegisterDoubleSidedMaterial(const Material& material);
 
 // 取贴图路径的文件名部分并去掉扩展名（textures/minecraft/block/oak_log.png -> oak_log）
 std::string MaterialTextureBasename(const std::string& texturePath);

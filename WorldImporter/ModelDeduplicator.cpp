@@ -1028,6 +1028,9 @@ void ModelDeduplicator::GreedyMesh(ModelData& data) {
         for(auto& e_final: entries){
             Face nf; nf.materialIndex=f0_group_base.materialIndex; nf.faceDirection=UNKNOWN;
             nf.tintIndex=f0_group_base.tintIndex;
+            // 贪心合并出的面继承该组基底面的双面几何标记，否则标记会在合并时丢失
+            // （零厚度贴片常被合并成大面，比如大块路面的 up/down）
+            nf.bothSided=f0_group_base.bothSided;
             std::array<int,4> vidx_final;
             for(int k_final=0;k_final<4;++k_final){
                 float w2d = (k_final==0||k_final==3? e_final.minW : e_final.maxW);

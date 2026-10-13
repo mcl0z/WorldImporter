@@ -1,4 +1,5 @@
 #include "objExporter.h"
+#include <algorithm>
 #include <chrono>
 #include <fstream>
 #include <sstream>
@@ -703,6 +704,60 @@ std::unordered_set<std::string> GetOverlayReferencedMaterialNames() {
         for (const auto& layer : entry.second) names.insert(layer.name);
     }
     return names;
+}
+
+// ---------- doubleSided.json：使用了双面几何的材质名数组 ----------
+// 登记发生在导出收尾(分组拼接 / 全模型合并)之后, tint 变体展开早已完成,
+// 所以这里的材质名可能带 @grass 之类的后缀, 登记时统一剥掉。
+std::string StripTintSuffix(const std::string& name) {
+    const size_t at = name.find('@');
+    return (at == std::string::npos) ? name : name.substr(0, at);
+}
+
+namespace {
+    std::mutex g_doubleSidedMutex;
+    // 基础材质全名 -> 是否已登记(用 set 去重, 同一 tint 变体只留一条)
+    std::unordered_set<std::string> g_doubleSidedMaterials;
+    // 分组路径下每个分组都会调一次写出函数, 用这个标记保证只有第一次真正落盘
+    bool g_doubleSidedWritten = false;
+}
+
+void RegisterDoubleSidedMaterial(const Material& material) {
+    const std::string base = StripTintSuffix(material.name);
+    if (base.empty()) return;
+    std::lock_guard<std::mutex> lock(g_doubleSidedMutex);
+    g_doubleSidedMaterials.insert(base);
+}
+
+// 输出 doubleSided.json：纯数组，元素为使用了双面几何的材质基础全名。
+// 供 Blender 侧按材质名决定是否关闭背面剔除(与 Defs.material_base_name() 口径一致)。
+// 注意: 分组路径下每个分组都会调用一次, 所以整体只落盘一次(以第一次的清单为准)。
+void CreateDoubleSidedJsonFile() {
+    // 先按顺序取走并清空累加器, 再把结果写出(避免长时间持锁)
+    std::vector<std::string> names;
+    {
+        std::lock_guard<std::mutex> lock(g_doubleSidedMutex);
+        if (g_doubleSidedWritten) return;
+        g_doubleSidedWritten = true;
+        names.assign(g_doubleSidedMaterials.begin(), g_doubleSidedMaterials.end());
+        g_doubleSidedMaterials.clear();
+    }
+    // 排序让输出稳定, 便于跨次导出比对
+    std::sort(names.begin(), names.end());
+
+    nlohmann::json root = nlohmann::json::array();
+    for (const auto& name : names) root.push_back(name);
+
+    const std::string path = getExecutableDir() + "doubleSided.json";
+    std::ofstream file(path, std::ios::binary);
+    if (file.is_open()) {
+        file << root.dump(2);
+        file.close();
+        std::cout << "■ doubleSided.json: " << names.size() << " 个材质使用双面几何" << std::endl;
+    }
+    else {
+        std::cerr << "Failed to create doubleSided.json: " << path << std::endl;
+    }
 }
 
 // 创建 .mtl 文件,接收 textureToPath 作为参数
