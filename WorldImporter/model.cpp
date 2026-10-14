@@ -1476,6 +1476,41 @@ void processElements(const nlohmann::json& modelJson, ModelData& data,
                     newFace.faceDirection = StringToFaceType("DO_NOT_CULL");
                     // 双面几何标记（见 bothSidedFaceNames）：doubleSided.json 只收录它
                     newFace.bothSided = bothSidedFaceNames.count(faceName) > 0;
+                    // 薄片贴边标记：极薄元素(厚度 < 1 像素)贴到方块界面上的那一面。
+                    // 导出时若该方向邻居是完整遮挡体，会沿法线外推 overlayLayerStep，
+                    // 避免与邻居方块的接触面严格共面而在 Blender 里 z-fighting。
+                    {
+                        constexpr float EDGE_EPS = 1e-4f;
+                        const bool onMinEdge = (faceName == "north" || faceName == "west" || faceName == "down");
+                        const bool onMaxEdge = (faceName == "south" || faceName == "east" || faceName == "up");
+                        float edgeValue = 0.0f;   // 该面应贴的方块界面坐标(0 或 1)
+                        bool thicknessOk = false;
+                        if (faceName == "north" || faceName == "south") {
+                            thicknessOk = isThinZ; edgeValue = onMinEdge ? z1 : z2;
+                        } else if (faceName == "west" || faceName == "east") {
+                            thicknessOk = isThinX; edgeValue = onMinEdge ? x1 : x2;
+                        } else if (faceName == "up" || faceName == "down") {
+                            thicknessOk = isThinY; edgeValue = onMinEdge ? y1 : y2;
+                        }
+                        const bool atBoundary = onMinEdge ? (edgeValue < EDGE_EPS)
+                                                          : (edgeValue > 1.0f - EDGE_EPS);
+                        if (thicknessOk && atBoundary) {
+                            // 元素可能带自身 rotation(如 45° 斜面)，那种面根本没贴在界面上：
+                            // 这里再逐个顶点确认，只有顶点确实落在该界面才认作贴边面。
+                            const int axis = (faceName == "north" || faceName == "south") ? 2
+                                           : ((faceName == "west" || faceName == "east") ? 0 : 1);
+                            const auto itVerts = elementVertices.find(faceName);
+                            newFace.thinEdge = true;
+                            if (itVerts != elementVertices.end()) {
+                                for (const auto& v : itVerts->second) {
+                                    if (std::fabs(v[axis] - edgeValue) > EDGE_EPS) {
+                                        newFace.thinEdge = false;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
                     data.faces.push_back(newFace);
 
                     if (face.value().contains("texture")) {
@@ -1808,6 +1843,7 @@ ModelData MergeModelData(const ModelData& data1, const ModelData& data2) {
             newFace.faceDirection = face.faceDirection;
             newFace.tintIndex = face.tintIndex;
             newFace.bothSided = face.bothSided;
+            newFace.thinEdge = face.thinEdge;
             
             mergedData.faces.push_back(newFace);
         }
@@ -2005,6 +2041,7 @@ ModelData MergeFluidModelData(const ModelData& data1, const ModelData& data2) {
             newFace.faceDirection = face.faceDirection;
             newFace.tintIndex = face.tintIndex;
             newFace.bothSided = face.bothSided;
+            newFace.thinEdge = face.thinEdge;
             
             mergedData.faces.push_back(newFace);
         }
@@ -2187,6 +2224,7 @@ ModelData MergeFluidModelData(const ModelData& data1, const ModelData& data2) {
         newFace.faceDirection = data2.faces[i].faceDirection;
         newFace.tintIndex = data2.faces[i].tintIndex;
         newFace.bothSided = data2.faces[i].bothSided;
+        newFace.thinEdge = data2.faces[i].thinEdge;
         data2FaceNewIndex[i] = static_cast<int>(mergedData.faces.size());
         mergedData.faces.push_back(newFace);
 
@@ -2324,6 +2362,7 @@ void MergeModelsDirectly(ModelData& data1, const ModelData& data2,
         newFace.tintIndex = face.tintIndex;
         // 双面几何标记必须跟着面一起搬，否则合并后全部丢失(doubleSided.json 会变空)
         newFace.bothSided = face.bothSided;
+        newFace.thinEdge = face.thinEdge;
         
         data1.faces.push_back(newFace);
     }
