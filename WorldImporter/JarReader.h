@@ -27,7 +27,8 @@ public:
 		std::unordered_map<std::string, nlohmann::json>& biomeCache,
 		std::unordered_map<std::string, std::vector<unsigned char>>& colormapCache,
 		std::unordered_map<std::string, std::string>& ctmPropertiesCache,
-		std::unordered_map<std::string, std::vector<unsigned char>>& ctmTexturesCache);
+		std::unordered_map<std::string, std::vector<unsigned char>>& ctmTexturesCache,
+		std::unordered_map<std::string, nlohmann::json>& atlasCache);
 
     // 构造函数,接受 .jar 文件路径
     JarReader(const std::wstring& jarFilePath);

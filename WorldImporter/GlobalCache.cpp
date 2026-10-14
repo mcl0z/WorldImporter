@@ -59,6 +59,9 @@ namespace GlobalCache {
     std::unordered_map<std::string, std::string> ctmProperties;            // CTM properties 文本
     std::unordered_map<std::string, std::vector<unsigned char>> ctmTextures; // CTM tile 贴图
 
+    // 图集定义缓存: "namespace:相对 atlases/ 的路径" -> JSON
+    std::unordered_map<std::string, nlohmann::json> atlases;
+
     // 快速查找索引: "resourceType:namespace:resourcePath" -> 完整缓存键
     std::unordered_map<std::string, std::string> blockstateIndex;
     std::unordered_map<std::string, std::string> modelIndex;
@@ -97,6 +100,7 @@ struct TaskResult {
     std::unordered_map<std::string, std::vector<unsigned char>> localColormaps;   // 本地颜色映射
     std::unordered_map<std::string, std::string> localCtmProperties;              // 本地 CTM properties
     std::unordered_map<std::string, std::vector<unsigned char>> localCtmTextures; // 本地 CTM 贴图
+    std::unordered_map<std::string, nlohmann::json> localAtlases;                 // 本地图集定义(atlases/*.json)
 };
 
 //========== 辅助函数 ==========
@@ -278,7 +282,8 @@ void InitializeAllCaches() {
                         taskResults[idx].localBiomes,
                         taskResults[idx].localColormaps,
                         taskResults[idx].localCtmProperties,
-                        taskResults[idx].localCtmTextures
+                        taskResults[idx].localCtmTextures,
+                        taskResults[idx].localAtlases
                     );
                 } catch (const std::exception& e) {
                     std::cerr << "Error processing jar file for " << currentModId 
@@ -420,9 +425,15 @@ void InitializeAllCaches() {
                         GlobalCache::ctmTexturesIndex.emplace(indexKey, cacheKey);
                     }
                 }
+                // 合并图集定义
+                for (auto& pair : result.localAtlases) {
+                    std::string cacheKey = currentModId + ":" + pair.first;
+                    if (GlobalCache::atlases.find(cacheKey) == GlobalCache::atlases.end()) {
+                        GlobalCache::atlases.insert({ cacheKey, std::move(pair.second) });
+                    }
+                }
             }
         }
-
         // 输出加载统计信息
         auto end = std::chrono::high_resolution_clock::now();
         auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
@@ -436,7 +447,13 @@ void InitializeAllCaches() {
             << " - Colormaps: " << GlobalCache::colormaps.size() << "\n"
             << " - CTM properties: " << GlobalCache::ctmProperties.size() << "\n"
             << " - CTM textures: " << GlobalCache::ctmTextures.size() << "\n"
+            << " - Atlases: " << GlobalCache::atlases.size() << "\n"
             << " - Time: " << ms << "ms" << std::endl;
+
+        // 展开各命名空间的图集目录映射(供 CTM matchTiles 解析虚拟贴图路径)
+        LoadAtlasDirPrefixes(GlobalCache::atlases);
+        // 建贴图名解析表(InitializeCtmRules 会查它来判定候选路径是否真实存在)
+        BuildTileNameAliasTable();
 
         // 解析 CTM 规则并构建索引(在所有资源合并完成后)
         InitializeCtmRules();

@@ -1036,6 +1036,9 @@ void processElements(const nlohmann::json& modelJson, ModelData& data,
     std::unordered_map<std::string, std::unordered_set<int>> faceMaterialMap;
     std::unordered_map<std::string, int> faceBaseIndexMap;               // 每个共面键的首面(底层)索引
     std::unordered_map<std::string, std::vector<std::vector<float>>> faceBaseUvMap; // 底层最终 UV
+    // 本模型里属于"双面几何"的面名（同元素内朝向相反且完全重合的正反两面）。
+    // 跨元素累积：只要某个元素声明过正反两面，该面名就按双面几何处理。
+    std::unordered_set<std::string> bothSidedFaceNames;
 
     auto elements = modelJson["elements"];
 
@@ -1245,49 +1248,60 @@ void processElements(const nlohmann::json& modelJson, ModelData& data,
             // both sides: their texture, UV rotation or tint may differ.
             // 默认保留正反两面（与游戏一致；Blender 判重问题由 SeparateCoincidentFaces 解决）。
             // doubleSidedGeometry=false 时退回旧行为：朝向相反且完全重合的两面只留一张。
-            if (!config.doubleSidedGeometry) {
-                auto getOppositeFace = [](const std::string& faceName) -> std::string {
-                    if (faceName == "north") return "south";
-                    if (faceName == "south") return "north";
-                    if (faceName == "east") return "west";
-                    if (faceName == "west") return "east";
-                    if (faceName == "up") return "down";
-                    if (faceName == "down") return "up";
-                    return "";
-                };
-                auto areFacesCoinciding = [](const std::vector<std::vector<float>>& face1,
-                    const std::vector<std::vector<float>>& face2) -> bool {
-                        if (face1.size() != face2.size()) return false;
-                        auto toKey = [](const std::vector<float>& v) {
-                            char buffer[64];
-                            snprintf(buffer, sizeof(buffer), "%.4f,%.4f,%.4f", v[0], v[1], v[2]);
-                            return std::string(buffer);
-                        };
-                        std::unordered_set<std::string> set1;
-                        for (const auto& v : face1) set1.insert(toKey(v));
-                        for (const auto& v : face2) {
-                            if (!set1.count(toKey(v))) return false;
-                        }
-                        return true;
-                };
+            //
+            // 注意：这套"正反重合"判定是双面几何的唯一权威依据 —— 它跑在元素自身的
+            // 面表上，只认原版模型里显式声明的正反两面。合并后的大网格里，相邻方块的
+            // 接触面同样是"共面 + 朝向相反 + 顶点重合"，但那不是双面几何；靠这里的
+            // bothSidedFaceNames 标记把它们区分开（doubleSided.json 只收录带标记的面）。
+            auto getOppositeFace = [](const std::string& faceName) -> std::string {
+                if (faceName == "north") return "south";
+                if (faceName == "south") return "north";
+                if (faceName == "east") return "west";
+                if (faceName == "west") return "east";
+                if (faceName == "up") return "down";
+                if (faceName == "down") return "up";
+                return "";
+            };
+            auto areFacesCoinciding = [](const std::vector<std::vector<float>>& face1,
+                const std::vector<std::vector<float>>& face2) -> bool {
+                    if (face1.size() != face2.size()) return false;
+                    auto toKey = [](const std::vector<float>& v) {
+                        char buffer[64];
+                        snprintf(buffer, sizeof(buffer), "%.4f,%.4f,%.4f", v[0], v[1], v[2]);
+                        return std::string(buffer);
+                    };
+                    std::unordered_set<std::string> set1;
+                    for (const auto& v : face1) set1.insert(toKey(v));
+                    for (const auto& v : face2) {
+                        if (!set1.count(toKey(v))) return false;
+                    }
+                    return true;
+            };
 
-                std::vector<std::string> facesToRemove;
-                for (const auto& faceEntry : elementVertices) {
-                    const std::string& faceName = faceEntry.first;
-                    const std::string opposite = getOppositeFace(faceName);
-                    if (opposite.empty()) continue;
-                    auto oppositeIt = elementVertices.find(opposite);
-                    if (oppositeIt == elementVertices.end()) continue;
-                    if (areFacesCoinciding(faceEntry.second, oppositeIt->second)) {
-                        if (faceName == "south" || faceName == "west" || faceName == "down") {
-                            facesToRemove.push_back(faceName);
-                        } else {
-                            facesToRemove.push_back(opposite);
-                        }
+            std::vector<std::string> facesToRemove;
+            for (const auto& faceEntry : elementVertices) {
+                const std::string& faceName = faceEntry.first;
+                const std::string opposite = getOppositeFace(faceName);
+                if (opposite.empty()) continue;
+                auto oppositeIt = elementVertices.find(opposite);
+                if (oppositeIt == elementVertices.end()) continue;
+                if (areFacesCoinciding(faceEntry.second, oppositeIt->second)) {
+                    // 双面几何: 判定命中时两个面名都要标记。只标记被删的那一侧是不够的 ——
+                    // 后续 DeduplicateFaces 可能把另一侧删掉(up/down 的 UV 循环移位后相同),
+                    // 那样留下的面就没有标记, 整对双面几何都不会被 doubleSided.json 收录。
+                    bothSidedFaceNames.insert(faceName);
+                    bothSidedFaceNames.insert(opposite);
+                    if (faceName == "south" || faceName == "west" || faceName == "down") {
+                        facesToRemove.push_back(faceName);
+                    } else {
+                        facesToRemove.push_back(opposite);
                     }
                 }
-                std::sort(facesToRemove.begin(), facesToRemove.end());
-                facesToRemove.erase(std::unique(facesToRemove.begin(), facesToRemove.end()), facesToRemove.end());
+            }
+            // 同一面名可能被两个方向各推一次，去重后再删
+            std::sort(facesToRemove.begin(), facesToRemove.end());
+            facesToRemove.erase(std::unique(facesToRemove.begin(), facesToRemove.end()), facesToRemove.end());
+            if (!config.doubleSidedGeometry) {
                 for (const auto& faceToRemove : facesToRemove) {
                     elementVertices.erase(faceToRemove);
                 }
@@ -1460,6 +1474,43 @@ void processElements(const nlohmann::json& modelJson, ModelData& data,
                     newFace.vertexIndices = vertexIndices;
                     newFace.materialIndex = -1;
                     newFace.faceDirection = StringToFaceType("DO_NOT_CULL");
+                    // 双面几何标记（见 bothSidedFaceNames）：doubleSided.json 只收录它
+                    newFace.bothSided = bothSidedFaceNames.count(faceName) > 0;
+                    // 薄片贴边标记：极薄元素(厚度 < 1 像素)贴到方块界面上的那一面。
+                    // 导出时若该方向邻居是完整遮挡体，会沿法线外推 overlayLayerStep，
+                    // 避免与邻居方块的接触面严格共面而在 Blender 里 z-fighting。
+                    {
+                        constexpr float EDGE_EPS = 1e-4f;
+                        const bool onMinEdge = (faceName == "north" || faceName == "west" || faceName == "down");
+                        const bool onMaxEdge = (faceName == "south" || faceName == "east" || faceName == "up");
+                        float edgeValue = 0.0f;   // 该面应贴的方块界面坐标(0 或 1)
+                        bool thicknessOk = false;
+                        if (faceName == "north" || faceName == "south") {
+                            thicknessOk = isThinZ; edgeValue = onMinEdge ? z1 : z2;
+                        } else if (faceName == "west" || faceName == "east") {
+                            thicknessOk = isThinX; edgeValue = onMinEdge ? x1 : x2;
+                        } else if (faceName == "up" || faceName == "down") {
+                            thicknessOk = isThinY; edgeValue = onMinEdge ? y1 : y2;
+                        }
+                        const bool atBoundary = onMinEdge ? (edgeValue < EDGE_EPS)
+                                                          : (edgeValue > 1.0f - EDGE_EPS);
+                        if (thicknessOk && atBoundary) {
+                            // 元素可能带自身 rotation(如 45° 斜面)，那种面根本没贴在界面上：
+                            // 这里再逐个顶点确认，只有顶点确实落在该界面才认作贴边面。
+                            const int axis = (faceName == "north" || faceName == "south") ? 2
+                                           : ((faceName == "west" || faceName == "east") ? 0 : 1);
+                            const auto itVerts = elementVertices.find(faceName);
+                            newFace.thinEdge = true;
+                            if (itVerts != elementVertices.end()) {
+                                for (const auto& v : itVerts->second) {
+                                    if (std::fabs(v[axis] - edgeValue) > EDGE_EPS) {
+                                        newFace.thinEdge = false;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
                     data.faces.push_back(newFace);
 
                     if (face.value().contains("texture")) {
@@ -1791,6 +1842,8 @@ ModelData MergeModelData(const ModelData& data1, const ModelData& data2) {
             // 保留面方向
             newFace.faceDirection = face.faceDirection;
             newFace.tintIndex = face.tintIndex;
+            newFace.bothSided = face.bothSided;
+            newFace.thinEdge = face.thinEdge;
             
             mergedData.faces.push_back(newFace);
         }
@@ -1987,6 +2040,8 @@ ModelData MergeFluidModelData(const ModelData& data1, const ModelData& data2) {
             // 保留面方向
             newFace.faceDirection = face.faceDirection;
             newFace.tintIndex = face.tintIndex;
+            newFace.bothSided = face.bothSided;
+            newFace.thinEdge = face.thinEdge;
             
             mergedData.faces.push_back(newFace);
         }
@@ -2168,6 +2223,8 @@ ModelData MergeFluidModelData(const ModelData& data1, const ModelData& data2) {
         newFace.materialIndex = (data2.faces[i].materialIndex != -1) ? materialIndexMap[data2.faces[i].materialIndex] : -1;
         newFace.faceDirection = data2.faces[i].faceDirection;
         newFace.tintIndex = data2.faces[i].tintIndex;
+        newFace.bothSided = data2.faces[i].bothSided;
+        newFace.thinEdge = data2.faces[i].thinEdge;
         data2FaceNewIndex[i] = static_cast<int>(mergedData.faces.size());
         mergedData.faces.push_back(newFace);
 
@@ -2303,6 +2360,9 @@ void MergeModelsDirectly(ModelData& data1, const ModelData& data2,
         // 保留面方向
         newFace.faceDirection = face.faceDirection;
         newFace.tintIndex = face.tintIndex;
+        // 双面几何标记必须跟着面一起搬，否则合并后全部丢失(doubleSided.json 会变空)
+        newFace.bothSided = face.bothSided;
+        newFace.thinEdge = face.thinEdge;
         
         data1.faces.push_back(newFace);
     }
@@ -2388,10 +2448,22 @@ struct FaceVertexSetHash {
 size_t SeparateCoincidentFaces(ModelData& model) {
     if (model.faces.size() < 2) return 0;
     const float offset = config.doubleSidedFaceOffset;
+    // 按材质(剥掉 @tint 后缀的基础名)累计面数: 分离出的重合面数 == 总面数 时该材质
+    // 整个都是双面几何, 否则说明它还用在实心几何上, 整材质剔除会漏光, 需要告警。
+    std::unordered_map<std::string, size_t> totalFacesMap;
+    std::unordered_map<std::string, size_t> bothSidedFacesMap;
+    totalFacesMap.reserve(model.materials.size() * 2 + 1);
     std::unordered_map<FaceVertexSet, int, FaceVertexSetHash> seen;
     seen.reserve(model.faces.size());
     size_t separated = 0;
     for (auto& face : model.faces) {
+        // 与下方分离流程共用一次遍历: 每个面都先计入总数
+        const std::string materialBaseName =
+            (face.materialIndex >= 0 && static_cast<size_t>(face.materialIndex) < model.materials.size())
+            ? StripTintSuffix(model.materials[face.materialIndex].name)
+            : std::string();
+        if (!materialBaseName.empty()) ++totalFacesMap[materialBaseName];
+
         FaceVertexSet key;
         for (int k = 0; k < 4; ++k) key.v[k] = face.vertexIndices[k];
         std::sort(key.v, key.v + 4);
@@ -2443,7 +2515,46 @@ size_t SeparateCoincidentFaces(ModelData& model) {
             model.vertices.push_back(p[0][2]);
             face.vertexIndices[0] = newIndex;
         }
+        // 这一面确实被分离(复制了顶点)。只有带 bothSided 标记的才是真·双面几何：
+        // 零厚度贴片显式定义的正反两面。相邻实心方块的接触面同样会走到这里，但它们
+        // 不是双面几何，收录进 doubleSided.json 会让 Blender 侧误开背面剔除。
+        if (face.bothSided && !materialBaseName.empty()) {
+            ++bothSidedFacesMap[materialBaseName];
+            RegisterDoubleSidedMaterial(model.materials[face.materialIndex]);
+        }
         ++separated;
+    }
+
+    // 只对"同一材质还用在实心几何上"的情况告警: 整材质关背面剔除会让实心面漏光。
+    // 这里只是提示, 不影响 doubleSided.json 的内容(清单照常收录该材质)。
+    for (const auto& entry : bothSidedFacesMap) {
+        const auto totalIt = totalFacesMap.find(entry.first);
+        const size_t total = (totalIt != totalFacesMap.end()) ? totalIt->second : 0;
+        if (total > entry.second) {
+            std::cerr << "[WARN] 材质 " << entry.first << " 同时用于实心几何(双面 "
+                << entry.second << " / 共 " << total
+                << " 面), 整材质剔除背面可能漏光" << std::endl;
+        }
+    }
+
+    // 诊断: 记录本次分离的每个材质的(bothSided 面数 / 总面数)。
+    // 用于排查"某材质的双面几何没进 doubleSided.json"这类问题:
+    // 从 ds_diag.txt 里搜材质名, 有记录=标记正常但收录/匹配有问题; 无记录=标记没打上。
+    {
+        static std::mutex diagMutex;
+        static std::ofstream diagFile;
+        std::lock_guard<std::mutex> diagLock(diagMutex);
+        if (!diagFile.is_open()) {
+            diagFile.open("ds_diag.txt", std::ios::out | std::ios::trunc);
+        }
+        if (diagFile.is_open()) {
+            for (const auto& entry : bothSidedFacesMap) {
+                const auto totalIt = totalFacesMap.find(entry.first);
+                const size_t total = (totalIt != totalFacesMap.end()) ? totalIt->second : 0;
+                diagFile << entry.second << "\t" << total << "\t" << entry.first << "\n";
+            }
+            diagFile.flush();
+        }
     }
     return separated;
 }

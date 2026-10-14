@@ -54,7 +54,7 @@ struct Config {
     bool allowDoubleFace;//允许重叠面
     bool doubleSidedGeometry;//是否生成几何双面: 零厚度贴片保留正反两面(关掉则朝向相反的重合面只留一张)
     float doubleSidedFaceOffset; //几何双面里反面沿法线的外移量(米): 0=严格共面只换索引, 需大于该坐标处 float 精度
-    float overlayLayerStep; //共面叠加层(原版 overlay / CTM overlay)的逐层外移步长, 避免 Blender 下 z-fighting
+    float overlayLayerStep; //共面外移步长(米): 叠加层逐层外移 + 薄片贴边沿法线外推, 避免 Blender 下 z-fighting
     bool ctmPrefixMatchTiles; //matchTiles 以 '_' 结尾时是否再做前缀族匹配(默认开=保持既有行为; 关掉只保留剥掉下划线后的精确匹配)
     bool mergeModTextures; //模组方块是否复用同一张贴图已有的材质(原版方块之间始终不合并; 默认开)
     bool activeLOD; //使用LOD
@@ -102,7 +102,7 @@ struct Config {
         exportLightBlockOnly(false),
         lightBlockSize(0.05f),
         allowDoubleFace(false),
-        overlayLayerStep(0.003f),
+        overlayLayerStep(0.0005f),
         ctmPrefixMatchTiles(true),
         mergeModTextures(true),
         doubleSidedGeometry(true),

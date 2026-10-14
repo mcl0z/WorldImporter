@@ -508,6 +508,9 @@ void RegionModelExporter::ExportModels(const string& outputName) {
         { CrafterLog::StageTimer t("写入 overlay.json");
         CreateOverlayJsonFile();
         }
+        { CrafterLog::StageTimer t("写入 doubleSided.json");
+        CreateDoubleSidedJsonFile();
+        }
     }
     else if (!uniqueMaterials.empty()) {
         { CrafterLog::StageTimer t("写入共享 mtl");
@@ -516,6 +519,9 @@ void RegionModelExporter::ExportModels(const string& outputName) {
         }
         { CrafterLog::StageTimer t("写入 overlay.json");
         CreateOverlayJsonFile();
+        }
+        { CrafterLog::StageTimer t("写入 doubleSided.json");
+        CreateDoubleSidedJsonFile();
         }
     }
 

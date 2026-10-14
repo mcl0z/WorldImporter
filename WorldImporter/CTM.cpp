@@ -190,6 +190,184 @@ static std::string NormalizeTextureName(const std::string& v) {
     return s;
 }
 
+// 图集目录映射: 命名空间 -> (虚拟前缀, 真实贴图目录)。
+// 值来自资源包自己的 assets/<ns>/atlases/*.json:
+//   {"type":"directory","source":"<dir>","prefix":"<name>"}
+// 表示 <dir> 下的贴图同时以 "<name><相对路径>" 这个虚拟路径对外可见。
+// CTM 的 matchTiles 允许写这类名字(例如 Yuushya 把 CTM 用的贴图放在 block_/),
+// 所以路径解析必须按资源包声明来, 而不是猜目录名。
+static std::unordered_map<std::string, std::vector<std::pair<std::string, std::string>>> g_atlasDirMaps;
+
+// ========= 贴图名解析表 =========
+// 一次遍历 textureIndex 建好, 之后 matchTiles 匹配只查内存表, 不再加锁。
+// 必须这样做的原因: InitializeCtmRules 已持有 cacheMutex 独占锁, 匹配过程中
+// 不能再回头去查 textureIndex(会自锁)。
+namespace {
+struct TilePathLookup {
+    std::unordered_map<std::string, std::vector<std::string>> names;        // key -> 一个路径的所有别名
+    std::unordered_map<std::string, std::vector<std::string>> candidates;   // key -> 条目展开出的全部候选
+    std::unordered_set<std::string> realPaths;                              // "namespace|path" 真实存在
+};
+// 注意: 这张表由初始化阶段在主线程一次性建好, 之后所有导出线程只读,
+// 所以必须是进程内共享的(不能 thread_local, 否则工作线程看到的是空表),
+// 也不需要加锁。
+TilePathLookup& GetTilePathLookup() {
+    static TilePathLookup lookup;
+    return lookup;
+}
+
+// 把 (namespace, path) 规范化成缓存键; path 顺带剥掉 .png 与 textures/ 前缀。
+void DecomposeEntryKey(const std::string& entryNs, const std::string& entry,
+    std::string& key, std::string& path) {
+    std::string p = entry;
+    if (p.size() > 4 && p.compare(p.size() - 4, 4, ".png") == 0) p.resize(p.size() - 4);
+    if (p.rfind("textures/", 0) == 0) p = p.substr(9);
+    std::string ns = entryNs.empty() ? "minecraft" : entryNs;
+    size_t colon = p.find(':');
+    if (colon != std::string::npos) { ns = p.substr(0, colon); p = p.substr(colon + 1); }
+    key = ns + "|" + p;
+    path = p;
+}
+}  // namespace
+
+void BuildTileNameAliasTable() {
+    TilePathLookup& lookup = GetTilePathLookup();
+    lookup.names.clear();
+    lookup.candidates.clear();
+    lookup.realPaths.clear();
+
+    std::shared_lock<std::shared_mutex> lock(GlobalCache::cacheMutex);
+    for (const auto& entry : GlobalCache::textureIndex) {
+        const std::string& indexKey = entry.first;   // "textures:<namespace>:<相对路径>"
+        if (indexKey.rfind("textures:", 0) != 0) continue;
+        const size_t colon = indexKey.find(':', 9);
+        if (colon == std::string::npos) continue;
+        lookup.realPaths.insert(indexKey.substr(9, colon - 9) + "|" + indexKey.substr(colon + 1));
+    }
+}
+
+// 某路径在给定命名空间里是否真实存在(查内存表, 不加锁)。
+static bool TilePathKnown(const std::string& ns, const std::string& path) {
+    if (path.empty()) return false;
+    TilePathLookup& lookup = GetTilePathLookup();
+    return lookup.realPaths.find(ns + "|" + path) != lookup.realPaths.end();
+}
+
+// 一个贴图路径在给定命名空间里可能被写成的所有名字。
+//  - 含 '/' 的路径在 MC/OptiFine 里就是完整路径, 不再补全;
+//  - 裸名按 MC 惯例补 block/<名>, 该文件存在就用它(与 OptiFine 一致);
+//    只有 block/ 下确实没有时, 才看资源包图集声明里有没有唯一指向它的目录
+//    (Yuushya 把 CTM 用的贴图放在 block_/ 之类的地方);
+//  - 条目以 '_' 结尾时再给出剥掉末尾下划线的名字(见 prefix_tile 用例)。
+const std::vector<std::string>& GetTileNameAliases(const std::string& key, const std::string& path) {
+    TilePathLookup& lookup = GetTilePathLookup();
+    auto it = lookup.names.find(key);
+    if (it != lookup.names.end()) return it->second;
+
+    std::vector<std::string> out;
+    auto push = [&out](const std::string& s) {
+        if (s.empty()) return;
+        if (std::find(out.begin(), out.end(), s) == out.end()) out.push_back(s);
+    };
+    push(path);
+    if (path.find('/') == std::string::npos) {
+        const size_t bar = key.find('|');
+        const std::string ns = bar == std::string::npos ? key : key.substr(0, bar);
+        const std::string conventional = "block/" + path;
+        if (TilePathKnown(ns, conventional)) {
+            push(conventional);
+        } else {
+            auto mapIt = g_atlasDirMaps.find(ns);
+            if (mapIt != g_atlasDirMaps.end()) {
+                std::vector<std::string> declared;
+                for (const auto& pr : mapIt->second) {
+                    const std::string name = pr.first + path;
+                    if (TilePathKnown(ns, name)) declared.push_back(name);
+                }
+                if (declared.size() == 1) push(declared.front());   // 有歧义就不猜
+            }
+        }
+    }
+    if (!path.empty() && path.back() == '_') push(path.substr(0, path.size() - 1));
+    return lookup.names.emplace(key, std::move(out)).first->second;
+}
+
+// 短名等值匹配: 裸名条目与"同样是裸名"的贴图等价。
+// 贴图若写了完整路径(0extra_building_block/road), 就只能按路径比较——否则
+// matchTiles=yuushya:road 会靠"文件名都是 road"连带命中它。
+// 另外若裸名在资源包里对应多个真实文件, 它本身有歧义, 也不替玩家挑一个。
+static bool ShortNameUniquelyMatches(const std::vector<std::string>& cands,
+    const std::string& textureNs, const std::string& textureName, const std::string& shortName) {
+    if (shortName != textureName) return false;   // 贴图带目录 → 只按路径比
+    bool matched = false;
+    for (const std::string& cand : cands) {
+        const size_t slash = cand.find_last_of('/');
+        const std::string leaf = slash == std::string::npos ? cand : cand.substr(slash + 1);
+        if (leaf != shortName) continue;
+        if (!TilePathKnown(textureNs, cand)) continue;
+        if (matched) return false;   // 有第二个真实候选 → 歧义
+        matched = true;
+    }
+    return matched;
+}
+
+const std::vector<std::string>& GetTilePathCandidates(const std::string& entryNs,
+    const std::string& entry) {
+    std::string key, path;
+    DecomposeEntryKey(entryNs, entry, key, path);
+    TilePathLookup& lookup = GetTilePathLookup();
+    auto it = lookup.candidates.find(key);
+    if (it != lookup.candidates.end()) return it->second;
+
+    std::vector<std::string> out;
+    for (const std::string& name : GetTileNameAliases(key, path)) {
+        if (std::find(out.begin(), out.end(), name) == out.end()) out.push_back(name);
+    }
+    return lookup.candidates.emplace(key, std::move(out)).first->second;
+}
+
+// matchTiles 是方块贴图规则, 这些虚拟前缀只对应实体/物品/粒子贴图, 不可能是方块面贴图。
+static bool IsNonBlockAtlasPrefix(const std::string& prefix) {
+    return prefix.rfind("entity/", 0) == 0 ||
+           prefix.rfind("item/", 0) == 0 ||
+           prefix.rfind("particle/", 0) == 0 ||
+           prefix.rfind("particles/", 0) == 0;
+}
+
+void LoadAtlasDirPrefixes(const std::unordered_map<std::string, nlohmann::json>& atlasJson) {
+    g_atlasDirMaps.clear();
+    for (const auto& entry : atlasJson) {
+        const std::string& key = entry.first;   // "modid:namespace:相对 atlases/ 的路径"
+        const size_t firstColon = key.find(':');
+        if (firstColon == std::string::npos) continue;
+        const size_t secondColon = key.find(':', firstColon + 1);
+        if (secondColon == std::string::npos) continue;
+        const std::string ns = key.substr(firstColon + 1, secondColon - firstColon - 1);
+        if (!entry.second.is_object()) continue;
+        auto sources = entry.second.find("sources");
+        if (sources == entry.second.end() || !sources->is_array()) continue;
+
+        auto& out = g_atlasDirMaps[ns];
+        for (const auto& src : *sources) {
+            if (!src.is_object()) continue;
+            if (src.value("type", std::string()) != "directory") continue;
+            const std::string dir = src.value("source", std::string());
+            if (dir.empty()) continue;
+            std::string prefix = src.value("prefix", std::string(dir + "/"));
+            if (prefix.empty()) prefix = dir + "/";
+            if (IsNonBlockAtlasPrefix(prefix)) continue;
+            std::pair<std::string, std::string> item{prefix, dir};
+            if (std::find(out.begin(), out.end(), item) == out.end()) out.push_back(std::move(item));
+        }
+    }
+    size_t total = 0;
+    for (const auto& kv : g_atlasDirMaps) total += kv.second.size();
+    if (total > 0) {
+        std::cout << "[CTM] 图集目录映射: " << g_atlasDirMaps.size() << " 个命名空间, "
+                  << total << " 条声明" << std::endl;
+    }
+}
+
 // ========= InitializeCtmRules =========
 void InitializeCtmRules() {
     if (g_ctmInitialized.exchange(true)) return;
@@ -338,8 +516,18 @@ void InitializeCtmRules() {
             const std::string& t = g_ctmRules[idx].matchTiles[i];
             if (!t.empty() && t.back() == '_')
                 g_prefixTileRules.emplace_back(tileNs, t, idx);
-            else
-                g_rulesByTile[tileNs + ":" + t].push_back(idx);
+            // 按条目原名登记(短名条目走到这里), 并额外登记路径候选,
+            // 使 "block/road" 这类带目录的贴图也能查到 matchTiles=road 的规则。
+            // 是否真正生效由 MatchTileEntry 按真实文件复核。
+            auto& bucket = g_rulesByTile[tileNs + ":" + t];
+            if (std::find(bucket.begin(), bucket.end(), idx) == bucket.end())
+                bucket.push_back(idx);
+            for (const std::string& cand : GetTilePathCandidates(tileNs, t)) {
+                if (cand == t) continue;
+                auto& cb = g_rulesByTile[tileNs + ":" + cand];
+                if (std::find(cb.begin(), cb.end(), idx) == cb.end())
+                    cb.push_back(idx);
+            }
         }
     }
 
@@ -501,24 +689,36 @@ static void LogPrefixTileMatchOnce(const std::string& ns, const std::string& ent
 }
 
 // matchTiles 单条目匹配(普通匹配与 overlay 匹配共用, 避免两处语义分叉):
-//  - 精确匹配贴图全名或短名;
-//  - 条目以 '_' 结尾时, 额外接受"剥掉末尾下划线"的等值匹配
-//    (Yuushya 等资源包用带下划线的目录名指到实际贴图, 见 prefix_tile 用例);
-//  - 是否再做前缀族匹配由 config.ctmPrefixMatchTiles 决定, 命中会记录一次日志。
+//  - 精确路径命中直接成立(条目写了完整路径时最具体, 也是 OptiFine 的原语义);
+//  - 裸名条目(如 glass)与"同一个裸名"的贴图等价, 且要求唯一指向;
+//  - 前缀族匹配(条目以 '_' 结尾)只沿条目名展开: matchTiles=stone_ 认
+//    block/stone_* 与 block/stone*, 但不会因为"目录是 block/"就吃掉整个目录
+//    (曾经因此给几百个原版方块套上 CTM), 更不会蔓延到别的目录; 由 config 开关控制;
+//  - 前缀族命中会记录一次日志。
 static bool MatchTileEntry(const std::string& entry, const std::string& entryNs,
     const std::string& textureNs, const std::string& textureName, const std::string& shortName) {
-    if (entryNs != textureNs) return false;
-    if (entry == textureName || entry == shortName) return true;
-    if (entry.empty() || entry.back() != '_') return false;
+    if (entryNs != textureNs || entry.empty()) return false;
 
-    const std::string base = entry.substr(0, entry.size() - 1);
-    if (textureName == base || shortName == base) return true;
+    const std::vector<std::string>& cands = GetTilePathCandidates(entryNs, entry);
+    for (const std::string& cand : cands) {
+        if (cand == textureName) return true;
+    }
+    if (ShortNameUniquelyMatches(cands, textureNs, textureName, shortName)) return true;
 
-    if (!config.ctmPrefixMatchTiles) return false;
-    if (textureName.rfind(entry, 0) != 0 && shortName.rfind(entry, 0) != 0) return false;
-
-    LogPrefixTileMatchOnce(entryNs, entry);
-    return true;
+    if (!config.ctmPrefixMatchTiles || entry.back() != '_') return false;
+    for (const std::string& cand : cands) {
+        if (cand.empty() || cand.find('/') == std::string::npos) continue;
+        const size_t slash = cand.find_last_of('/');
+        // 前缀 = 条目本身(block/stone_) 或 "条目所在目录 + 条目名"(block/stone 之类)。
+        const std::string prefixes[2] = { cand, cand.substr(0, slash + 1) + entry };
+        for (const std::string& prefix : prefixes) {
+            if (prefix.empty() || textureName.size() <= prefix.size()) continue;
+            if (textureName.compare(0, prefix.size(), prefix) != 0) continue;
+            LogPrefixTileMatchOnce(entryNs, entry);
+            return true;
+        }
+    }
+    return false;
 }
 
 const CtmRule* FindCtmRule(const std::string& blockNs,
@@ -552,6 +752,16 @@ const CtmRule* FindCtmRule(const std::string& blockNs,
             }
             if (!ok) return false;
         }
+        // 调试开关: 设 WI_CTM_DEBUG=1 时打印规则命中明细, 用于排查误命中。
+        static const bool debugHit = std::getenv("WI_CTM_DEBUG") != nullptr;
+        if (debugHit) {
+            std::cout << "[CTM-DEBUG] " << blockNs << ":" << blockName
+                      << " tex=" << textureNs << ":" << textureName
+                      << " face=" << faceName
+                      << " <- " << r.ns << ":" << r.propertiesPath
+                      << " matchTiles=[" << (r.matchTiles.empty() ? "-" : r.matchTiles[0])
+                      << "] matchBlocks=" << r.matchBlocks.size() << std::endl;
+        }
         return true;
     };
     // 优先按 matchTiles 匹配(更具体),再按 matchBlocks
@@ -561,11 +771,18 @@ const CtmRule* FindCtmRule(const std::string& blockNs,
             for (size_t idx : it->second)
                 if (eligible(idx)) return &g_ctmRules[idx];
         }
-        // matchTiles 可能只写了短名(如 "glass"),textureName 可能是 "block/glass"
-        // 尝试取 textureName 末尾段
         size_t slash = textureName.find_last_of('/');
-        if (slash != std::string::npos) {
-            std::string shortName = textureName.substr(slash + 1);
+        std::string shortName = slash == std::string::npos ? textureName : textureName.substr(slash + 1);
+        if (slash == std::string::npos) {
+            // 贴图名本身就是短名(road): 短名条目按 block/ 约定指向 block/road
+            auto it2 = g_rulesByTile.find(textureNs + ":block/" + textureName);
+            if (it2 != g_rulesByTile.end()) {
+                for (size_t idx : it2->second)
+                    if (eligible(idx)) return &g_ctmRules[idx];
+            }
+        } else {
+            // matchTiles 可能只写了短名(如 "glass"),textureName 可能是 "block/glass"
+            // 尝试取 textureName 末尾段
             auto it2 = g_rulesByTile.find(textureNs + ":" + shortName);
             if (it2 != g_rulesByTile.end()) {
                 for (size_t idx : it2->second)

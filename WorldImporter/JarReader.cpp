@@ -188,7 +188,8 @@ void JarReader::cacheAllResources(
     std::unordered_map<std::string, nlohmann::json>& biomeCache,
     std::unordered_map<std::string, std::vector<unsigned char>>& colormapCache,
     std::unordered_map<std::string, std::string>& ctmPropertiesCache,
-    std::unordered_map<std::string, std::vector<unsigned char>>& ctmTexturesCache)
+    std::unordered_map<std::string, std::vector<unsigned char>>& ctmTexturesCache,
+    std::unordered_map<std::string, nlohmann::json>& atlasCache)
 {
     if (!zipFile) {
         std::cerr << "Zip file is not open." << std::endl;
@@ -219,6 +220,30 @@ void JarReader::cacheAllResources(
             size_t nsEnd = filePath.find('/', nsStart);
             if (nsEnd == std::string::npos) continue;
             std::string namespaceName = filePath.substr(nsStart, nsEnd - nsStart);
+
+            // 图集定义 assets/<namespace>/atlases/*.json。
+            // 其中 type=directory 的 source/prefix 声明了该命名空间"虚拟贴图路径 ->
+            // 真实贴图目录"的映射(例如 Yuushya 的 block_/、0extra_building_block/),
+            // CTM 的 matchTiles 会用到这些名字, 所以必须缓存下来。
+            if (filePath.find("/atlases/") != std::string::npos &&
+                filePath.size() > 5 &&
+                filePath.substr(filePath.size() - 5) == ".json")
+            {
+                size_t resStart = filePath.find("/atlases/", nsEnd) + 9;
+                std::string resourcePath = filePath.substr(resStart, filePath.size() - resStart - 5);
+                std::string cacheKey = namespaceName + ":" + resourcePath;
+                if (atlasCache.find(cacheKey) == atlasCache.end()) {
+                    std::string content = this->getFileContent(archiveFilePath);
+                    if (!content.empty()) {
+                        try {
+                            atlasCache.emplace(cacheKey, nlohmann::json::parse(content));
+                        } catch (const std::exception& e) {
+                            std::cerr << "Atlas JSON Error: " << filePath << " - " << e.what() << std::endl;
+                        }
+                    }
+                }
+                continue;
+            }
 
             // Cache OBJ/MTL model assets used by custom NeoForge model loaders.
             size_t modelsPos = filePath.find("/models/", nsEnd);

@@ -24,6 +24,7 @@
 #include <vector>
 #include <unordered_map>
 #include <array>
+#include "include/json.hpp"
 
 // 前向声明:模型数据
 struct ModelData;
@@ -91,6 +92,16 @@ namespace GlobalCache {
 
 // 解析所有已缓存的 ctmProperties,构建规则索引。在所有资源合并完成后调用一次。
 void InitializeCtmRules();
+
+// 展开各命名空间的图集目录映射(assets/<ns>/atlases/*.json 里 type=directory 的
+// source/prefix 声明), 供 matchTiles 解析虚拟贴图路径。
+// key 形如 "modid:namespace:相对 atlases/ 的路径"。
+void LoadAtlasDirPrefixes(const std::unordered_map<std::string, nlohmann::json>& atlasJson);
+
+// 根据 textureIndex 建"贴图名解析表"(某路径在资源包里是否真实存在)。
+// 必须在 InitializeCtmRules 之前调用一次: 规则解析与匹配都查这张内存表,
+// 避免在持有 cacheMutex 时回头访问 textureIndex 造成自锁。
+void BuildTileNameAliasTable();
 
 // ========= 查询 =========
 

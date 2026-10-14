@@ -60,6 +60,66 @@ static const std::unordered_map<FaceType, int> neighborIndexMap = {
         {FaceType::SOUTH, 5}, {FaceType::WEST, 2}, {FaceType::EAST, 3}
 };
 
+// 面朝向对应的单位法线（用于薄片贴边外推与退化面判断）
+static bool FaceDirectionNormal(FaceType direction, float& nx, float& ny, float& nz) {
+    switch (direction) {
+    case FaceType::UP:    nx = 0.0f;  ny = 1.0f;  nz = 0.0f;  return true;
+    case FaceType::DOWN:  nx = 0.0f;  ny = -1.0f; nz = 0.0f;  return true;
+    case FaceType::SOUTH: nx = 0.0f;  ny = 0.0f;  nz = 1.0f;  return true;
+    case FaceType::NORTH: nx = 0.0f;  ny = 0.0f;  nz = -1.0f; return true;
+    case FaceType::EAST:  nx = 1.0f;  ny = 0.0f;  nz = 0.0f;  return true;
+    case FaceType::WEST:  nx = -1.0f; ny = 0.0f;  nz = 0.0f;  return true;
+    default:              nx = 0.0f;  ny = 0.0f;  nz = 0.0f;  return false;
+    }
+}
+
+// 反方向（用于查询"邻居朝向本块"的那一面）。返回值是 Occlusion.h 的
+// UP=0, DOWN=1, NORTH=2, SOUTH=3, WEST=4, EAST=5 索引，与 neighborIndexMap 不同。
+static int OppositeFaceDir(FaceType direction) {
+    switch (direction) {
+    case FaceType::UP:    return 1;   // DOWN
+    case FaceType::DOWN:  return 0;   // UP
+    case FaceType::NORTH: return 3;   // SOUTH
+    case FaceType::SOUTH: return 2;   // NORTH
+    case FaceType::WEST:  return 5;   // EAST
+    case FaceType::EAST:  return 4;   // WEST
+    default:              return -1;
+    }
+}
+
+// 轴向 + 正负 -> 面朝向（axis: 0=X, 1=Y, 2=Z）
+static FaceType AxisToFaceType(int axis, bool positive) {
+    if (axis == 0) return positive ? FaceType::EAST : FaceType::WEST;
+    if (axis == 1) return positive ? FaceType::UP : FaceType::DOWN;
+    return positive ? FaceType::SOUTH : FaceType::NORTH;
+}
+
+// 取面的几何法线主轴（用于没有 cullface 的面：贴片模型的 faceDirection 是 DO_NOT_CULL，
+// 只能按实际几何朝向判断它面向哪个邻居）。用面的前三个顶点叉积，取绝对值最大的分量。
+static bool FaceGeometryAxis(const ModelData& model, const Face& face, int& axis, bool& positive) {
+    int idx[3];
+    for (int k = 0; k < 3; ++k) {
+        idx[k] = face.vertexIndices[k];
+        if (idx[k] < 0 || static_cast<size_t>(idx[k]) * 3 + 2 >= model.vertices.size()) return false;
+    }
+    const float* p0 = &model.vertices[static_cast<size_t>(idx[0]) * 3];
+    const float* p1 = &model.vertices[static_cast<size_t>(idx[1]) * 3];
+    const float* p2 = &model.vertices[static_cast<size_t>(idx[2]) * 3];
+    const float e1[3] = { p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2] };
+    const float e2[3] = { p2[0] - p0[0], p2[1] - p0[1], p2[2] - p0[2] };
+    const float n[3] = {
+        e1[1] * e2[2] - e1[2] * e2[1],
+        e1[2] * e2[0] - e1[0] * e2[2],
+        e1[0] * e2[1] - e1[1] * e2[0]
+    };
+    const float ax = std::fabs(n[0]), ay = std::fabs(n[1]), az = std::fabs(n[2]);
+    if (ax < 1e-9f && ay < 1e-9f && az < 1e-9f) return false;   // 退化面
+    if (ax >= ay && ax >= az) { axis = 0; positive = n[0] > 0.0f; }
+    else if (ay >= az)        { axis = 1; positive = n[1] > 0.0f; }
+    else                      { axis = 2; positive = n[2] > 0.0f; }
+    return true;
+}
+
 static bool IsFullCubeModel(const ModelData& model) {
     constexpr float epsilon = 0.0001f;
     const std::array<FaceType, 6> directions = {
@@ -464,6 +524,65 @@ void ChunkGenerator::ProcessBlockForModel(ModelData& chunkModel, int x, int y, i
                 }
             }
             validFaceIndices.push_back(faceIdx);
+        }
+    }
+
+    // ---- 薄片贴边外推: 极薄元素(如装饰贴片)贴在方块界面上的那一面，与相邻方块
+    // 朝向本块的接触面严格共面且朝向相反。单模型内的重合面去重管不到它(顶点索引
+    // 不同)，邻居遮挡也删不掉它(贴片自身在该方向没有 cullface)，在 Blender 里会
+    // z-fighting。这里沿该面法线把它外推 overlayLayerStep，把两个面分开。
+    //
+    // 邻居判定用 hasModel + selfFaceFull[对面方向] 而不是 occludes —— occludes 要求
+    // 邻居六个方向都完整覆盖(完整不透明立方体)，半砖/台阶/玻璃这类邻居会被漏掉，
+    // 而它们同样会和贴片共面。selfFaceFull 的索引约定见 Occlusion.cpp:
+    // UP=0, DOWN=1, NORTH=2, SOUTH=3, WEST=4, EAST=5，与 neighborIndexMap 不同。
+    if (config.overlayLayerStep > 0.0f) {
+        const float pushStep = config.overlayLayerStep;
+        for (int faceIdx : validFaceIndices) {
+            Face& face = blockModel.faces[faceIdx];
+            if (!face.thinEdge) continue;
+            // 贴片模型通常不声明 cullface，faceDirection 是 DO_NOT_CULL，查不到邻居索引；
+            // 这种情况按面的几何法线定方向（贴片背面就是朝向邻居的那一面）
+            FaceType pushDir = face.faceDirection;
+            if (pushDir == FaceType::DO_NOT_CULL || pushDir == FaceType::UNKNOWN) {
+                int axis = -1;
+                bool positive = true;
+                if (!FaceGeometryAxis(blockModel, face, axis, positive)) continue;
+                pushDir = AxisToFaceType(axis, positive);
+            }
+            auto neighborIt = neighborIndexMap.find(pushDir);
+            if (neighborIt == neighborIndexMap.end()) continue;
+            int nx = x, ny = y, nz = z;
+            switch (pushDir) {
+            case FaceType::DOWN:  ny--; break;
+            case FaceType::UP:    ny++; break;
+            case FaceType::NORTH: nz--; break;
+            case FaceType::SOUTH: nz++; break;
+            case FaceType::WEST:  nx--; break;
+            case FaceType::EAST:  nx++; break;
+            default: break;
+            }
+            const BlockOcclusion& neighborOcc = GetBlockOcclusion(GetBlockId(nx, ny, nz));
+            // 邻居必须有模型，且在该方向确实有一张贴向本块的完整实心面(即对面方向的那一面)，
+            // 才存在共面冲突
+            if (!neighborOcc.hasModel || !neighborOcc.selfFaceFull[OppositeFaceDir(pushDir)]) continue;
+
+            float nxv = 0.0f, nyv = 0.0f, nzv = 0.0f;
+            if (!FaceDirectionNormal(pushDir, nxv, nyv, nzv)) continue;
+            // 复制一份顶点再外推: 贴片其余面(如正面/侧面)共用原顶点，不能跟着一起动
+            for (int k = 0; k < 4; ++k) {
+                const int index = face.vertexIndices[k];
+                if (index < 0 || static_cast<size_t>(index) * 3 + 2 >= blockModel.vertices.size()) continue;
+                const size_t base = static_cast<size_t>(index) * 3;
+                const float px = blockModel.vertices[base];
+                const float py = blockModel.vertices[base + 1];
+                const float pz = blockModel.vertices[base + 2];
+                const int newIndex = static_cast<int>(blockModel.vertices.size() / 3);
+                blockModel.vertices.push_back(px + nxv * pushStep);
+                blockModel.vertices.push_back(py + nyv * pushStep);
+                blockModel.vertices.push_back(pz + nzv * pushStep);
+                face.vertexIndices[k] = newIndex;
+            }
         }
     }
 
