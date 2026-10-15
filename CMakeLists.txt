@@ -30,6 +30,26 @@ wi_apply_defaults(WorldImporterCore)
 include(CTest)
 option(WI_BUILD_CTM_TESTS "Build CTM texture baking regression tests" ON)
 
+# This harness ships with the importer; tests/ below is an optional external suite.
+if (BUILD_TESTING AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/WorldImporter/tests/biome_colors_tests.cpp")
+    add_executable(biome_colors_tests WorldImporter/tests/biome_colors_tests.cpp)
+    target_link_libraries(biome_colors_tests PRIVATE WorldImporterCore)
+    wi_apply_defaults(biome_colors_tests)
+    add_test(NAME biome_colors COMMAND biome_colors_tests)
+
+    set(WI_BIOME_LEGACY_ARCHIVE "" CACHE FILEPATH "Optional pre-1.21.11 JAR for biome regression")
+    set(WI_BIOME_ATTRIBUTES_ARCHIVE "" CACHE FILEPATH "Optional 1.21.11+ JAR or Nether fixture ZIP")
+    foreach(schema LEGACY ATTRIBUTES)
+        if (WI_BIOME_${schema}_ARCHIVE)
+            add_test(NAME biome_colors_${schema}
+                COMMAND biome_colors_tests --${schema} "${WI_BIOME_${schema}_ARCHIVE}")
+            set_tests_properties(biome_colors_${schema} PROPERTIES
+                TIMEOUT 120 RESOURCE_LOCK biome_texture_output)
+        endif()
+    endforeach()
+    set_tests_properties(biome_colors PROPERTIES TIMEOUT 30 RESOURCE_LOCK biome_texture_output)
+endif()
+
 # tests/ 是可选目录：删掉它（例如只发布主程序源码）时必须仍能正常编译主程序。
 set(WI_TESTS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/tests")
 if (BUILD_TESTING AND NOT EXISTS "${WI_TESTS_DIR}")
