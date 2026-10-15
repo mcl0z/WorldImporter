@@ -242,16 +242,18 @@ void ModelDeduplicator::DeduplicateUV(ModelData& model) {
 }
 
 void ModelDeduplicator::DeduplicateFaces(ModelData& data) {
-    size_t faceCountNum = data.faces.size();
-    std::vector<FaceKey> keys;
-    keys.reserve(faceCountNum);
+    // Insert each canonical key immediately and keep its first face. All hash
+    // nodes live until this pass ends, so release their storage together.
+    std::pmr::monotonic_buffer_resource faceStorage;
+    std::pmr::unordered_set<FaceKey, FaceKeyHasher> kept{&faceStorage};
+    kept.reserve(data.faces.size());
+    std::vector<Face> newFaces;
+    newFaces.reserve(data.faces.size());
 
-    // 第一次遍历:计算每个面的规范化键并存入数组(避免重复排序)
-    // 键 = (顶点索引, UV 索引) 配对排序 + 材质。UV 必须参与: 同一方块面上
+    // 键 = (顶点索引, UV 索引) 循环规范化 + 材质。UV 必须参与: 同一方块面上
     // 的 CTM overlay 会有多个面(顶点/材质相同, 仅 tile/UV 不同), 只按顶点
     // 去重会误删第二个 tile(表现为连接纹理缺角、缺边)。
-    for (size_t i = 0; i < data.faces.size(); i++) {
-        const auto& face = data.faces[i];
+    for (const auto& face : data.faces) {
         std::array<std::pair<int, int>, 4> pairs = {{
             { face.vertexIndices[0], face.uvIndices[0] },
             { face.vertexIndices[1], face.uvIndices[1] },
@@ -273,22 +275,8 @@ void ModelDeduplicator::DeduplicateFaces(ModelData& data) {
             sortedUVs[k] = canonical[k].second;
         }
         int matIndex = config.strictDeduplication ? face.materialIndex : -1;
-        keys.push_back(FaceKey{ sortedVerts, sortedUVs, matIndex });
-    }
-
-    // 第二次遍历:每个重合面键保留首个面。
-    // 旧实现仅保留 freq==1，两个完全重合的面会被「全部删除」；玻璃、
-    // 玻璃板、多元素模型及水面等经常出现这类重复，导致随机缺面甚至整块消失。
-    // ChunkGenerator 已在方块邻居层剔除真正的内部面，此处只能安全地去重，
-    // 不能把所有副本都删除。
-    std::unordered_set<FaceKey, FaceKeyHasher> kept;
-    kept.reserve(faceCountNum);
-    std::vector<Face> newFaces;
-    newFaces.reserve(data.faces.size());
-
-    for (size_t i = 0; i < keys.size(); i++) {
-        if (kept.insert(keys[i]).second) {
-            newFaces.push_back(data.faces[i]);
+        if (kept.insert(FaceKey{ sortedVerts, sortedUVs, matIndex }).second) {
+            newFaces.push_back(face);
         }
     }
 
@@ -358,158 +346,90 @@ void ModelDeduplicator::GreedyMesh(ModelData& data) {
     auto t1 = Clock::now();
     std::cerr << "GreedyMesh Step1 normals: " << Ms(t1 - t0).count() << " ms\n";
 
-    // 2. 构建边->面映射 (并行化+排序)
+    // 2. Hash undirected edges instead of sorting all four edge occurrences
+    // per face. A flat chain stores every incident face, including duplicates
+    // on degenerate faces and all faces on non-manifold edges.
     struct EdgeKey { int v1, v2; bool operator==(const EdgeKey& o) const { return v1==o.v1 && v2==o.v2; } };
-    struct EdgeKeyHasher { size_t operator()(const EdgeKey& e) const {
-        return std::hash<long long>()(((long long)e.v1<<32) ^ (unsigned long long)e.v2);
+    struct EdgeKeyHasher { size_t operator()(const EdgeKey& e) const noexcept {
+        const std::uint64_t packed = (static_cast<std::uint64_t>(static_cast<std::uint32_t>(e.v1)) << 32)
+                                  | static_cast<std::uint32_t>(e.v2);
+        return std::hash<std::uint64_t>()(packed);
     }};
-    auto t2_fill_start = Clock::now();
-    
-    // 并行填充所有边 - 恢复原来的实现但做更好的内存管理
-    std::vector<std::pair<EdgeKey,int>> allEdges;
-    allEdges.reserve(faceCount * 4); // 预分配内存
-    
-    // 使用批次填充以减少同步成本
-    const size_t BATCH_SIZE = 1024; // 每批次处理的面数
-    std::vector<std::vector<std::pair<EdgeKey,int>>> threadBatches;
-    unsigned int numThreads2 = DedupThreadCount(); if (numThreads2 == 0) numThreads2 = 1;
-    threadBatches.resize(numThreads2);
-    
-    std::vector<std::thread> fillThreads; fillThreads.reserve(numThreads2);
-    size_t facesPerThread = (faceCount + numThreads2 - 1) / numThreads2;
-    
-    for (unsigned int t = 0; t < numThreads2; ++t) {
-        size_t startF = t * facesPerThread;
-        size_t endF = std::min(startF + facesPerThread, faceCount);
-        if (startF >= endF) continue; // 面数少于线程数时跳过空线程，避免 size_t 下溢
-        size_t batchSize = (endF - startF) * 4; // 每个面有4条边
-        threadBatches[t].reserve(batchSize);
-        
-        fillThreads.emplace_back([&, startF, endF, t]() {
-            for (size_t i = startF; i < endF; ++i) {
+    auto t2_start = Clock::now();
+    std::vector<size_t> faceAdjOffsets(faceCount + 1, 0);
+    std::vector<int> faceAdj;
+    {
+        std::vector<std::pair<int, int>> adjacentFaces;
+        adjacentFaces.reserve(faceCount * 4);
+        {
+            std::pmr::monotonic_buffer_resource edgeStorage;
+            std::pmr::unordered_map<EdgeKey, size_t, EdgeKeyHasher> edgeHeads{&edgeStorage};
+            edgeHeads.reserve(faceCount * 4);
+            const size_t noEdge = static_cast<size_t>(-1);
+            struct EdgeOccurrence { int face; size_t next; };
+            std::vector<EdgeOccurrence> edgeOccurrences;
+            edgeOccurrences.reserve(faceCount * 4);
+            for (size_t i = 0; i < faceCount; ++i) {
                 const auto& vs = data.faces[i].vertexIndices;
                 for (int k = 0; k < 4; ++k) {
-                    int a = vs[k], b = vs[(k+1)%4];
-                    EdgeKey ek{ std::min(a,b), std::max(a,b) };
-                    threadBatches[t].push_back({ek, static_cast<int>(i)});
+                    const int a = vs[k], b = vs[(k + 1) % 4];
+                    const EdgeKey edge{std::min(a, b), std::max(a, b)};
+                    auto [it, inserted] = edgeHeads.try_emplace(edge, noEdge);
+                    // Each new occurrence connects to all earlier occurrences
+                    // on this edge. Emit both directions below, preserving the
+                    // old clique even for repeated/non-manifold edges.
+                    for (size_t prev = it->second; prev != noEdge; prev = edgeOccurrences[prev].next) {
+                        const int nb = edgeOccurrences[prev].face;
+                        adjacentFaces.emplace_back(static_cast<int>(i), nb);
+                        ++faceAdjOffsets[i + 1];
+                        ++faceAdjOffsets[nb + 1];
+                    }
+                    edgeOccurrences.push_back({static_cast<int>(i), it->second});
+                    it->second = edgeOccurrences.size() - 1;
                 }
             }
-        });
-    }
-    for (auto &th : fillThreads) th.join();
-    
-    // 合并所有线程的结果
-    for (auto& batch : threadBatches) {
-        allEdges.insert(allEdges.end(), batch.begin(), batch.end());
-        // 释放内存
-        std::vector<std::pair<EdgeKey,int>>().swap(batch);
-    }
-    
-    // 清理
-    threadBatches.clear();
-    threadBatches.shrink_to_fit();
-    
-    auto t2_fill_end = Clock::now();
-    
-    // 排序所有边
-    std::sort(allEdges.begin(), allEdges.end(), [](auto &a, auto &b) {
-        if (a.first.v1 != b.first.v1) return a.first.v1 < b.first.v1;
-        if (a.first.v2 != b.first.v2) return a.first.v2 < b.first.v2;
-        return a.second < b.second; // 确保稳定排序
-    });
-    auto t2_sort_end = Clock::now();
-    
-    // 2.1 构建面邻接表 - 使用分段并行处理
-    std::vector<std::vector<int>> faceAdj(faceCount);
-    
-    // 预分配空间，减少重新分配
-    for (size_t i = 0; i < faceCount; ++i) {
-        faceAdj[i].reserve(16);  // 合理估计每个面的邻接数
-    }
-    
-    auto t2_adj_start = Clock::now();
-    
-    // 按边顺序构建邻接表。旧实现按边分段并行，但同一个面拥有多条边，
-    // 不同线程会同时向同一个 faceAdj[f] vector push_back，造成堆损坏。
-    // 此步骤通常仅占几毫秒，串行处理比为每个面加锁更快且稳定。
-    size_t edgeIndex = 0;
-    while (edgeIndex < allEdges.size()) {
-        const EdgeKey edgeKey = allEdges[edgeIndex].first;
-        std::vector<int> edgeFaces;
-        while (edgeIndex < allEdges.size() && allEdges[edgeIndex].first == edgeKey) {
-            edgeFaces.push_back(allEdges[edgeIndex].second);
-            ++edgeIndex;
         }
-        for (size_t i = 0; i < edgeFaces.size(); ++i) {
-            const int f1 = edgeFaces[i];
-            for (size_t j = 0; j < edgeFaces.size(); ++j) {
-                if (i != j) faceAdj[f1].push_back(edgeFaces[j]);
-            }
-        }
-    }
-    
-    // 释放内存
-    std::vector<std::pair<EdgeKey,int>>().swap(allEdges);
-    auto t2_adj_end = Clock::now();
-    std::cerr << "GreedyMesh Step2 adjacency: " << Ms(t2_adj_end - t2_adj_start).count() << " ms\n";
+        auto t2_build_end = Clock::now();
+        std::cerr << "GreedyMesh Step2 edge build: " << Ms(t2_build_end - t2_start).count() << " ms\n";
 
-    // 3. 生成顶点键索引对并排序 (并行化+排序)
-    int vertCount = data.vertices.size() / 3;
-    std::vector<std::pair<VertexKey,int>> vertKVPairs(vertCount);
-    {
-        unsigned int numThreads = DedupThreadCount();
-        if (numThreads == 0) numThreads = 1;
-        std::vector<std::thread> threads;
-        threads.reserve(numThreads);
-        size_t chunkV = (vertCount + numThreads - 1) / numThreads;
-        for (unsigned int t = 0; t < numThreads; ++t) {
-            size_t startV = t * chunkV;
-            size_t endV = std::min(startV + chunkV, (size_t)vertCount);
-            threads.emplace_back([&, startV, endV]() {
-                for (size_t vi = startV; vi < endV; ++vi) {
-                    float x = data.vertices[3*vi];
-                    float y = data.vertices[3*vi + 1];
-                    float z = data.vertices[3*vi + 2];
-                    vertKVPairs[vi] = { MakeVertexKey(x, y, z), (int)vi };
-                }
-            });
+        // Compact adjacency avoids one heap allocation per face and makes the
+        // serial union pass read each face's neighbors from a contiguous span.
+        for (size_t i = 1; i <= faceCount; ++i) faceAdjOffsets[i] += faceAdjOffsets[i - 1];
+        faceAdj.resize(faceAdjOffsets.back());
+        auto nextOffset = faceAdjOffsets;
+        for (const auto& [a, b] : adjacentFaces) {
+            faceAdj[nextOffset[a]++] = b;
+            faceAdj[nextOffset[b]++] = a;
         }
-        for (auto &th : threads) th.join();
+        auto t2_adj_end = Clock::now();
+        std::cerr << "GreedyMesh Step2 adjacency: " << Ms(t2_adj_end - t2_build_end).count() << " ms\n";
     }
+    auto t2_end = Clock::now();
+    std::cerr << "GreedyMesh Step2 total: " << Ms(t2_end - t2_start).count() << " ms\n";
+
+    // 3. DeduplicateVertices has made quantized keys unique: retain the exact
+    // existing index, without sorting or binary searches during publication.
     auto t3_start = Clock::now();
-    std::sort(vertKVPairs.begin(), vertKVPairs.end(), [](auto &a, auto &b) {
-        const auto &ka = a.first, &kb = b.first;
-        if (ka.x != kb.x) return ka.x < kb.x;
-        if (ka.y != kb.y) return ka.y < kb.y;
-        return ka.z < kb.z;
-    });
+    std::pmr::monotonic_buffer_resource vertexStorage;
+    std::pmr::unordered_map<VertexKey, int> vertexIndices{&vertexStorage};
+    const size_t vertCount = data.vertices.size() / 3;
+    vertexIndices.reserve(vertCount);
+    for (size_t vi = 0; vi < vertCount; ++vi) {
+        vertexIndices.try_emplace(MakeVertexKey(data.vertices[3*vi],
+            data.vertices[3*vi + 1], data.vertices[3*vi + 2]), static_cast<int>(vi));
+    }
     auto t3_end = Clock::now();
-    std::cerr << "GreedyMesh Step3 sort vert pairs: " << Ms(t3_end - t3_start).count() << " ms\n";
-    // 顶点键 -> 索引的补充映射(仅用于量化键未命中时追加的新顶点)。
-    // 不能向有序数组 vertKVPairs 中间插入(O(n))，否则未命中较多时复杂度会平方放大。
-    std::unordered_map<VertexKey, int> extraVertexKeys;
+    std::cerr << "GreedyMesh Step3 vertex hash: " << Ms(t3_end - t3_start).count() << " ms\n";
 
-    // Lookup lambda
-    auto lookupVertexIndex = [&](const VertexKey &vk) {
-        // 先查补充映射(通常为空，仅在浮点边界差异时增长)
-        auto extraIt = extraVertexKeys.find(vk);
-        if (extraIt != extraVertexKeys.end()) return extraIt->second;
-
-        auto it = std::lower_bound(vertKVPairs.begin(), vertKVPairs.end(), vk,
-            [](auto &a, const VertexKey &b) {
-                if (a.first.x != b.x) return a.first.x < b.x;
-                if (a.first.y != b.y) return a.first.y < b.y;
-                return a.first.z < b.z;
-            });
-        if (it != vertKVPairs.end() && it->first.x == vk.x && it->first.y == vk.y && it->first.z == vk.z)
-            return it->second;
-        // 量化键未命中(仅可能出现在浮点边界差异):追加为新顶点并记录到补充映射，
-        // 避免静默返回 0 造成几何错位。此处为串行调用，无需加锁。
-        int newIdx = static_cast<int>(data.vertices.size() / 3);
+    auto lookupVertexIndex = [&](const VertexKey& vk) {
+        const int newIdx = static_cast<int>(data.vertices.size() / 3);
+        auto [it, inserted] = vertexIndices.try_emplace(vk, newIdx);
+        if (!inserted) return it->second;
+        // Quantized-key misses still append reconstructed coordinates. This
+        // cache is only mutated during serial, ordered result publication.
         data.vertices.push_back(static_cast<float>(vk.x) / 10000.0f);
         data.vertices.push_back(static_cast<float>(vk.y) / 10000.0f);
         data.vertices.push_back(static_cast<float>(vk.z) / 10000.0f);
-        extraVertexKeys.emplace(vk, newIdx);
         return newIdx;
     };
 
@@ -596,7 +516,8 @@ void ModelDeduplicator::GreedyMesh(ModelData& data) {
         if (pa != pb) parent[pb] = pa;
     };
     // 标记可分组面及记录UV轴
-    std::vector<bool> eligible(faceCount, false);
+    // Byte elements permit independent writes from eligibility workers.
+    std::vector<unsigned char> eligible(faceCount, false);
     std::vector<UVAxis> faceAxis(faceCount, NONE);
     // processGroup 用 (W,H) 投影的 min/max 重建矩形, 只对边平行于该法线
     // 所导出的 T1/T2 基的矩形面成立。被旋转(如 showblock ShowRotation、
@@ -618,22 +539,47 @@ void ModelDeduplicator::GreedyMesh(ModelData& data) {
         }
         return true;
     };
+    auto markEligible = [&](size_t start, size_t end) {
+        size_t skippedRotated = 0;
+        for (size_t i = start; i < end; ++i) {
+            const Face& f = data.faces[i];
+            if (f.materialIndex < 0 || (size_t)f.materialIndex >= data.materials.size()) continue;
+            if (data.materials[f.materialIndex].type == ANIMATED) continue;
+            if (!isGridAlignedRect(static_cast<int>(i))) { ++skippedRotated; continue; }
+            UVAxis ax = checkUV(static_cast<int>(i));
+            if (ax == NONE) continue;
+            eligible[i] = true;
+            faceAxis[i] = ax;
+        }
+        return skippedRotated;
+    };
     size_t skippedRotated = 0;
-    for (int i = 0; i < (int)faceCount; ++i) {
-        const Face& f = data.faces[i];
-        if (f.materialIndex < 0 || (size_t)f.materialIndex >= data.materials.size()) continue;
-        if (data.materials[f.materialIndex].type == ANIMATED) continue;
-        if (!isGridAlignedRect(i)) { ++skippedRotated; continue; }
-        UVAxis ax = checkUV(i);
-        if (ax == NONE) continue;
-        eligible[i] = true;
-        faceAxis[i] = ax;
+    const unsigned eligibilityThreads = faceCount >= 10000 ? DedupThreadCount() : 1;
+    if (eligibilityThreads > 1) {
+        std::vector<size_t> skipped(eligibilityThreads);
+        std::vector<std::thread> workers;
+        workers.reserve(eligibilityThreads);
+        const size_t chunk = (faceCount + eligibilityThreads - 1) / eligibilityThreads;
+        for (unsigned t = 0; t < eligibilityThreads; ++t) {
+            const size_t start = t * chunk;
+            const size_t end = std::min(start + chunk, faceCount);
+            if (start >= end) continue;
+            workers.emplace_back([&, t, start, end] { skipped[t] = markEligible(start, end); });
+        }
+        for (auto& worker : workers) worker.join();
+        for (size_t count : skipped) skippedRotated += count;
+    } else {
+        skippedRotated = markEligible(0, faceCount);
     }
+    // Only the connected components matter. Roots may differ with hash edge
+    // order, but collecting faces below in index order preserves group order
+    // and the order of every group's members (and hence merge decisions).
     // 遍历邻接表做 union
     for (int i = 0; i < (int)faceCount; ++i) {
         if (!eligible[i]) continue;
         const Face& fi = data.faces[i];
-        for (int nb : faceAdj[i]) {
+        for (size_t adj = faceAdjOffsets[i]; adj < faceAdjOffsets[i + 1]; ++adj) {
+            const int nb = faceAdj[adj];
             if (!eligible[nb]) continue;
             const Face& fj = data.faces[nb];
             if (fj.materialIndex != fi.materialIndex) continue;
