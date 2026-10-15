@@ -14,6 +14,7 @@
 #include <concepts>     // C++20特性
 #include <span>         // C++20特性
 #include <ranges>       // C++20特性
+#include <cstdint>
 #include <compare>      // C++20特性:三路比较运算符
 #include "JarReader.h"
 #include "config.h"
@@ -165,11 +166,22 @@ struct FaceKeyHasher {
 namespace std {
     template <>
     struct hash<VertexKey> {
-        std::size_t operator()(const VertexKey& key) const {
-            // 使用C++20的组合哈希功能
-            return std::hash<int>()(key.x) ^ 
-                  (std::hash<int>()(key.y) << 1) ^ 
-                  (std::hash<int>()(key.z) << 2);
+        std::size_t operator()(const VertexKey& key) const noexcept {
+            // Mix all coordinate bits, including the low zeros common in grid
+            // coordinates. Pack x/y without overlap, then mix in z separately.
+            auto mix = [](std::uint64_t value) {
+                value ^= value >> 30;
+                value *= 0xbf58476d1ce4e5b9ULL;
+                value ^= value >> 27;
+                value *= 0x94d049bb133111ebULL;
+                return value ^ (value >> 31);
+            };
+            const std::uint64_t xy =
+                (static_cast<std::uint64_t>(static_cast<std::uint32_t>(key.x)) << 32) |
+                static_cast<std::uint32_t>(key.y);
+            return static_cast<std::size_t>(mix(mix(xy) ^
+                (static_cast<std::uint64_t>(static_cast<std::uint32_t>(key.z)) +
+                 0x9e3779b97f4a7c15ULL)));
         }
     };
 
