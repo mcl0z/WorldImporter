@@ -245,6 +245,51 @@ std::string Biome::GetColormapData(const std::string& namespaceName, const std::
 BiomeColors Biome::ParseBiomeColors(const nlohmann::json& biomeJson) {
     BiomeColors colors;
 
+    auto safeColorVal = [](const nlohmann::json& j, const std::string& k, int def) -> int {
+        if (!j.is_object() || !j.contains(k)) return def;
+        const auto& v = j[k];
+        if (v.is_number()) return v.get<int>();
+        if (v.is_string()) {
+            const auto& str = v.get_ref<const std::string&>();
+            try {
+                if (!str.empty() && str[0] == '#') {
+                    if (str.size() != 7 || str.find_first_not_of("0123456789abcdefABCDEF", 1) != std::string::npos)
+                        return def;
+                    return static_cast<int>(std::stoul(str.substr(1), nullptr, 16));
+                }
+                // Preserve legacy decimal / 0x-prefixed string parsing.
+                return static_cast<int>(std::stoul(str, nullptr, 0));
+            } catch (const std::exception&) {}
+        }
+        return def;
+    };
+
+    const nlohmann::json emptyObject = nlohmann::json::object();
+    const bool hasEffects = biomeJson.contains("effects");
+    const auto& effects = hasEffects ? biomeJson["effects"] : emptyObject;
+    const auto& attributes = biomeJson.contains("attributes") ? biomeJson["attributes"] : emptyObject;
+    auto visualColor = [&](const std::string& key, int def) -> int {
+        const int legacy = safeColorVal(effects, key, -1);
+        if (legacy != -1) return legacy;
+
+        const std::string attributeKey = "minecraft:visual/" + key;
+        if (!attributes.is_object() || !attributes.contains(attributeKey)) return def;
+        const auto& attribute = attributes[attributeKey];
+        if (attribute.is_object()) {
+            // An explicit override (or omitted modifier) needs no inherited value.
+            // Other modifiers require dimension context, which this parser lacks.
+            if (attribute.contains("modifier") && attribute["modifier"] != "override") return def;
+            return safeColorVal(attribute, "argument", def);
+        }
+        return safeColorVal(attributes, attributeKey, def);
+    };
+
+    // Resolve before the no-effects return: attributes-only biomes are valid too.
+    // Keep WI's existing no-effects fog default instead of the old missing-key white.
+    colors.fog = visualColor("fog_color", 0xC0D8FF);
+    colors.sky = visualColor("sky_color", hasEffects ? 0x84ECFF : 0x78A7FF);
+    colors.waterFog = visualColor("water_fog_color", hasEffects ? 0x050533 : 0x3F76E4);
+
     // 空/无效 json 保护: 避免访问不存在的 effects 键抛异常, 导致生物群系注册失败
     if (biomeJson.is_null() || biomeJson.empty() || !biomeJson.contains("effects")) {
         // 使用默认生物群系颜色(中性绿/蓝)
@@ -252,26 +297,16 @@ BiomeColors Biome::ParseBiomeColors(const nlohmann::json& biomeJson) {
         colors.foliage = 0x7CBD6B;
         colors.dryFoliage = 0x7CBD6B;
         colors.water = 0x3F76E4;
-        colors.waterFog = 0x3F76E4;
-        colors.sky = 0x78A7FF;
-        colors.fog = 0xC0D8FF;
         colors.adjTemperature = 0.5f;
         colors.adjDownfall = 0.5f;
         return colors;
     }
 
-    auto safeIntVal = [](const nlohmann::json& j, const std::string& k, int def) -> int {
-        if (!j.contains(k)) return def;
-        const auto& v = j[k];
-        if (v.is_number()) return v.get<int>();
-        if (v.is_string()) { try { return (int)std::stoul(v.get<std::string>(), nullptr, 0); } catch(...) {} }
-        return def;
-    };
     auto ParseColorWithFallback = [&](const std::string& key,
         const std::string& colormapType,
         float tempMod = 1.0f,
         float downfallMod = 1.0f) {
-            int directColor = safeIntVal(biomeJson["effects"], key, -1);
+            int directColor = safeColorVal(effects, key, -1);
             if (directColor != -1) return directColor;
 
             auto colormap = GetColormapData("minecraft", colormapType);
@@ -314,19 +349,14 @@ BiomeColors Biome::ParseBiomeColors(const nlohmann::json& biomeJson) {
     }
     // 检查 "effects" 是否存在
     if (biomeJson.contains("effects")) {
-        const nlohmann::json& effects = biomeJson["effects"];
-
         // 解析直接颜色值
-        colors.fog = safeIntVal(effects, "fog_color", 0xFFFFFF);
-        colors.sky = safeIntVal(effects, "sky_color", 0x84ECFF);
-        colors.water = safeIntVal(effects, "water_color", 0x3F76E4);
-        colors.waterFog = safeIntVal(effects, "water_fog_color", 0x050533);
+        colors.water = safeColorVal(effects, "water_color", 0x3F76E4);
 
         // 统一处理植物颜色
         colors.foliage = ParseColorWithFallback("foliage_color", "foliage");
 
         // 干旱植物颜色处理 - 优先检查是否有直接颜色值
-        int directDryFoliageColor = safeIntVal(effects, "dry_foliage_color", -1);
+        int directDryFoliageColor = safeColorVal(effects, "dry_foliage_color", -1);
         if (directDryFoliageColor != -1) {
             // 如果有直接颜色值,直接使用
             colors.dryFoliage = directDryFoliageColor;
