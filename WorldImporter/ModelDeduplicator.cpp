@@ -1,6 +1,5 @@
 // ModelDeduplicator.cpp
 #include "ModelDeduplicator.h"
-#include <execution>
 #include <algorithm>
 #include <cmath>
 #include <map>
@@ -13,6 +12,7 @@
 #include <set>
 #include <unordered_set>
 #include <unordered_map>
+#include <memory_resource>
 #include "TaskMonitor.h"
 #include <future> // 新增: 用于 std::async, std::future
 #include <mutex>  // 新增: 用于 std::mutex, std::lock_guard
@@ -124,106 +124,58 @@ void ModelDeduplicator::DeduplicateVertices(ModelData& data) {
     using Ms = std::chrono::duration<double, std::milli>;
     auto t0 = Clock::now();
 
-    // 使用简单的KeyAndIndex结构进行排序和去重
-    struct KeyAndIndex { VertexKey key; int oldIndex; };
-    std::vector<KeyAndIndex> keys(vertCount);
-
-    // 并行计算顶点键
-    unsigned int numThreads = DedupThreadCount();
-    if (numThreads == 0) numThreads = 1;
-    std::vector<std::thread> threads;
-    threads.reserve(numThreads);
-    size_t chunk = (vertCount + numThreads - 1) / numThreads;
-    
-    for (unsigned int t = 0; t < numThreads; ++t) {
-        size_t start = t * chunk;
-        size_t end = std::min(start + chunk, vertCount);
-        threads.emplace_back([&, start, end]() {
-            for (size_t i = start; i < end; ++i) {
-                float x = data.vertices[3*i];
-                float y = data.vertices[3*i + 1];
-                float z = data.vertices[3*i + 2];
-                
-                // 确保精确的量化，使用统一的舍入方法
-                keys[i] = { MakeVertexKey(x, y, z), static_cast<int>(i) };
-            }
-        });
-    }
-    for (auto &th : threads) th.join();
-
-    auto t1 = Clock::now();
-    std::cerr << "计算顶点键: " << Ms(t1 - t0).count() << " ms\n";
-
-    // Explicit original-index tie-break preserves stable_sort's representative
-    // exactly while allowing the large final mesh sort to run across cores.
-    auto keyLess = [](const KeyAndIndex &a, const KeyAndIndex &b) {
-        if (a.key.x != b.key.x) return a.key.x < b.key.x;
-        if (a.key.y != b.key.y) return a.key.y < b.key.y;
-        if (a.key.z != b.key.z) return a.key.z < b.key.z;
-        return a.oldIndex < b.oldIndex;
-    };
-    if (numThreads > 1 && keys.size() >= 262144)
-        std::sort(std::execution::par, keys.begin(), keys.end(), keyLess);
-    else
-        std::stable_sort(keys.begin(), keys.end(), [](const KeyAndIndex& a, const KeyAndIndex& b) {
-            if (a.key.x != b.key.x) return a.key.x < b.key.x;
-            if (a.key.y != b.key.y) return a.key.y < b.key.y;
-            return a.key.z < b.key.z;
-        });
-
-    auto t2 = Clock::now();
-    std::cerr << "排序顶点键: " << Ms(t2 - t1).count() << " ms\n";
-
-    // 创建新的顶点数组和索引映射
+    // All hash nodes have the same lifetime; release them together rather than
+    // allocating/freeing one heap block per unique vertex.
+    std::pmr::monotonic_buffer_resource vertexStorage;
+    std::pmr::unordered_map<VertexKey, int> vertexIndices{&vertexStorage};
+    vertexIndices.reserve(vertCount);
     std::vector<int> indexMap(vertCount);
     std::vector<float> newVertices;
-    newVertices.reserve(vertCount * 3 / 2); // 预估去重后的顶点数
+    newVertices.reserve(data.vertices.size());
 
-    // 去重并构建新顶点数组
+    // Visit original indices in order: the first vertex for each quantized key
+    // supplies the original float coordinates, just like the old stable sort.
     int newIndex = 0;
     for (size_t i = 0; i < vertCount; ++i) {
-        // 检查是否与前一个顶点相同
-        bool isNewVertex = (i == 0) || 
-                          (keys[i].key.x != keys[i-1].key.x || 
-                           keys[i].key.y != keys[i-1].key.y || 
-                           keys[i].key.z != keys[i-1].key.z);
-        
-        if (isNewVertex) {
-            // 这是一个新的唯一顶点
-            int oldIdx = keys[i].oldIndex;
-            newVertices.push_back(data.vertices[3*oldIdx]);
-            newVertices.push_back(data.vertices[3*oldIdx + 1]);
-            newVertices.push_back(data.vertices[3*oldIdx + 2]);
-            newIndex++;
+        const float x = data.vertices[3*i];
+        const float y = data.vertices[3*i + 1];
+        const float z = data.vertices[3*i + 2];
+        const auto [it, inserted] = vertexIndices.try_emplace(MakeVertexKey(x, y, z), newIndex);
+        if (inserted) {
+            newVertices.push_back(x);
+            newVertices.push_back(y);
+            newVertices.push_back(z);
+            ++newIndex;
         }
-        
-        // 更新索引映射
-        indexMap[keys[i].oldIndex] = newIndex - 1;
+        indexMap[i] = it->second;
     }
-
-    // 替换原始顶点数组
     data.vertices = std::move(newVertices);
 
     auto t3 = Clock::now();
-    std::cerr << "去重顶点: " << Ms(t3 - t2).count() << " ms\n";
+    std::cerr << "顶点键与哈希构建: " << Ms(t3 - t0).count() << " ms\n";
 
-    // 并行更新面索引
+    // Keep face order and winding; each worker remaps a disjoint face range.
     const size_t faceCount = data.faces.size();
-    if (faceCount > 0) {
-        threads.clear();
-        chunk = (faceCount + numThreads - 1) / numThreads;
+    auto remapFaces = [&](size_t start, size_t end) {
+        for (size_t fi = start; fi < end; ++fi) {
+            for (int &idx : data.faces[fi].vertexIndices) {
+                idx = indexMap[idx];
+            }
+        }
+    };
+    const unsigned int numThreads = DedupThreadCount();
+    if (faceCount > 0 && numThreads > 1) {
+        std::vector<std::thread> threads;
+        threads.reserve(numThreads);
+        const size_t chunk = (faceCount + numThreads - 1) / numThreads;
         for (unsigned int t = 0; t < numThreads; ++t) {
-            size_t start = t * chunk;
-            size_t end = std::min(start + chunk, faceCount);
-            threads.emplace_back([&, start, end]() {
-                for (size_t fi = start; fi < end; ++fi) {
-                    for (int &idx : data.faces[fi].vertexIndices) {
-                        idx = indexMap[idx];
-                    }
-                }
-            });
+            const size_t start = t * chunk;
+            const size_t end = std::min(start + chunk, faceCount);
+            threads.emplace_back(remapFaces, start, end);
         }
         for (auto &th : threads) th.join();
+    } else {
+        remapFaces(0, faceCount);
     }
 
     auto t4 = Clock::now();
@@ -1203,6 +1155,7 @@ void ModelDeduplicator::DeduplicateModel(ModelData& data) {
     }
 
     if (config.useGreedyMesh) {
+        const size_t verticesBeforeGreedy = data.vertices.size();
         monitor.SetStatus(TaskStatus::GREEDY_MESHING, "GreedyMesh");
         {
             auto tg0 = Clock::now();
@@ -1210,12 +1163,16 @@ void ModelDeduplicator::DeduplicateModel(ModelData& data) {
             auto tg1 = Clock::now();
             std::cerr << "GreedyMesh: " << Ms(tg1 - tg0).count() << " ms\n";
         }
-        monitor.SetStatus(TaskStatus::DEDUPLICATING_VERTICES, "DeduplicateVertices after GreedyMesh");
-        {
+        // Vertices are already unique here. GreedyMesh only appends vertices;
+        // with no additions, another vertex deduplication would be redundant.
+        if (data.vertices.size() != verticesBeforeGreedy) {
+            monitor.SetStatus(TaskStatus::DEDUPLICATING_VERTICES, "DeduplicateVertices after GreedyMesh");
             auto t6 = Clock::now();
             DeduplicateVertices(data);
             auto t7 = Clock::now();
             std::cerr << "DeduplicateVertices after GreedyMesh: " << Ms(t7 - t6).count() << " ms\n";
+        } else {
+            std::cerr << "DeduplicateVertices after GreedyMesh: skipped (vertex count unchanged)\n";
         }
         monitor.SetStatus(TaskStatus::DEDUPLICATING_UV, "DeduplicateUV after GreedyMesh");
         {

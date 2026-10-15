@@ -30,6 +30,14 @@ wi_apply_defaults(WorldImporterCore)
 include(CTest)
 option(WI_BUILD_CTM_TESTS "Build CTM texture baking regression tests" ON)
 
+if (BUILD_TESTING AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/WorldImporter/tests/model_deduplicator_tests.cpp")
+    add_executable(model_deduplicator_tests WorldImporter/tests/model_deduplicator_tests.cpp)
+    target_link_libraries(model_deduplicator_tests PRIVATE WorldImporterCore)
+    wi_apply_defaults(model_deduplicator_tests)
+    add_test(NAME model_deduplicator COMMAND model_deduplicator_tests)
+    set_tests_properties(model_deduplicator PROPERTIES TIMEOUT 30)
+endif()
+
 # This harness ships with the importer; tests/ below is an optional external suite.
 if (BUILD_TESTING AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/WorldImporter/tests/biome_colors_tests.cpp")
     add_executable(biome_colors_tests WorldImporter/tests/biome_colors_tests.cpp)
