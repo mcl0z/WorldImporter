@@ -6,6 +6,7 @@
 #include <map>
 #include <locale>
 #include <unordered_set>
+#include "fileutils.h"
 
 // 游戏整合包配置结构体
 struct VersionConfig {
@@ -90,7 +91,7 @@ struct Config {
         modsPath(""),
         resourcepacksPaths({}),
         selectedDimension("minecraft:overworld"),
-        fluidsFile("config\\jsons\\fluids.json"),
+        fluidsFile(JoinPath("config", "jsons", "fluids.json")),
         minX(0), minY(0), minZ(0), maxX(0), maxY(0), maxZ(0),
         status(0),
 
