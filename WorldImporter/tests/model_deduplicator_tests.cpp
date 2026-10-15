@@ -82,12 +82,137 @@ void checkFirstWins(int budget) {
     ModelDeduplicator::DeduplicateVertices(noFaces);
     require(noFaces.vertices == std::vector<float>{2, 3, 4}, "mesh without faces not deduplicated");
 }
+
+bool sameFace(const Face& a, const Face& b) {
+    return a.vertexIndices == b.vertexIndices && a.uvIndices == b.uvIndices &&
+           a.materialIndex == b.materialIndex && a.faceDirection == b.faceDirection &&
+           a.tintIndex == b.tintIndex && a.bothSided == b.bothSided && a.thinEdge == b.thinEdge;
+}
+
+void checkFaceDeduplication(bool strict) {
+    config.strictDeduplication = strict;
+    Face first{};
+    first.vertexIndices = {9, 2, 7, 4};
+    first.uvIndices = {3, 8, 1, 6};
+    first.materialIndex = 2;
+    first.faceDirection = NORTH;
+    first.tintIndex = 3;
+    first.bothSided = true;
+    first.thinEdge = true;
+    Face cyclic = first;
+    cyclic.vertexIndices = {7, 4, 9, 2};
+    cyclic.uvIndices = {1, 6, 3, 8};
+    cyclic.tintIndex = 5; // The first copy supplies attributes.
+    Face reversed = first;
+    reversed.vertexIndices = {9, 4, 7, 2};
+    reversed.uvIndices = {3, 6, 1, 8};
+    Face overlay = first;
+    overlay.uvIndices = {13, 18, 11, 16};
+    Face material = first;
+    material.materialIndex = 7;
+    // Repeated vertex keys require comparing UVs and the complete cyclic
+    // sequence, rather than simply choosing the lowest vertex as the start.
+    Face repeated = first;
+    repeated.vertexIndices = {1, 1, 1, 1};
+    repeated.uvIndices = {2, 0, 2, 1};
+    Face repeatedCyclic = repeated;
+    repeatedCyclic.uvIndices = {2, 1, 2, 0};
+
+    ModelData data;
+    data.faces = {first, cyclic, reversed, overlay, material, repeated, repeatedCyclic, first};
+    std::vector<Face> expected = {first, reversed, overlay};
+    if (strict) expected.push_back(material);
+    expected.push_back(repeated);
+    for (int pass = 0; pass < 2; ++pass) {
+        ModelDeduplicator::DeduplicateFaces(data);
+        require(data.faces.size() == expected.size(), "face dedup count/winding/UV/material changed");
+        for (size_t i = 0; i < expected.size(); ++i) {
+            require(sameFace(data.faces[i], expected[i]), "first face attributes/order not preserved");
+        }
+    }
+    ModelData empty;
+    ModelDeduplicator::DeduplicateFaces(empty);
+    require(empty.faces.empty(), "empty face list changed");
+}
+
+ModelData adjacentQuads() {
+    ModelData data;
+    // Unique, deliberately unsorted keys, including negative coordinates.
+    data.vertices = {0, 1, 0, -2, 0, 0, -1, 1, 0, 0, 0, 0, -2, 1, 0, -1, 0, 0};
+    data.uvCoordinates = {0, 0, 1, 0, 1, 1, 0, 1};
+    data.materials.emplace_back();
+    Face first{};
+    first.vertexIndices = {1, 5, 2, 4};
+    first.uvIndices = {0, 1, 2, 3};
+    first.materialIndex = 0;
+    first.faceDirection = SOUTH;
+    first.tintIndex = 2;
+    first.bothSided = true;
+    first.thinEdge = true;
+    Face second = first;
+    second.vertexIndices = {5, 3, 0, 2};
+    data.faces = {first, second};
+    return data;
+}
+
+void checkGreedyVertexIndices() {
+    SetModelThreadBudget(2);
+    auto data = adjacentQuads();
+    const auto originalVertices = data.vertices;
+    ModelDeduplicator::GreedyMesh(data);
+    require(data.vertices == originalVertices, "greedy changed/appended existing vertex keys");
+    require(data.faces.size() == 1, "adjacent quads did not merge");
+    require(data.faces[0].vertexIndices == std::array<int, 4>{4, 1, 3, 0},
+            "greedy lookup did not preserve existing indices/winding");
+    require(data.faces[0].tintIndex == 2 && data.faces[0].bothSided && data.faces[0].thinEdge,
+            "merged face attributes changed");
+}
+
+void checkGreedyParallelEquivalence() {
+    auto tile = adjacentQuads();
+    ModelData data;
+    data.uvCoordinates = tile.uvCoordinates;
+    data.materials = tile.materials;
+    data.materials.emplace_back("animated", "", -1, ANIMATED);
+    // Exceed the parallel threshold, with distinct components and a mix of
+    // eligible, invalid-UV, animated and rotated faces.
+    for (int i = 0; i < 5001; ++i) {
+        const int base = static_cast<int>(data.vertices.size() / 3);
+        for (size_t v = 0; v < tile.vertices.size(); v += 3) {
+            const float x = tile.vertices[v], y = tile.vertices[v + 1];
+            data.vertices.push_back(i * 4.0f + x + (i % 4 == 3 ? 0.5f * y : 0));
+            data.vertices.push_back(y);
+            data.vertices.push_back(0);
+        }
+        for (auto face : tile.faces) {
+            for (int& index : face.vertexIndices) index += base;
+            if (i % 4 == 1) face.uvIndices[0] = -1;
+            if (i % 4 == 2) face.materialIndex = 1;
+            data.faces.push_back(face);
+        }
+    }
+    auto serial = data;
+    SetModelThreadBudget(2);
+    ModelDeduplicator::GreedyMesh(serial);
+    SetModelThreadBudget(1);
+    ModelDeduplicator::GreedyMesh(data);
+    require(data.faces.size() < 10002, "parallel fixture did not exercise merging");
+    require(data.vertices == serial.vertices && data.uvCoordinates == serial.uvCoordinates &&
+            data.faces.size() == serial.faces.size(), "parallel greedy geometry differs");
+    for (size_t i = 0; i < data.faces.size(); ++i) {
+        require(sameFace(data.faces[i], serial.faces[i]), "parallel greedy face order/attributes differ");
+    }
+}
 }
 
 int main() {
     try {
         checkFirstWins(2); // Multiple model workers: remap serially.
         checkFirstWins(1); // Single model worker: use available hardware threads.
+        checkFaceDeduplication(true);
+        checkFaceDeduplication(false);
+        checkGreedyVertexIndices();
+        checkGreedyParallelEquivalence();
         std::cout << "Model deduplicator tests passed\n";
         return 0;
     } catch (const std::exception& error) {
