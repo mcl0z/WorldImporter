@@ -1,9 +1,11 @@
 #include "objExporter.h"
 #include <algorithm>
+#include <cassert>
 #include <chrono>
 #include <fstream>
 #include <sstream>
 #include <locale>
+#include <limits>
 #include <filesystem>
 #include <system_error>
 
@@ -19,7 +21,6 @@ extern "C" {
 // Windows平台使用sprintf_s
 #define safe_sprintf sprintf_s
 #elif defined(__unix__) || defined(__APPLE__)
-#include <sys/mman.h>
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <unistd.h>
@@ -84,39 +85,6 @@ std::string getExecutableDir() {
     }
 }
 
-// 辅助函数:计算数值转换为字符串后的长度
-template <typename T>
-int calculateStringLength(T value, int precision = 6) {
-    char buffer[64];
-    return snprintf(buffer, sizeof(buffer), "%.*f", precision, static_cast<double>(value));
-}
-
-// 快速计算整数的字符串长度(正数)
-inline int calculateIntLength(int value) {
-    if (value == 0) return 1;
-    int length = 0;
-    bool is_negative = value < 0;
-    value = abs(value); // 取绝对值
-    while (value != 0) {
-        value /= 10;
-        length++;
-    }
-    if (is_negative) {
-        length++; // 负数需要额外的符号位
-    }
-    return length;
-}
-// 快速整数转字符串(带符号)的前置声明
-inline char* fast_itoa(int value, char* ptr);
-// 快速浮点转字符串的前置声明；长度计算直接复用同一实现，
-// 避免数学估算在 9.9999996 -> 10.000000 进位时少算 1 字节并写穿堆缓冲区。
-inline char* fast_ftoa(float value, char* ptr);
-
-// 计算浮点数实际写出长度（与 fast_ftoa 严格一致）
-inline int calculateFloatStringLength(float value) {
-    char buffer[128];
-    return static_cast<int>(fast_ftoa(value, buffer) - buffer);
-}
 // 快速整数转字符串(正数版)
 inline char* fast_itoa_positive(uint32_t value, char* ptr) {
     char* start = ptr;
@@ -195,52 +163,11 @@ void createObjFileViaMemoryMapped(const ModelData& data, const std::string& objN
     std::string objFilePath = exeDir + objName + ".obj";
     std::string mtlFilePath = mtlFileName.empty() ? (objName + ".mtl") : (mtlFileName + ".mtl");
 
-    size_t totalSize = 0;
-    // 文件头部分
-    totalSize += snprintf(nullptr, 0, "mtllib %s\n", mtlFilePath.c_str());
     // 提取模型名称(取路径最后一段;兼容 / 与 \ 分隔符)
     std::string modelName = objName;
     size_t sepPos = objName.find_last_of("/\\");
     if (sepPos != std::string::npos) {
         modelName = objName.substr(sepPos + 1);
-    }
-    totalSize += snprintf(nullptr, 0, "o %s\n\n", modelName.c_str());
-
-    // 预计算顶点注释行的长度
-    totalSize += snprintf(nullptr, 0, "# Vertices (%zu)\n", data.vertices.size() / 3);
-
-    // 预计算所有浮点数的字符串长度(顶点数据)
-    std::vector<int> vertexLengths(data.vertices.size());
-    for (size_t i = 0; i < data.vertices.size(); ++i) {
-        vertexLengths[i] = calculateFloatStringLength(data.vertices[i]);
-    }
-
-    const size_t vertexCount = data.vertices.size() / 3;
-#pragma omp parallel for reduction(+:totalSize)
-    for (size_t i = 0; i < vertexCount; ++i) {
-        const size_t base = i * 3;
-        const int lenX = vertexLengths[base];
-        const int lenY = vertexLengths[base + 1];
-        const int lenZ = vertexLengths[base + 2];
-        totalSize += 2 + lenX + 1 + lenY + 1 + lenZ + 1; // "v " + x + " " + y + " " + z + "\n"
-    }
-
-    //预计算UV注释行的长度
-    totalSize += snprintf(nullptr, 0, "\n# UVs (%zu)\n", data.uvCoordinates.size() / 2);
-
-    // 预计算UV数据长度
-    std::vector<int> uvLengths(data.uvCoordinates.size());
-    for (size_t i = 0; i < data.uvCoordinates.size(); ++i) {
-        uvLengths[i] = calculateFloatStringLength(data.uvCoordinates[i]);
-    }
-
-    const size_t uvCount = data.uvCoordinates.size() / 2;
-#pragma omp parallel for reduction(+:totalSize)
-    for (size_t i = 0; i < uvCount; ++i) {
-        const size_t base = i * 2;
-        const int lenU = uvLengths[base];
-        const int lenV = uvLengths[base + 1];
-        totalSize += 3 + lenU + 1 + lenV + 1; // "vt " + u + " " + v + "\n"
     }
 
     // 面数据分组计算
@@ -253,45 +180,44 @@ void createObjFileViaMemoryMapped(const ModelData& data, const std::string& objN
         }
     }
 
-    //预计算面注释行的长度
-    totalSize += snprintf(nullptr, 0, "\n# Faces (%zu)\n", totalFaces);
-
-    // 预计算材质组内每个材质对应的usemtl行以及各个面的长度
-    std::vector<size_t> usemtlLengths(data.materials.size());
-#pragma omp parallel for
-    for (int matIndex = 0; matIndex < data.materials.size(); ++matIndex) {
-        // "usemtl "(7) + name + "\n"(1)
-        usemtlLengths[matIndex] = 8 + data.materials[matIndex].name.size();
-    }
-
-#pragma omp parallel for reduction(+:totalSize)
-    for (int matIndex = 0; matIndex < materialGroups.size(); ++matIndex) {
-        const auto& faces = materialGroups[matIndex];
-        if (faces.empty()) continue;
-        size_t localSize = usemtlLengths[matIndex];
-        for (const size_t faceIdx : faces) {
-            size_t faceLength = 3; // "f " + '\n'
-            const auto& vertexIndices = data.faces[faceIdx].vertexIndices;
-            const auto& uvIndices = data.faces[faceIdx].uvIndices;
-            for (int i = 0; i < 4; ++i) {
-                const int vIdx = vertexIndices[i] + 1;
-                const int uvIdx = uvIndices[i] + 1;
-                faceLength += calculateIntLength(vIdx) + calculateIntLength(uvIdx) + 2; // 对应 '/' 和空格
-            }
-            localSize += faceLength;
-        }
-        totalSize += localSize;
-    }
-
-    // 分配缓冲区(+1为安全冗余)
-    std::vector<char> buffer(totalSize + 1);
+    // Grow on demand instead of reserving worst-case space for every model line.
+    // This keeps large models proportional to their actual formatted size and
+    // avoids formatting floats and counting face-index digits in a sizing pass.
+    std::vector<char> buffer(64 * 1024);
     char* ptr = buffer.data();
+    const auto ensureSpace = [&](size_t extra) {
+        const size_t used = static_cast<size_t>(ptr - buffer.data());
+        if (extra <= buffer.size() - used) return;
+        if (extra > buffer.max_size() - used) {
+            throw std::length_error("OBJ buffer exceeds maximum size");
+        }
+        const size_t grownSize = buffer.size() <= buffer.max_size() / 2
+            ? buffer.size() * 2 : buffer.max_size();
+        buffer.resize((std::max)(grownSize, used + extra));
+        ptr = buffer.data() + used;
+    };
+    const auto appendFormatted = [&](const char* format, const auto&... args) {
+        const int length = snprintf(nullptr, 0, format, args...);
+        if (length < 0) {
+            throw std::runtime_error("Unable to format OBJ header");
+        }
+        ensureSpace(static_cast<size_t>(length) + 1); // snprintf's terminating NUL
+        ptr += snprintf(ptr, buffer.size() - (ptr - buffer.data()), format, args...);
+    };
+
+    // A finite float has at most 39 integer digits; sign, decimal point, six
+    // decimals and snprintf's NUL fit in 48 bytes. 64 also covers fast_ftoa's
+    // integer/nonfinite branches and its 64-byte snprintf fallback unchanged.
+    constexpr size_t floatSpace = 64;
+    constexpr size_t indexDigits = std::numeric_limits<int>::digits10 + 1;
+    constexpr size_t faceSpace = 2 + 4 * (2 * indexDigits + 2) + 1;
 
     // 开始填充缓冲区
-    ptr += snprintf(ptr, buffer.size() - (ptr - buffer.data()), "mtllib %s\n", mtlFilePath.c_str());
-    ptr += snprintf(ptr, buffer.size() - (ptr - buffer.data()), "o %s\n\n", modelName.c_str());
-    ptr += snprintf(ptr, buffer.size() - (ptr - buffer.data()), "# Vertices (%zu)\n", data.vertices.size() / 3);
+    appendFormatted("mtllib %s\n", mtlFilePath.c_str());
+    appendFormatted("o %s\n\n", modelName.c_str());
+    appendFormatted("# Vertices (%zu)\n", data.vertices.size() / 3);
     for (size_t i = 0; i < data.vertices.size(); i += 3) {
+        ensureSpace(3 * floatSpace + 5); // "v " + x + ' ' + y + ' ' + z + '\n'
         memcpy(ptr, "v ", 2);
         ptr += 2;
         ptr = fast_ftoa(data.vertices[i], ptr);
@@ -302,8 +228,9 @@ void createObjFileViaMemoryMapped(const ModelData& data, const std::string& objN
         *ptr++ = '\n';
     }
 
-    ptr += snprintf(ptr, buffer.size() - (ptr - buffer.data()), "\n# UVs (%zu)\n", data.uvCoordinates.size() / 2);
+    appendFormatted("\n# UVs (%zu)\n", data.uvCoordinates.size() / 2);
     for (size_t i = 0; i < data.uvCoordinates.size(); i += 2) {
+        ensureSpace(2 * floatSpace + 5); // "vt " + u + ' ' + v + '\n'
         memcpy(ptr, "vt ", 3);
         ptr += 3;
         ptr = fast_ftoa(data.uvCoordinates[i], ptr);
@@ -312,12 +239,13 @@ void createObjFileViaMemoryMapped(const ModelData& data, const std::string& objN
         *ptr++ = '\n';
     }
 
-    ptr += snprintf(ptr, buffer.size() - (ptr - buffer.data()), "\n# Faces (%zu)\n", totalFaces);
+    appendFormatted("\n# Faces (%zu)\n", totalFaces);
     for (size_t matIndex = 0; matIndex < materialGroups.size(); ++matIndex) {
         const auto& faces = materialGroups[matIndex];
         if (faces.empty()) continue;
-        ptr += snprintf(ptr, buffer.size() - (ptr - buffer.data()), "usemtl %s\n", data.materials[matIndex].name.c_str());
+        appendFormatted("usemtl %s\n", data.materials[matIndex].name.c_str());
         for (const size_t faceIdx : faces) {
+            ensureSpace(faceSpace); // "f " + four positive int/int pairs with spaces + '\n'
             memcpy(ptr, "f ", 2);
             ptr += 2;
             for (int i = 0; i < 4; ++i) {
@@ -336,50 +264,45 @@ void createObjFileViaMemoryMapped(const ModelData& data, const std::string& objN
     }
 
     const size_t writtenSize = static_cast<size_t>(ptr - buffer.data());
-    if (writtenSize != totalSize) {
-        throw std::runtime_error("OBJ缓冲长度计算不一致: estimated=" +
-            std::to_string(totalSize) + ", actual=" + std::to_string(writtenSize));
-    }
+    assert(writtenSize <= buffer.size());
 
     // 使用跨平台方式写入文件
     try {
 #ifdef _WIN32
-        // Windows平台使用内存映射文件
+        // Windows平台使用标准文件IO
         std::ofstream file(objFilePath, std::ios::binary | std::ios::trunc);
         if (!file) {
             throw std::runtime_error("无法创建文件: " + objFilePath);
         }
 
         // 一次性写入全部数据
-        file.write(buffer.data(), totalSize);
+        file.write(buffer.data(), writtenSize);
         file.close();
 #elif defined(__unix__) || defined(__APPLE__)
         // Unix/Linux/macOS平台
-        int fd = open(objFilePath.c_str(), O_RDWR | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR);
+        int fd = open(objFilePath.c_str(), O_WRONLY | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR);
         if (fd == -1) {
             throw std::runtime_error("无法创建文件: " + objFilePath + ", 错误: " + std::to_string(errno));
         }
         
-        // 设置文件大小
-        if (ftruncate(fd, totalSize) == -1) {
-            close(fd);
-            throw std::runtime_error("无法设置文件大小: " + objFilePath);
+        // Normally one write; retry interrupted/partial writes and cap requests
+        // at ssize_t's limit for very large models. No mmap copy or sync flush.
+        size_t offset = 0;
+        while (offset < writtenSize) {
+            const size_t count = (std::min)(writtenSize - offset,
+                static_cast<size_t>((std::numeric_limits<ssize_t>::max)()));
+            const ssize_t result = write(fd, buffer.data() + offset, count);
+            if (result < 0 && errno == EINTR) continue;
+            if (result <= 0) {
+                const int error = result < 0 ? errno : EIO;
+                close(fd);
+                throw std::system_error(error, std::generic_category(), "无法写入文件: " + objFilePath);
+            }
+            offset += static_cast<size_t>(result);
         }
-        
-        // 映射文件到内存
-        void* mappedData = mmap(NULL, totalSize, PROT_WRITE, MAP_SHARED, fd, 0);
-        if (mappedData == MAP_FAILED) {
-            close(fd);
-            throw std::runtime_error("无法映射文件: " + objFilePath);
+        if (close(fd) == -1) {
+            throw std::system_error(errno, std::generic_category(), "无法关闭文件: " + objFilePath);
         }
-        
-        // 拷贝数据到映射内存
-        memcpy(mappedData, buffer.data(), totalSize);
-        
-        // 同步并释放资源
-        msync(mappedData, totalSize, MS_SYNC);
-        munmap(mappedData, totalSize);
-        close(fd);
 #else
         // 其他平台回退到标准文件IO
         std::ofstream file(objFilePath, std::ios::binary | std::ios::trunc);
@@ -388,7 +311,7 @@ void createObjFileViaMemoryMapped(const ModelData& data, const std::string& objN
         }
         
         // 一次性写入全部数据
-        file.write(buffer.data(), totalSize);
+        file.write(buffer.data(), writtenSize);
         file.close();
 #endif
     }
