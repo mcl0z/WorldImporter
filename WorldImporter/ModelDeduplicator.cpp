@@ -840,6 +840,61 @@ void ModelDeduplicator::GreedyMesh(ModelData& data) {
             entries.push_back(e);
         }
 
+        struct BandEdgeKey {
+            int rot;
+            long long a, b, edge; // non-merge axis bounds and merge-axis edge
+            bool operator==(const BandEdgeKey& o) const {
+                return rot == o.rot && a == o.a && b == o.b && edge == o.edge;
+            }
+        };
+        struct BandEdgeKeyHash {
+            size_t operator()(const BandEdgeKey& k) const {
+                size_t h = std::hash<int>{}(k.rot);
+                h ^= std::hash<long long>{}(k.a) + 0x9e3779b97f4a7c15ULL + (h<<6) + (h>>2);
+                h ^= std::hash<long long>{}(k.b) + 0x9e3779b97f4a7c15ULL + (h<<6) + (h>>2);
+                h ^= std::hash<long long>{}(k.edge) + 0x9e3779b97f4a7c15ULL + (h<<6) + (h>>2);
+                // Quantized edges have many common low bits; avalanche before
+                // masking into the power-of-two inline table.
+                h ^= h >> 30;
+                h *= 0xbf58476d1ce4e5b9ULL;
+                h ^= h >> 27;
+                h *= 0x94d049bb133111ebULL;
+                return h ^ (h >> 31);
+            }
+        };
+        const size_t noNeighbor = static_cast<size_t>(-1);
+        struct EdgeHeads {
+            size_t min, max;
+        };
+        struct EdgeBucket {
+            BandEdgeKey key;
+            EdgeHeads heads{static_cast<size_t>(-1), static_cast<size_t>(-1)};
+        };
+        // At most two distinct edge keys per entry, at less than 75% load.
+        // No deletion or growth is needed within a pass. Both empty heads mark
+        // an unused slot, and every insertion immediately sets one of them.
+        size_t edgeCapacity = 8;
+        const size_t maxEdgeKeys = entries.size() * 2;
+        while (maxEdgeKeys >= edgeCapacity - edgeCapacity / 4) {
+            if (edgeCapacity > std::vector<EdgeBucket>().max_size() / 2)
+                throw std::length_error("merge edge table too large");
+            edgeCapacity *= 2;
+        }
+        std::vector<EdgeBucket> edgeBuckets(edgeCapacity);
+        auto edgeBucketFor = [&](const BandEdgeKey& key) -> EdgeBucket& {
+            size_t pos = BandEdgeKeyHash{}(key) & (edgeCapacity - 1);
+            while ((edgeBuckets[pos].heads.min != noNeighbor || edgeBuckets[pos].heads.max != noNeighbor) &&
+                   !(edgeBuckets[pos].key == key))
+                pos = (pos + 1) & (edgeCapacity - 1);
+            return edgeBuckets[pos];
+        };
+        // Index chains replace per-edge vectors. Retain all scratch capacity
+        // across W/H passes as the entry count shrinks.
+        std::vector<EdgeHeads> nextAtEdge(entries.size());
+        std::vector<char> processed_mask;
+        std::vector<Entry> next_entries_list;
+        next_entries_list.reserve(entries.size());
+
         // Spatial-hash neighbor lookup for rectangle merge.
         // Same adjacency + UV rules as before, but avoid O(n^2) scans inside
         // large coplanar groups (vanilla stone/dirt/grass floors blow up there).
@@ -847,9 +902,9 @@ void ModelDeduplicator::GreedyMesh(ModelData& data) {
             if (current_entries_ref.size() <= 1) return false;
 
             bool any_merge_overall = false;
-            std::vector<char> processed_mask(current_entries_ref.size(), 0);
-            std::vector<Entry> next_entries_list;
-            next_entries_list.reserve(current_entries_ref.size());
+            processed_mask.assign(current_entries_ref.size(), 0);
+            next_entries_list.clear();
+            for (auto& bucket : edgeBuckets) bucket.heads = {noNeighbor, noNeighbor};
 
             // Quantize shared-axis bounds so adjacency is an exact key match.
             // eps is 1e-6; use a slightly coarser bin so float noise still hits.
@@ -858,36 +913,28 @@ void ModelDeduplicator::GreedyMesh(ModelData& data) {
                 return static_cast<long long>(std::llround(static_cast<double>(v) * qScale));
             };
 
-            struct BandKey {
-                int rot;
-                long long a, b; // shared-axis (min,max) of the NON-merge axis
-                bool operator==(const BandKey& o) const { return rot==o.rot && a==o.a && b==o.b; }
-            };
-            struct BandKeyHash {
-                size_t operator()(const BandKey& k) const {
-                    size_t h = std::hash<int>{}(k.rot);
-                    h ^= std::hash<long long>{}(k.a) + 0x9e3779b97f4a7c15ULL + (h<<6) + (h>>2);
-                    h ^= std::hash<long long>{}(k.b) + 0x9e3779b97f4a7c15ULL + (h<<6) + (h>>2);
-                    return h;
-                }
-            };
-            // Edge maps: for W-merge, minW/maxW edges within an H-band.
-            std::unordered_map<BandKey, std::unordered_map<long long, std::vector<size_t>>, BandKeyHash> byMinEdge, byMaxEdge;
-            byMinEdge.reserve(current_entries_ref.size()*2);
-            byMaxEdge.reserve(current_entries_ref.size()*2);
-
-            auto bandOf = [&](const Entry& e) -> BandKey {
-                if (mergeW_axis) return BandKey{e.rotation, qf(e.minH), qf(e.maxH)};
-                return BandKey{e.rotation, qf(e.minW), qf(e.maxW)};
+            auto bandOf = [&](const Entry& e) -> BandEdgeKey {
+                if (mergeW_axis) return BandEdgeKey{e.rotation, qf(e.minH), qf(e.maxH), 0};
+                return BandEdgeKey{e.rotation, qf(e.minW), qf(e.maxW), 0};
             };
             auto minEdge = [&](const Entry& e) -> long long { return mergeW_axis ? qf(e.minW) : qf(e.minH); };
             auto maxEdge = [&](const Entry& e) -> long long { return mergeW_axis ? qf(e.maxW) : qf(e.maxH); };
 
-            for (size_t i = 0; i < current_entries_ref.size(); ++i) {
+            // Prepend in reverse order to visit each bucket in ascending entry
+            // order, exactly as the previous push_back vectors did.
+            for (size_t i = current_entries_ref.size(); i-- > 0;) {
                 const Entry& e = current_entries_ref[i];
-                BandKey band = bandOf(e);
-                byMinEdge[band][minEdge(e)].push_back(i);
-                byMaxEdge[band][maxEdge(e)].push_back(i);
+                BandEdgeKey key = bandOf(e);
+                key.edge = minEdge(e);
+                auto& minBucket = edgeBucketFor(key);
+                minBucket.key = key;
+                nextAtEdge[i].min = minBucket.heads.min;
+                minBucket.heads.min = i;
+                key.edge = maxEdge(e);
+                auto& maxBucket = edgeBucketFor(key);
+                maxBucket.key = key;
+                nextAtEdge[i].max = maxBucket.heads.max;
+                maxBucket.heads.max = i;
             }
 
             // 两个面合并后只用 cur 的 UV 映射重建, 所以要求 other 的 UV 在世界上与
@@ -956,12 +1003,12 @@ void ModelDeduplicator::GreedyMesh(ModelData& data) {
             // Pick the lowest-index spatial neighbor (same as old rotation-group scan
             // order). Among ties at the same index path, +axis wins via if/else-if.
             auto findFirstNeighbor = [&](Entry& cur, size_t i_pass) -> size_t {
-                BandKey band = bandOf(cur);
+                BandEdgeKey key = bandOf(cur);
                 size_t best = static_cast<size_t>(-1);
                 int bestDir = 0;
-                auto consider = [&](const std::vector<size_t>* bucket) {
-                    if (!bucket) return;
-                    for (size_t j : *bucket) {
+                auto consider = [&](size_t head, bool minEdges) {
+                    for (size_t j = head; j != noNeighbor;
+                         j = minEdges ? nextAtEdge[j].min : nextAtEdge[j].max) {
                         if (j == i_pass || processed_mask[j] != 0) continue;
                         if (best != static_cast<size_t>(-1) && j >= best) continue;
                         const Entry& other = current_entries_ref[j];
@@ -972,15 +1019,13 @@ void ModelDeduplicator::GreedyMesh(ModelData& data) {
                         bestDir = dir;
                     }
                 };
-                auto lookup = [&](auto& edgeMap, long long edge) -> const std::vector<size_t>* {
-                    auto itBand = edgeMap.find(band);
-                    if (itBand == edgeMap.end()) return nullptr;
-                    auto it = itBand->second.find(edge);
-                    if (it == itBand->second.end()) return nullptr;
-                    return &it->second;
+                auto lookup = [&](long long edge, bool minEdges) -> size_t {
+                    key.edge = edge;
+                    const auto& heads = edgeBucketFor(key).heads;
+                    return minEdges ? heads.min : heads.max;
                 };
-                consider(lookup(byMinEdge, maxEdge(cur)));
-                consider(lookup(byMaxEdge, minEdge(cur)));
+                consider(lookup(maxEdge(cur), true), true);
+                consider(lookup(minEdge(cur), false), false);
                 if (best != static_cast<size_t>(-1)) applyMerge(cur, current_entries_ref[best], bestDir);
                 return best;
             };
@@ -1020,6 +1065,9 @@ void ModelDeduplicator::GreedyMesh(ModelData& data) {
             }
         }
 
+        res.faces.reserve(entries.size());
+        res.positions.reserve(entries.size() * 4);
+        res.uvCoords.reserve(entries.size() * 8);
         for(auto& e_final: entries){
             Face nf; nf.materialIndex=f0_group_base.materialIndex; nf.faceDirection=UNKNOWN;
             nf.tintIndex=f0_group_base.tintIndex;
