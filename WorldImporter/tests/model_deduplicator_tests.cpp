@@ -1,6 +1,7 @@
 #include "ModelDeduplicator.h"
 
 #include <iostream>
+#include <map>
 #include <stdexcept>
 
 // The application normally supplies this in main.cpp.
@@ -87,6 +88,48 @@ bool sameFace(const Face& a, const Face& b) {
     return a.vertexIndices == b.vertexIndices && a.uvIndices == b.uvIndices &&
            a.materialIndex == b.materialIndex && a.faceDirection == b.faceDirection &&
            a.tintIndex == b.tintIndex && a.bothSided == b.bothSided && a.thinEdge == b.thinEdge;
+}
+
+void checkVertexTableGrowth() {
+    SetModelThreadBudget(2);
+    ModelData data;
+    // Mostly unique keys force the initially smaller table to grow. Include
+    // negative coordinates and later, distinct floats in existing buckets.
+    for (int i = 0; i < 24000; ++i) {
+        const float x = (i % 97 - 48) * 0.25f;
+        const float y = (i / 97 % 101 - 50) * 0.25f;
+        const float z = (i / 9797 - 1) * 0.25f;
+        data.vertices.insert(data.vertices.end(), {x, y, z});
+        if (i % 17 == 0)
+            data.vertices.insert(data.vertices.end(), {x + 0.00001f, y, z});
+    }
+    // An ordered-map oracle is independent of the table's hash/probe scheme.
+    std::map<VertexKey, int> reference;
+    std::vector<float> expected;
+    std::vector<int> remap;
+    for (size_t i = 0; i < data.vertices.size(); i += 3) {
+        const VertexKey key{
+            static_cast<int>(std::round(data.vertices[i] * 10000.0f)),
+            static_cast<int>(std::round(data.vertices[i + 1] * 10000.0f)),
+            static_cast<int>(std::round(data.vertices[i + 2] * 10000.0f))};
+        auto [it, inserted] = reference.try_emplace(key, static_cast<int>(expected.size() / 3));
+        if (inserted)
+            expected.insert(expected.end(), data.vertices.begin() + i, data.vertices.begin() + i + 3);
+        remap.push_back(it->second);
+    }
+    for (size_t i = 0; i + 3 < remap.size(); i += 4) {
+        Face face{};
+        face.vertexIndices = {static_cast<int>(i + 3), static_cast<int>(i),
+                              static_cast<int>(i + 2), static_cast<int>(i + 1)};
+        data.faces.push_back(face);
+    }
+    auto expectedFaces = data.faces;
+    for (auto& face : expectedFaces)
+        for (int& index : face.vertexIndices) index = remap[index];
+    ModelDeduplicator::DeduplicateVertices(data);
+    require(data.vertices == expected, "vertex table growth lost keys/first coordinates/order");
+    for (size_t i = 0; i < expectedFaces.size(); ++i)
+        require(sameFace(data.faces[i], expectedFaces[i]), "vertex table growth changed connectivity");
 }
 
 void checkFaceDeduplication(bool strict) {
@@ -244,6 +287,7 @@ int main() {
     try {
         checkFirstWins(2); // Multiple model workers: remap serially.
         checkFirstWins(1); // Single model worker: use available hardware threads.
+        checkVertexTableGrowth();
         checkFaceDeduplication(true);
         checkFaceDeduplication(false);
         checkGreedyVertexIndices();

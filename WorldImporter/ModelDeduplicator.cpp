@@ -24,6 +24,7 @@
 #include <thread> // 新增: 用于 std::thread::hardware_concurrency()
 #include <chrono> // 新增: 用于性能计时
 #include <functional> // 新增: 用于 std::function
+#include <stdexcept>
 #undef max
 #undef min
 // 顶点量化:统一使用四舍五入(std::round)。
@@ -40,6 +41,58 @@ inline VertexKey MakeVertexKey(float x, float y, float z) {
 /* 并发预算与去重线程数 */
 namespace {
     std::atomic<int> g_modelThreadBudget{1};
+
+    // Append-only lookup for nonnegative vertex indices. Inline slots avoid
+    // per-key nodes and pointer chasing; no caller observes hash-table order.
+    class VertexIndexMap {
+        struct Slot {
+            VertexKey key;
+            int index = -1;
+        };
+        std::vector<Slot> slots;
+        size_t count = 0;
+
+        static size_t capacityFor(size_t expected) {
+            size_t capacity = 16;
+            // Keep an empty slot, including when GreedyMesh appends new keys.
+            // Rounding to a power of two permits masking instead of division.
+            while (expected >= capacity - capacity / 8) {
+                if (capacity > std::vector<Slot>().max_size() / 2)
+                    throw std::length_error("vertex index table too large");
+                capacity *= 2;
+            }
+            return capacity;
+        }
+
+        size_t findSlot(const VertexKey& key) const {
+            const size_t mask = slots.size() - 1;
+            size_t pos = std::hash<VertexKey>{}(key) & mask;
+            while (slots[pos].index != -1 && slots[pos].key != key)
+                pos = (pos + 1) & mask;
+            return pos;
+        }
+
+    public:
+        explicit VertexIndexMap(size_t expected) : slots(capacityFor(expected)) {}
+
+        std::pair<int, bool> tryEmplace(const VertexKey& key, int index) {
+            size_t pos = findSlot(key);
+            if (slots[pos].index != -1) return {slots[pos].index, false};
+            if (count + 1 >= slots.size() - slots.size() / 8) {
+                // Only new keys can grow the table. Rehashing never changes
+                // the assigned indices or the original coordinates they name.
+                std::vector<Slot> oldSlots(capacityFor(count + 1));
+                oldSlots.swap(slots);
+                for (const auto& slot : oldSlots) {
+                    if (slot.index != -1) slots[findSlot(slot.key)] = slot;
+                }
+                pos = findSlot(key);
+            }
+            slots[pos] = Slot{key, index};
+            ++count;
+            return {index, true};
+        }
+    };
 }
 
 void SetModelThreadBudget(int threads) {
@@ -124,11 +177,9 @@ void ModelDeduplicator::DeduplicateVertices(ModelData& data) {
     using Ms = std::chrono::duration<double, std::milli>;
     auto t0 = Clock::now();
 
-    // All hash nodes have the same lifetime; release them together rather than
-    // allocating/freeing one heap block per unique vertex.
-    std::pmr::monotonic_buffer_resource vertexStorage;
-    std::pmr::unordered_map<VertexKey, int> vertexIndices{&vertexStorage};
-    vertexIndices.reserve(vertCount);
+    // Imported faces usually repeat corners. Start below the input bound to
+    // keep probes in a smaller table; unique-heavy inputs grow as needed.
+    VertexIndexMap vertexIndices(vertCount / 2);
     std::vector<int> indexMap(vertCount);
     std::vector<float> newVertices;
     newVertices.reserve(data.vertices.size());
@@ -140,14 +191,14 @@ void ModelDeduplicator::DeduplicateVertices(ModelData& data) {
         const float x = data.vertices[3*i];
         const float y = data.vertices[3*i + 1];
         const float z = data.vertices[3*i + 2];
-        const auto [it, inserted] = vertexIndices.try_emplace(MakeVertexKey(x, y, z), newIndex);
+        const auto [index, inserted] = vertexIndices.tryEmplace(MakeVertexKey(x, y, z), newIndex);
         if (inserted) {
             newVertices.push_back(x);
             newVertices.push_back(y);
             newVertices.push_back(z);
             ++newIndex;
         }
-        indexMap[i] = it->second;
+        indexMap[i] = index;
     }
     data.vertices = std::move(newVertices);
 
@@ -458,12 +509,10 @@ void ModelDeduplicator::GreedyMesh(ModelData& data) {
     // 3. DeduplicateVertices has made quantized keys unique: retain the exact
     // existing index, without sorting or binary searches during publication.
     auto t3_start = Clock::now();
-    std::pmr::monotonic_buffer_resource vertexStorage;
-    std::pmr::unordered_map<VertexKey, int> vertexIndices{&vertexStorage};
     const size_t vertCount = data.vertices.size() / 3;
-    vertexIndices.reserve(vertCount);
+    VertexIndexMap vertexIndices(vertCount);
     for (size_t vi = 0; vi < vertCount; ++vi) {
-        vertexIndices.try_emplace(MakeVertexKey(data.vertices[3*vi],
+        vertexIndices.tryEmplace(MakeVertexKey(data.vertices[3*vi],
             data.vertices[3*vi + 1], data.vertices[3*vi + 2]), static_cast<int>(vi));
     }
     auto t3_end = Clock::now();
@@ -471,8 +520,8 @@ void ModelDeduplicator::GreedyMesh(ModelData& data) {
 
     auto lookupVertexIndex = [&](const VertexKey& vk) {
         const int newIdx = static_cast<int>(data.vertices.size() / 3);
-        auto [it, inserted] = vertexIndices.try_emplace(vk, newIdx);
-        if (!inserted) return it->second;
+        auto [index, inserted] = vertexIndices.tryEmplace(vk, newIdx);
+        if (!inserted) return index;
         // Quantized-key misses still append reconstructed coordinates. This
         // cache is only mutated during serial, ordered result publication.
         data.vertices.push_back(static_cast<float>(vk.x) / 10000.0f);
