@@ -42,3 +42,21 @@ other modifiers, timelines/weather, and RGB float arrays are outside this fix;
 non-override objects fall back instead of treating their argument as a color.
 Missing fog uses WI's existing `0xC0D8FF` fallback. Existing sky/water-fog
 fallbacks (which differ depending on the presence of `effects`) are preserved.
+
+# Cache initialization regression
+
+`cache_init_tests` creates ZIP fixtures and compares complete serial scans with
+2/4/7/64 independent range readers, including empty ranges. It covers all cache
+classes, item/entity assets, wrapped `assets/` and `data/` paths, empty binary and
+model assets, and first-entry precedence for duplicate logical keys. Large stored
+padding also exercises the production range scheduler. A multi-archive merge
+checks every cache and lookup index, including two resource packs with the same
+jar id and conflicting resources.
+
+```sh
+cmake --build build-linux -j8
+ctest --test-dir build-linux --output-on-failure -R cache_init
+```
+
+Fixtures live in a temporary directory and are removed after the test. Checks
+remain active in Release builds and need no Minecraft installation.

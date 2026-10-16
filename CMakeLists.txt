@@ -38,6 +38,14 @@ if (BUILD_TESTING AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/WorldImporter/tests/mo
     set_tests_properties(model_deduplicator PROPERTIES TIMEOUT 30)
 endif()
 
+if (BUILD_TESTING AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/WorldImporter/tests/cache_init_tests.cpp")
+    add_executable(cache_init_tests WorldImporter/tests/cache_init_tests.cpp)
+    target_link_libraries(cache_init_tests PRIVATE WorldImporterCore)
+    wi_apply_defaults(cache_init_tests)
+    add_test(NAME cache_init COMMAND cache_init_tests)
+    set_tests_properties(cache_init PROPERTIES TIMEOUT 30)
+endif()
+
 # This harness ships with the importer; tests/ below is an optional external suite.
 if (BUILD_TESTING AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/WorldImporter/tests/biome_colors_tests.cpp")
     add_executable(biome_colors_tests WorldImporter/tests/biome_colors_tests.cpp)
