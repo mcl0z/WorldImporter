@@ -12,9 +12,30 @@ extern "C" {
 #include <vector>
 #include <sstream>
 #include <cstring>
+#include <memory>
+#include <stdexcept>
 #include "include/json.hpp"
 #include "fileutils.h"
 namespace {
+    // The archive walk already knows the index. Avoid resolving the name again,
+    // and share one stat/open/read path across text and binary resource types.
+    template<class Buffer>
+    bool readEntryAtIndex(zip_t* archive, zip_uint64_t index, Buffer& content,
+                          bool requireComplete = true) {
+        zip_stat_t stat;
+        if (zip_stat_index(archive, index, 0, &stat) != 0) return false;
+        std::unique_ptr<zip_file_t, decltype(&zip_fclose)> file(
+            zip_fopen_index(archive, index, 0), &zip_fclose);
+        if (!file) return false;
+        content.resize(stat.size);
+        const auto bytesRead = zip_fread(file.get(), content.data(), stat.size);
+        if (requireComplete && bytesRead != static_cast<zip_int64_t>(stat.size)) {
+            content.clear();
+            return false;
+        }
+        return true;
+    }
+
     std::vector<std::string> splitPath(const std::string& path) {
         std::vector<std::string> parts;
         std::stringstream ss(path);
@@ -189,7 +210,8 @@ void JarReader::cacheAllResources(
     std::unordered_map<std::string, std::vector<unsigned char>>& colormapCache,
     std::unordered_map<std::string, std::string>& ctmPropertiesCache,
     std::unordered_map<std::string, std::vector<unsigned char>>& ctmTexturesCache,
-    std::unordered_map<std::string, nlohmann::json>& atlasCache)
+    std::unordered_map<std::string, nlohmann::json>& atlasCache,
+    size_t rangeIndex, size_t rangeCount)
 {
     if (!zipFile) {
         std::cerr << "Zip file is not open." << std::endl;
@@ -197,10 +219,28 @@ void JarReader::cacheAllResources(
     }
 
 
-    zip_int64_t numEntries = zip_get_num_entries(zipFile, 0);
-    for (zip_int64_t i = 0; i < numEntries; ++i) {
+    if (rangeCount == 0 || rangeIndex >= rangeCount) {
+        throw std::invalid_argument("Invalid jar entry range");
+    }
+    const zip_int64_t numEntries = zip_get_num_entries(zipFile, 0);
+    if (numEntries < 0) return;
+    const zip_uint64_t first = static_cast<zip_uint64_t>(numEntries) * rangeIndex / rangeCount;
+    const zip_uint64_t last = static_cast<zip_uint64_t>(numEntries) * (rangeIndex + 1) / rangeCount;
+    for (zip_uint64_t i = first; i < last; ++i) {
         const char* name = zip_get_name(zipFile, i, 0);
         if (!name) continue;
+
+        auto readText = [&]() {
+            std::string content;
+            // Preserve getFileContent's handling of incomplete text reads.
+            readEntryAtIndex(zipFile, i, content, false);
+            return content;
+        };
+        auto readBinary = [&]() {
+            std::vector<unsigned char> content;
+            readEntryAtIndex(zipFile, i, content);
+            return content;
+        };
 
         std::string archiveFilePath(name);
         std::string filePath = archiveFilePath;
@@ -233,7 +273,7 @@ void JarReader::cacheAllResources(
                 std::string resourcePath = filePath.substr(resStart, filePath.size() - resStart - 5);
                 std::string cacheKey = namespaceName + ":" + resourcePath;
                 if (atlasCache.find(cacheKey) == atlasCache.end()) {
-                    std::string content = this->getFileContent(archiveFilePath);
+                    std::string content = readText();
                     if (!content.empty()) {
                         try {
                             atlasCache.emplace(cacheKey, nlohmann::json::parse(content));
@@ -253,7 +293,7 @@ void JarReader::cacheAllResources(
                 std::string resourcePath = filePath.substr(resStart);
                 std::string cacheKey = namespaceName + ":" + resourcePath;
                 if (!modelAssetCache.contains(cacheKey)) {
-                    modelAssetCache.emplace(cacheKey, getFileContent(archiveFilePath));
+                    modelAssetCache.emplace(cacheKey, readText());
                 }
                 continue;
             }
@@ -274,7 +314,7 @@ void JarReader::cacheAllResources(
                          // 防止重复处理
                          if (colormapCache.find(cacheKey) == colormapCache.end()) {
                              // 读取二进制数据
-                             auto data = getBinaryFileContent(archiveFilePath);
+                             auto data = readBinary();
                              if (!data.empty()) {
                                  colormapCache.emplace(cacheKey, std::move(data));
                              }
@@ -286,16 +326,9 @@ void JarReader::cacheAllResources(
                     std::string cacheKey = namespaceName + ":" + resourcePath;
 
                     if (textureCache.find(cacheKey) == textureCache.end()) {
-                        zip_file_t* file = zip_fopen_index(zipFile, i, 0);
-                        if (file) {
-                            zip_stat_t fileStat;
-                            if (zip_stat_index(zipFile, i, 0, &fileStat) == 0) {
-                                std::vector<unsigned char> data(fileStat.size);
-                                if (zip_fread(file, data.data(), fileStat.size) == fileStat.size) {
-                                    textureCache.emplace(cacheKey, std::move(data));
-                                }
-                            }
-                            zip_fclose(file);
+                        std::vector<unsigned char> data;
+                        if (readEntryAtIndex(zipFile, i, data)) {
+                            textureCache.emplace(cacheKey, std::move(data));
                         }
                     }
                 }
@@ -310,7 +343,7 @@ void JarReader::cacheAllResources(
                 std::string cacheKey = namespaceName + ":" + resourcePath;
 
                 if (blockstateCache.find(cacheKey) == blockstateCache.end()) {
-                    std::string content = this->getFileContent(archiveFilePath);
+                    std::string content = readText();
                     if (!content.empty()) {
                         try {
                             blockstateCache.emplace(cacheKey, nlohmann::json::parse(content));
@@ -331,7 +364,7 @@ void JarReader::cacheAllResources(
                 std::string cacheKey = namespaceName + ":" + modelPath;
 
                 if (modelCache.find(cacheKey) == modelCache.end()) {
-                    std::string content = this->getFileContent(archiveFilePath);
+                    std::string content = readText();
                     if (!content.empty()) {
                         try {
                             modelCache.emplace(cacheKey, nlohmann::json::parse(content));
@@ -356,7 +389,7 @@ void JarReader::cacheAllResources(
                     std::string cacheKey = namespaceName + ":" + metaPath;
 
                     if (mcmetaCache.find(cacheKey) == mcmetaCache.end()) {
-                        std::string content = this->getFileContent(archiveFilePath);
+                        std::string content = readText();
                         if (!content.empty()) {
                             try {
                                 mcmetaCache.emplace(cacheKey, nlohmann::json::parse(content));
@@ -371,7 +404,7 @@ void JarReader::cacheAllResources(
                     std::string cacheKey = namespaceName + ":" + metaPath;
 
                     if (mcmetaCache.find(cacheKey) == mcmetaCache.end()) {
-                        std::string content = this->getFileContent(archiveFilePath);
+                        std::string content = readText();
                         if (!content.empty()) {
                             try {
                                 mcmetaCache.emplace(cacheKey, nlohmann::json::parse(content));
@@ -395,7 +428,7 @@ void JarReader::cacheAllResources(
                     // resourcePath 形如 optifine/ctm/glass/glass/glass
                     std::string cacheKey = namespaceName + ":" + resourcePath + ".properties";
                     if (ctmPropertiesCache.find(cacheKey) == ctmPropertiesCache.end()) {
-                        std::string content = this->getFileContent(archiveFilePath);
+                        std::string content = readText();
                         if (!content.empty()) {
                             ctmPropertiesCache.emplace(cacheKey, std::move(content));
                         }
@@ -410,16 +443,9 @@ void JarReader::cacheAllResources(
                     // resourcePath 形如 optifine/ctm/glass/glass/0
                     std::string cacheKey = namespaceName + ":" + resourcePath;
                     if (ctmTexturesCache.find(cacheKey) == ctmTexturesCache.end()) {
-                        zip_file_t* file = zip_fopen_index(zipFile, i, 0);
-                        if (file) {
-                            zip_stat_t fileStat;
-                            if (zip_stat_index(zipFile, i, 0, &fileStat) == 0) {
-                                std::vector<unsigned char> data(fileStat.size);
-                                if (zip_fread(file, data.data(), fileStat.size) == fileStat.size) {
-                                    ctmTexturesCache.emplace(cacheKey, std::move(data));
-                                }
-                            }
-                            zip_fclose(file);
+                        std::vector<unsigned char> data;
+                        if (readEntryAtIndex(zipFile, i, data)) {
+                            ctmTexturesCache.emplace(cacheKey, std::move(data));
                         }
                     }
                 }
@@ -435,7 +461,7 @@ void JarReader::cacheAllResources(
                         ? metaPathWithPng.substr(0, pngPos) : metaPathWithPng;
                     std::string cacheKey = namespaceName + ":" + metaPath;
                     if (mcmetaCache.find(cacheKey) == mcmetaCache.end()) {
-                        std::string content = this->getFileContent(archiveFilePath);
+                        std::string content = readText();
                         if (!content.empty()) {
                             try {
                                 mcmetaCache.emplace(cacheKey, nlohmann::json::parse(content));
@@ -479,7 +505,7 @@ void JarReader::cacheAllResources(
 
                 if (biomeCache.find(cacheKey) == biomeCache.end()) {
                     // 读取并解析 JSON
-                    std::string content = getFileContent(archiveFilePath);
+                    std::string content = readText();
                     if (!content.empty()) {
                         try {
                             biomeCache.emplace(cacheKey, nlohmann::json::parse(content));

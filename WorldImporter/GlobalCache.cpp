@@ -33,6 +33,7 @@
 #include "include/json.hpp"
 #include <fstream>
 #include <locale>
+#include <algorithm>
 
 #ifdef _WIN32
 extern "C" {
@@ -239,9 +240,29 @@ void InitializeAllCaches() {
             }
         }
 
-        size_t taskCount = jarPaths.size();
+        const auto scanStart = std::chrono::high_resolution_clock::now();
+        const unsigned hardwareThreads = std::max(1u, std::thread::hardware_concurrency());
+        struct ScanTask {
+            size_t jarIndex;
+            size_t rangeIndex;
+            size_t rangeCount;
+        };
+        std::vector<ScanTask> scanTasks;
+        // A few large archives otherwise leave the jar worker pool idle. Each
+        // range gets its own reader/handle; no libzip handle crosses threads.
+        const size_t rangesPerLargeJar = std::min<size_t>(4, hardwareThreads / jarPaths.size());
+        for (size_t jarIndex = 0; jarIndex < jarPaths.size(); ++jarIndex) {
+            std::error_code error;
+            const auto bytes = std::filesystem::file_size(jarPaths[jarIndex], error);
+            const size_t ranges = !error && bytes >= 8 * 1024 * 1024
+                ? std::max<size_t>(1, rangesPerLargeJar) : 1;
+            for (size_t range = 0; range < ranges; ++range) {
+                scanTasks.push_back({jarIndex, range, ranges});
+            }
+        }
+        const size_t taskCount = scanTasks.size();
 
-        // 用 vector 保存所有任务的结果,顺序与 jarPaths 和 jarOrder 对应
+        // Results stay in jar priority order, then ascending entry range order.
         std::vector<TaskResult> taskResults(taskCount);
         std::atomic<size_t> atomicIndex{ 0 };
         // 配置里的原版 jar（jarOrder 里 id 为 "minecraft"）打不开时必须失败退出，
@@ -255,8 +276,9 @@ void InitializeAllCaches() {
                 if (idx >= taskCount)
                     break;  // 所有任务已分配完毕
 
-                std::wstring jarPath = jarPaths[idx];
-                std::string currentModId = GlobalCache::jarOrder[idx];
+                const auto& task = scanTasks[idx];
+                const std::wstring& jarPath = jarPaths[task.jarIndex];
+                const std::string& currentModId = GlobalCache::jarOrder[task.jarIndex];
 
                 JarReader reader(jarPath);
                 if (!reader.open()) {
@@ -283,7 +305,8 @@ void InitializeAllCaches() {
                         taskResults[idx].localColormaps,
                         taskResults[idx].localCtmProperties,
                         taskResults[idx].localCtmTextures,
-                        taskResults[idx].localAtlases
+                        taskResults[idx].localAtlases,
+                        task.rangeIndex, task.rangeCount
                     );
                 } catch (const std::exception& e) {
                     std::cerr << "Error processing jar file for " << currentModId 
@@ -292,8 +315,8 @@ void InitializeAllCaches() {
             }
             };
 
-        // 创建工作线程池
-        const unsigned numThreads = std::max<unsigned>(1, std::thread::hardware_concurrency());
+        // Do not start idle workers when there are fewer scan tasks than CPUs.
+        const unsigned numThreads = static_cast<unsigned>(std::min<size_t>(hardwareThreads, taskCount));
         std::vector<std::thread> threads;
         threads.reserve(numThreads);
         GlobalCache::stopFlag.store(false);
@@ -315,20 +338,21 @@ void InitializeAllCaches() {
             throw std::runtime_error(std::string("Failed to open vanilla jarPath: ") + config.jarPath);
         }
 
+        const auto scanEnd = std::chrono::high_resolution_clock::now();
+
         // 按照加载顺序(优先级)合并资源到全局缓存
-        // 后加载的资源优先级更高(minecraft原版资源优先级最高)
+        // Preserve the existing first-insert-wins cache/index precedence.
+        // Earlier entry ranges win collisions within the same jar.
         {
             std::lock_guard<std::shared_mutex> lock(GlobalCache::cacheMutex);
             for (size_t i = 0; i < taskCount; ++i) {
-                std::string currentModId = GlobalCache::jarOrder[i];
+                const std::string& currentModId = GlobalCache::jarOrder[scanTasks[i].jarIndex];
                 TaskResult& result = taskResults[i];
 
                 // 合并材质
                 for (auto& pair : result.localTextures) {
                     std::string cacheKey = currentModId + ":" + pair.first;
-                    if (GlobalCache::textures.find(cacheKey) == GlobalCache::textures.end()) {
-                        GlobalCache::textures.insert({ cacheKey, std::move(pair.second) });
-                    }
+                    GlobalCache::textures.try_emplace(cacheKey, std::move(pair.second));
                     // 构建快速查找索引: "textures:<namespace>:<path>" -> cacheKey
                     size_t firstColon = pair.first.find(':');
                     if (firstColon != std::string::npos) {
@@ -339,9 +363,7 @@ void InitializeAllCaches() {
                 // 合并方块状态
                 for (auto& pair : result.localBlockstates) {
                     std::string cacheKey = currentModId + ":" + pair.first;
-                    if (GlobalCache::blockstates.find(cacheKey) == GlobalCache::blockstates.end()) {
-                        GlobalCache::blockstates.insert({ cacheKey, std::move(pair.second) });
-                    }
+                    GlobalCache::blockstates.try_emplace(cacheKey, std::move(pair.second));
                     size_t firstColon = pair.first.find(':');
                     if (firstColon != std::string::npos) {
                         std::string indexKey = std::string("blockstates:") + pair.first;
@@ -351,9 +373,7 @@ void InitializeAllCaches() {
                 // 合并模型
                 for (auto& pair : result.localModels) {
                     std::string cacheKey = currentModId + ":" + pair.first;
-                    if (GlobalCache::models.find(cacheKey) == GlobalCache::models.end()) {
-                        GlobalCache::models.insert({ cacheKey, std::move(pair.second) });
-                    }
+                    GlobalCache::models.try_emplace(cacheKey, std::move(pair.second));
                     size_t firstColon = pair.first.find(':');
                     if (firstColon != std::string::npos) {
                         std::string indexKey = std::string("models:") + pair.first;
@@ -368,9 +388,7 @@ void InitializeAllCaches() {
                 // 合并生物群系
                 for (auto& pair : result.localBiomes) {
                     std::string cacheKey = currentModId + ":" + pair.first;
-                    if (GlobalCache::biomes.find(cacheKey) == GlobalCache::biomes.end()) {
-                        GlobalCache::biomes.insert({ cacheKey, std::move(pair.second) });
-                    }
+                    GlobalCache::biomes.try_emplace(cacheKey, std::move(pair.second));
                     size_t firstColon = pair.first.find(':');
                     if (firstColon != std::string::npos) {
                         std::string indexKey = std::string("biomes:") + pair.first;
@@ -380,9 +398,7 @@ void InitializeAllCaches() {
                 // 合并颜色映射
                 for (auto& pair : result.localColormaps) {
                     std::string cacheKey = currentModId + ":" + pair.first;
-                    if (GlobalCache::colormaps.find(cacheKey) == GlobalCache::colormaps.end()) {
-                        GlobalCache::colormaps.insert({ cacheKey, std::move(pair.second) });
-                    }
+                    GlobalCache::colormaps.try_emplace(cacheKey, std::move(pair.second));
                     size_t firstColon = pair.first.find(':');
                     if (firstColon != std::string::npos) {
                         std::string indexKey = std::string("colormaps:") + pair.first;
@@ -392,9 +408,7 @@ void InitializeAllCaches() {
                 // 合并材质元数据
                 for (auto& pair : result.localMcmetas) {
                     std::string cacheKey = currentModId + ":" + pair.first;
-                    if (GlobalCache::mcmetaCache.find(cacheKey) == GlobalCache::mcmetaCache.end()) {
-                        GlobalCache::mcmetaCache.insert({ cacheKey, std::move(pair.second) });
-                    }
+                    GlobalCache::mcmetaCache.try_emplace(cacheKey, std::move(pair.second));
                     size_t firstColon = pair.first.find(':');
                     if (firstColon != std::string::npos) {
                         std::string indexKey = std::string("mcmetas:") + pair.first;
@@ -404,9 +418,7 @@ void InitializeAllCaches() {
                 // 合并 CTM properties
                 for (auto& pair : result.localCtmProperties) {
                     std::string cacheKey = currentModId + ":" + pair.first;
-                    if (GlobalCache::ctmProperties.find(cacheKey) == GlobalCache::ctmProperties.end()) {
-                        GlobalCache::ctmProperties.insert({ cacheKey, std::move(pair.second) });
-                    }
+                    GlobalCache::ctmProperties.try_emplace(cacheKey, std::move(pair.second));
                     size_t firstColon = pair.first.find(':');
                     if (firstColon != std::string::npos) {
                         std::string indexKey = std::string("ctmproperties:") + pair.first;
@@ -416,9 +428,7 @@ void InitializeAllCaches() {
                 // 合并 CTM 贴图
                 for (auto& pair : result.localCtmTextures) {
                     std::string cacheKey = currentModId + ":" + pair.first;
-                    if (GlobalCache::ctmTextures.find(cacheKey) == GlobalCache::ctmTextures.end()) {
-                        GlobalCache::ctmTextures.insert({ cacheKey, std::move(pair.second) });
-                    }
+                    GlobalCache::ctmTextures.try_emplace(cacheKey, std::move(pair.second));
                     size_t firstColon = pair.first.find(':');
                     if (firstColon != std::string::npos) {
                         std::string indexKey = std::string("ctmtextures:") + pair.first;
@@ -428,9 +438,7 @@ void InitializeAllCaches() {
                 // 合并图集定义
                 for (auto& pair : result.localAtlases) {
                     std::string cacheKey = currentModId + ":" + pair.first;
-                    if (GlobalCache::atlases.find(cacheKey) == GlobalCache::atlases.end()) {
-                        GlobalCache::atlases.insert({ cacheKey, std::move(pair.second) });
-                    }
+                    GlobalCache::atlases.try_emplace(cacheKey, std::move(pair.second));
                 }
             }
         }
@@ -450,6 +458,8 @@ void InitializeAllCaches() {
             << " - Atlases: " << GlobalCache::atlases.size() << "\n"
             << " - Time: " << ms << "ms" << std::endl;
 
+        const auto postStart = std::chrono::high_resolution_clock::now();
+
         // 展开各命名空间的图集目录映射(供 CTM matchTiles 解析虚拟贴图路径)
         LoadAtlasDirPrefixes(GlobalCache::atlases);
         // 建贴图名解析表(InitializeCtmRules 会查它来判定候选路径是否真实存在)
@@ -459,5 +469,12 @@ void InitializeAllCaches() {
         InitializeCtmRules();
         InitializeModCT();
         InitializeCableMeshers();
+        const auto postEnd = std::chrono::high_resolution_clock::now();
+        auto elapsedMs = [](auto from, auto to) {
+            return std::chrono::duration<double, std::milli>(to - from).count();
+        };
+        std::cout << "[Cache timing] jar scan ms=" << elapsedMs(scanStart, scanEnd)
+                  << " merge ms=" << elapsedMs(scanEnd, end)
+                  << " CTM-post ms=" << elapsedMs(postStart, postEnd) << '\n';
         });
 }

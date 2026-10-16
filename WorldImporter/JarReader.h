@@ -18,6 +18,8 @@ public:
         Mod
     };
 
+    // Optional contiguous entry range for independent readers of the same jar.
+    // Merge ranges in increasing rangeIndex to retain first-entry precedence.
 	void cacheAllResources(
 		std::unordered_map<std::string, std::vector<unsigned char>>& textureCache,
 		std::unordered_map<std::string, nlohmann::json>& blockstateCache,
@@ -28,7 +30,8 @@ public:
 		std::unordered_map<std::string, std::vector<unsigned char>>& colormapCache,
 		std::unordered_map<std::string, std::string>& ctmPropertiesCache,
 		std::unordered_map<std::string, std::vector<unsigned char>>& ctmTexturesCache,
-		std::unordered_map<std::string, nlohmann::json>& atlasCache);
+		std::unordered_map<std::string, nlohmann::json>& atlasCache,
+        size_t rangeIndex = 0, size_t rangeCount = 1);
 
     // 构造函数,接受 .jar 文件路径
     JarReader(const std::wstring& jarFilePath);
