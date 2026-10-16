@@ -624,9 +624,22 @@ void ModelDeduplicator::GreedyMesh(ModelData& data) {
     auto t3_start = Clock::now();
     const size_t vertCount = data.vertices.size() / 3;
     VertexIndexMap vertexIndices(vertCount);
-    for (size_t vi = 0; vi < vertCount; ++vi) {
-        vertexIndices.tryEmplace(MakeVertexKey(data.vertices[3*vi],
-            data.vertices[3*vi + 1], data.vertices[3*vi + 2]), static_cast<int>(vi));
+    // Prepare independent keys and cache hints before ordered insertion, as in
+    // DeduplicateVertices. Publish the original vi, preserving index identity.
+    constexpr size_t batchSize = 64;
+    std::array<VertexKey, batchSize> keys;
+    std::array<size_t, batchSize> hashes;
+    for (size_t base = 0; base < vertCount; base += batchSize) {
+        const size_t size = std::min(batchSize, vertCount - base);
+        for (size_t j = 0; j < size; ++j) {
+            const size_t vi = base + j;
+            keys[j] = MakeVertexKey(data.vertices[3*vi],
+                data.vertices[3*vi + 1], data.vertices[3*vi + 2]);
+        }
+        for (size_t j = 0; j < size; ++j)
+            hashes[j] = vertexIndices.prepare(keys[j]);
+        for (size_t j = 0; j < size; ++j)
+            vertexIndices.tryEmplace(keys[j], static_cast<int>(base + j), hashes[j]);
     }
     auto t3_end = Clock::now();
     std::cerr << "GreedyMesh Step3 vertex hash: " << Ms(t3_end - t3_start).count() << " ms\n";
