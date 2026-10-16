@@ -482,7 +482,7 @@ void CreateSharedMtlFile(std::unordered_map<std::string, std::string> uniqueMate
                     texturePath += ".png";
                 }
                 mtlFile << "map_Kd " << texturePath << "\n";
-                mtlFile << "map_d " << texturePath << "\n";
+                // Only emit map_d for a distinct opacity texture; Crafter uses map_Kd's alpha.
             }
 
             mtlFile << "\n";
@@ -765,7 +765,7 @@ void createMtlFile(const ModelData& data, const std::string& mtlFileName) {
                     texturePath += ".png";
                 }
                 mtlFile << "map_Kd " << texturePath << "\n";
-                mtlFile << "map_d " << texturePath << "\n";
+                // Only emit map_d for a distinct opacity texture; Crafter uses map_Kd's alpha.
             }
 
             mtlFile << "\n";
