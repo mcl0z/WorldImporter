@@ -10,7 +10,6 @@
 #include <stack>
 #include <string>
 #include <set>
-#include <unordered_set>
 #include <unordered_map>
 #include <memory_resource>
 #include "TaskMonitor.h"
@@ -91,6 +90,42 @@ namespace {
             slots[pos] = Slot{key, index};
             ++count;
             return {index, true};
+        }
+    };
+
+    // Membership only: callers publish faces in input order, never slot order.
+    class FaceKeySet {
+        struct Slot {
+            FaceKey key;
+            bool occupied = false;
+        };
+        std::vector<Slot> slots;
+
+        static size_t capacityFor(size_t expected) {
+            size_t capacity = 16;
+            // The input face count bounds insertions, so no rehash is needed.
+            // Leave empty slots for terminating probes, even for unique faces.
+            while (expected >= capacity - capacity / 8) {
+                if (capacity > std::vector<Slot>().max_size() / 2)
+                    throw std::length_error("face key table too large");
+                capacity *= 2;
+            }
+            return capacity;
+        }
+
+    public:
+        explicit FaceKeySet(size_t expected) : slots(capacityFor(expected)) {}
+
+        bool insert(const FaceKey& key) {
+            const size_t mask = slots.size() - 1;
+            size_t pos = FaceKeyHasher{}(key) & mask;
+            while (slots[pos].occupied) {
+                if (slots[pos].key == key) return false;
+                pos = (pos + 1) & mask;
+            }
+            slots[pos].key = key;
+            slots[pos].occupied = true;
+            return true;
         }
     };
 }
@@ -293,11 +328,8 @@ void ModelDeduplicator::DeduplicateUV(ModelData& model) {
 }
 
 void ModelDeduplicator::DeduplicateFaces(ModelData& data) {
-    // Insert each canonical key immediately and keep its first face. All hash
-    // nodes live until this pass ends, so release their storage together.
-    std::pmr::monotonic_buffer_resource faceStorage;
-    std::pmr::unordered_set<FaceKey, FaceKeyHasher> kept{&faceStorage};
-    kept.reserve(data.faces.size());
+    // Inline keys avoid per-face nodes while preserving first-face publication.
+    FaceKeySet kept(data.faces.size());
     std::vector<Face> newFaces;
     newFaces.reserve(data.faces.size());
 
@@ -326,7 +358,7 @@ void ModelDeduplicator::DeduplicateFaces(ModelData& data) {
             sortedUVs[k] = canonical[k].second;
         }
         int matIndex = config.strictDeduplication ? face.materialIndex : -1;
-        if (kept.insert(FaceKey{ sortedVerts, sortedUVs, matIndex }).second) {
+        if (kept.insert(FaceKey{ sortedVerts, sortedUVs, matIndex })) {
             newFaces.push_back(face);
         }
     }
