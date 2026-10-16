@@ -203,6 +203,41 @@ void checkGreedyParallelEquivalence() {
         require(sameFace(data.faces[i], serial.faces[i]), "parallel greedy face order/attributes differ");
     }
 }
+
+void checkGreedyEdgeClique() {
+    auto data = adjacentQuads();
+    const auto last = data.faces.back();
+    data.faces.pop_back();
+    // Put the two eligible neighbors in distant face chunks. Ineligible faces
+    // between them must not hide their shared edge: every occurrence connects
+    // to every earlier one, rather than only the most recent incident face.
+    Face invalid = data.faces.front();
+    invalid.uvIndices[0] = -1;
+    Face repeated = invalid;
+    repeated.vertexIndices = {1, 5, 1, 5}; // The same undirected edge four times.
+    for (int i = 0; i < 24; ++i) {
+        data.faces.push_back(invalid);
+        data.faces.push_back(repeated);
+    }
+    data.faces.push_back(last);
+    const auto original = data;
+    auto serial = data;
+    SetModelThreadBudget(2);
+    ModelDeduplicator::GreedyMesh(serial);
+    SetModelThreadBudget(1);
+    ModelDeduplicator::GreedyMesh(data);
+    require(data.faces.size() == original.faces.size() - 1,
+            "non-manifold edge lost eligible neighbors across chunks");
+    require(data.faces[0].vertexIndices == std::array<int, 4>{4, 1, 3, 0},
+            "cross-chunk neighbors did not merge with stable winding");
+    require(data.vertices == serial.vertices && data.uvCoordinates == serial.uvCoordinates &&
+            data.faces.size() == serial.faces.size(), "edge clique parallel geometry differs");
+    for (size_t i = 0; i < data.faces.size(); ++i) {
+        require(sameFace(data.faces[i], serial.faces[i]), "edge clique face order/attributes differ");
+        if (i > 0) require(sameFace(data.faces[i], original.faces[i]),
+                           "ineligible/repeated-edge face changed");
+    }
+}
 }
 
 int main() {
@@ -213,6 +248,7 @@ int main() {
         checkFaceDeduplication(false);
         checkGreedyVertexIndices();
         checkGreedyParallelEquivalence();
+        checkGreedyEdgeClique();
         std::cout << "Model deduplicator tests passed\n";
         return 0;
     } catch (const std::exception& error) {
