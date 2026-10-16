@@ -346,9 +346,8 @@ void ModelDeduplicator::GreedyMesh(ModelData& data) {
     auto t1 = Clock::now();
     std::cerr << "GreedyMesh Step1 normals: " << Ms(t1 - t0).count() << " ms\n";
 
-    // 2. Hash undirected edges instead of sorting all four edge occurrences
-    // per face. A flat chain stores every incident face, including duplicates
-    // on degenerate faces and all faces on non-manifold edges.
+    // 2. Build edge chains in contiguous face chunks, then replay occurrences
+    // in face/edge order. Keep duplicates and the full non-manifold clique.
     struct EdgeKey { int v1, v2; bool operator==(const EdgeKey& o) const { return v1==o.v1 && v2==o.v2; } };
     struct EdgeKeyHasher { size_t operator()(const EdgeKey& e) const noexcept {
         const std::uint64_t packed = (static_cast<std::uint64_t>(static_cast<std::uint32_t>(e.v1)) << 32)
@@ -362,30 +361,79 @@ void ModelDeduplicator::GreedyMesh(ModelData& data) {
         std::vector<std::pair<int, int>> adjacentFaces;
         adjacentFaces.reserve(faceCount * 4);
         {
-            std::pmr::monotonic_buffer_resource edgeStorage;
-            std::pmr::unordered_map<EdgeKey, size_t, EdgeKeyHasher> edgeHeads{&edgeStorage};
-            edgeHeads.reserve(faceCount * 4);
             const size_t noEdge = static_cast<size_t>(-1);
-            struct EdgeOccurrence { int face; size_t next; };
-            std::vector<EdgeOccurrence> edgeOccurrences;
-            edgeOccurrences.reserve(faceCount * 4);
-            for (size_t i = 0; i < faceCount; ++i) {
-                const auto& vs = data.faces[i].vertexIndices;
-                for (int k = 0; k < 4; ++k) {
-                    const int a = vs[k], b = vs[(k + 1) % 4];
-                    const EdgeKey edge{std::min(a, b), std::max(a, b)};
-                    auto [it, inserted] = edgeHeads.try_emplace(edge, noEdge);
-                    // Each new occurrence connects to all earlier occurrences
-                    // on this edge. Emit both directions below, preserving the
-                    // old clique even for repeated/non-manifold edges.
-                    for (size_t prev = it->second; prev != noEdge; prev = edgeOccurrences[prev].next) {
-                        const int nb = edgeOccurrences[prev].face;
-                        adjacentFaces.emplace_back(static_cast<int>(i), nb);
-                        ++faceAdjOffsets[i + 1];
-                        ++faceAdjOffsets[nb + 1];
+            struct EdgeChain { size_t head, tail; };
+            struct PartialEdges {
+                std::pmr::monotonic_buffer_resource storage;
+                std::pmr::unordered_map<EdgeKey, EdgeChain, EdgeKeyHasher> chains{&storage};
+            };
+            const unsigned numThreads = static_cast<unsigned>(std::min<size_t>(DedupThreadCount(), faceCount));
+            const size_t chunk = (faceCount + numThreads - 1) / numThreads;
+            std::vector<PartialEdges> partials(numThreads);
+            // Occurrence 4*i+k belongs to edge k of face i. Workers write only
+            // their own chunk; the face index need not be stored separately.
+            std::vector<size_t> previousOccurrence(faceCount * 4);
+            auto buildPartial = [&](unsigned t) {
+                const size_t start = t * chunk;
+                const size_t end = std::min(start + chunk, faceCount);
+                auto& chains = partials[t].chains;
+                if (start >= end) return;
+                chains.reserve((end - start) * 4);
+                for (size_t i = start; i < end; ++i) {
+                    const auto& vs = data.faces[i].vertexIndices;
+                    for (int k = 0; k < 4; ++k) {
+                        const int a = vs[k], b = vs[(k + 1) % 4];
+                        const EdgeKey edge{std::min(a, b), std::max(a, b)};
+                        const size_t occurrence = i * 4 + k;
+                        auto [it, inserted] = chains.try_emplace(edge, EdgeChain{noEdge, occurrence});
+                        previousOccurrence[occurrence] = it->second.head;
+                        it->second.head = occurrence;
                     }
-                    edgeOccurrences.push_back({static_cast<int>(i), it->second});
-                    it->second = edgeOccurrences.size() - 1;
+                }
+            };
+            auto runChunks = [&](auto work) {
+                if (numThreads == 1) {
+                    work(0);
+                    return;
+                }
+                std::vector<std::thread> workers;
+                workers.reserve(numThreads);
+                for (unsigned t = 0; t < numThreads; ++t) {
+                    if (t * chunk >= faceCount) break;
+                    workers.emplace_back(work, t);
+                }
+                for (auto& worker : workers) worker.join();
+            };
+            runChunks(buildPartial);
+
+            // Concatenate chains in ascending chunk (hence face) order: the
+            // earliest local occurrence links to the latest earlier chunk's
+            // head. Maps are immutable after build, and each worker patches
+            // only its own tails, so these deterministic links can be parallel.
+            // No unordered-map iteration order reaches adjacency emission.
+            if (numThreads > 1) runChunks([&](unsigned t) {
+                for (const auto& [edge, chain] : partials[t].chains) {
+                    for (unsigned earlier = t; earlier > 0; --earlier) {
+                        const auto& chains = partials[earlier - 1].chains;
+                        const auto it = chains.find(edge);
+                        if (it != chains.end()) {
+                            previousOccurrence[chain.tail] = it->second.head;
+                            break;
+                        }
+                    }
+                }
+            });
+
+            // Serial replay preserves the old left-to-right face/edge walk
+            // and newest-to-oldest neighbor order exactly, including repeated
+            // edges on one face. Emit both directions via the offsets below.
+            for (size_t occurrence = 0; occurrence < previousOccurrence.size(); ++occurrence) {
+                const int face = static_cast<int>(occurrence / 4);
+                for (size_t prev = previousOccurrence[occurrence]; prev != noEdge; prev = previousOccurrence[prev]) {
+                    const int nb = static_cast<int>(prev / 4);
+                    adjacentFaces.emplace_back(face, nb);
+                    ++faceAdjOffsets[face + 1];
+                    ++faceAdjOffsets[nb + 1];
                 }
             }
         }
