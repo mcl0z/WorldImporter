@@ -1,5 +1,6 @@
 #include "ModelDeduplicator.h"
 
+#include <algorithm>
 #include <iostream>
 #include <map>
 #include <stdexcept>
@@ -211,6 +212,51 @@ void checkGreedyVertexIndices() {
             "merged face attributes changed");
 }
 
+void checkGreedyBucketOrder() {
+    SetModelThreadBudget(2);
+    for (bool wideFirst : {false, true}) {
+        for (bool incompatibleFirst : {false, true}) {
+            auto data = adjacentQuads();
+            // Two neighbors share the same min edge but overlap each other.
+            // Only the lower-index compatible neighbor may extend the first
+            // face; the other must remain in publication order on later passes.
+            data.vertices.insert(data.vertices.end(), {1, 0, 0, 1, 1, 0});
+            data.uvCoordinates.insert(data.uvCoordinates.end(), {0, 0, 2, 0, 2, 1, 0, 1});
+            const Face narrow = data.faces.back();
+            Face wide = narrow;
+            wide.vertexIndices = {5, 6, 7, 2};
+            wide.uvIndices = {4, 5, 6, 7};
+            data.faces.resize(1);
+            if (incompatibleFirst) {
+                Face mirrored = narrow;
+                mirrored.uvIndices = {3, 2, 1, 0};
+                data.faces.push_back(mirrored);
+            }
+            data.faces.push_back(wideFirst ? wide : narrow);
+            data.faces.push_back(wideFirst ? narrow : wide);
+            const auto originalVertices = data.vertices;
+            const size_t originalUVs = data.uvCoordinates.size();
+            ModelDeduplicator::GreedyMesh(data);
+            require(data.vertices == originalVertices, "bucket merge appended/reordered vertices");
+            require(data.faces.size() == (incompatibleFirst ? 3u : 2u),
+                    "overlapping or incompatible bucket neighbors merged");
+            const std::array<int, 4> merged = wideFirst
+                ? std::array<int, 4>{4, 1, 6, 7} : std::array<int, 4>{4, 1, 3, 0};
+            const std::array<int, 4> leftover = wideFirst
+                ? std::array<int, 4>{2, 5, 3, 0} : std::array<int, 4>{2, 5, 6, 7};
+            require(data.faces.front().vertexIndices == merged,
+                    "merge did not pick the lowest-index compatible bucket neighbor");
+            require(data.faces.back().vertexIndices == leftover,
+                    "overlapping bucket neighbor lost publication order");
+            const std::vector<float> mergedUVs = wideFirst
+                ? std::vector<float>{0, 1, 0, 0, 3, 0, 3, 1}
+                : std::vector<float>{0, 1, 0, 0, 2, 0, 2, 1};
+            require(std::equal(mergedUVs.begin(), mergedUVs.end(), data.uvCoordinates.begin() + originalUVs),
+                    "bucket merge changed anchor UV mapping");
+        }
+    }
+}
+
 void checkGreedyParallelEquivalence() {
     auto tile = adjacentQuads();
     ModelData data;
@@ -291,6 +337,7 @@ int main() {
         checkFaceDeduplication(true);
         checkFaceDeduplication(false);
         checkGreedyVertexIndices();
+        checkGreedyBucketOrder();
         checkGreedyParallelEquivalence();
         checkGreedyEdgeClique();
         std::cout << "Model deduplicator tests passed\n";
