@@ -11,7 +11,6 @@
 #include <string>
 #include <set>
 #include <unordered_map>
-#include <memory_resource>
 #include "TaskMonitor.h"
 #include <future> // 新增: 用于 std::async, std::future
 #include <mutex>  // 新增: 用于 std::mutex, std::lock_guard
@@ -432,11 +431,6 @@ void ModelDeduplicator::GreedyMesh(ModelData& data) {
     // 2. Build edge chains in contiguous face chunks, then replay occurrences
     // in face/edge order. Keep duplicates and the full non-manifold clique.
     struct EdgeKey { int v1, v2; bool operator==(const EdgeKey& o) const { return v1==o.v1 && v2==o.v2; } };
-    struct EdgeKeyHasher { size_t operator()(const EdgeKey& e) const noexcept {
-        const std::uint64_t packed = (static_cast<std::uint64_t>(static_cast<std::uint32_t>(e.v1)) << 32)
-                                  | static_cast<std::uint32_t>(e.v2);
-        return std::hash<std::uint64_t>()(packed);
-    }};
     auto t2_start = Clock::now();
     std::vector<size_t> faceAdjOffsets(faceCount + 1, 0);
     std::vector<int> faceAdj;
@@ -447,8 +441,67 @@ void ModelDeduplicator::GreedyMesh(ModelData& data) {
             const size_t noEdge = static_cast<size_t>(-1);
             struct EdgeChain { size_t head, tail; };
             struct PartialEdges {
-                std::pmr::monotonic_buffer_resource storage;
-                std::pmr::unordered_map<EdgeKey, EdgeChain, EdgeKeyHasher> chains{&storage};
+                struct Slot {
+                    EdgeKey edge;
+                    EdgeChain chain;
+                    // Only head is read in an empty slot. Initialize the key
+                    // and tail on insertion instead of clearing the full table.
+                    Slot() noexcept { chain.head = static_cast<size_t>(-1); }
+                };
+                std::vector<Slot> slots;
+                // Append only, in local first-occurrence order. Cross-chunk
+                // linking visits each key once without scanning empty slots.
+                std::vector<size_t> occupied;
+
+                void reserve(size_t expected) {
+                    size_t capacity = 16;
+                    // Four occurrences per input face bound all insertions;
+                    // no rehash can invalidate the occupied slot indices.
+                    while (expected >= capacity - capacity / 8) {
+                        if (capacity > slots.max_size() / 2)
+                            throw std::length_error("edge chain table too large");
+                        capacity *= 2;
+                    }
+                    slots.resize(capacity);
+                    occupied.reserve(expected);
+                }
+
+                size_t findSlot(const EdgeKey& edge) const {
+                    uint64_t hash = (static_cast<uint64_t>(static_cast<uint32_t>(edge.v1)) << 32)
+                                  | static_cast<uint32_t>(edge.v2);
+                    // Vertex indices have structured low bits. Avalanche both
+                    // endpoints before masking into the power-of-two table.
+                    hash ^= hash >> 30;
+                    hash *= 0xbf58476d1ce4e5b9ULL;
+                    hash ^= hash >> 27;
+                    hash *= 0x94d049bb133111ebULL;
+                    hash ^= hash >> 31;
+                    const size_t mask = slots.size() - 1;
+                    size_t pos = static_cast<size_t>(hash) & mask;
+                    while (slots[pos].chain.head != static_cast<size_t>(-1) &&
+                           !(slots[pos].edge == edge))
+                        pos = (pos + 1) & mask;
+                    return pos;
+                }
+
+                size_t prepend(const EdgeKey& edge, size_t occurrence) {
+                    const size_t pos = findSlot(edge);
+                    auto& slot = slots[pos];
+                    const size_t previous = slot.chain.head;
+                    if (previous == static_cast<size_t>(-1)) {
+                        slot.edge = edge;
+                        slot.chain.tail = occurrence;
+                        occupied.push_back(pos);
+                    }
+                    slot.chain.head = occurrence;
+                    return previous;
+                }
+
+                const EdgeChain* find(const EdgeKey& edge) const {
+                    if (slots.empty()) return nullptr;
+                    const auto& chain = slots[findSlot(edge)].chain;
+                    return chain.head == static_cast<size_t>(-1) ? nullptr : &chain;
+                }
             };
             const unsigned numThreads = static_cast<unsigned>(std::min<size_t>(DedupThreadCount(), faceCount));
             const size_t chunk = (faceCount + numThreads - 1) / numThreads;
@@ -459,7 +512,7 @@ void ModelDeduplicator::GreedyMesh(ModelData& data) {
             auto buildPartial = [&](unsigned t) {
                 const size_t start = t * chunk;
                 const size_t end = std::min(start + chunk, faceCount);
-                auto& chains = partials[t].chains;
+                auto& chains = partials[t];
                 if (start >= end) return;
                 chains.reserve((end - start) * 4);
                 for (size_t i = start; i < end; ++i) {
@@ -468,9 +521,7 @@ void ModelDeduplicator::GreedyMesh(ModelData& data) {
                         const int a = vs[k], b = vs[(k + 1) % 4];
                         const EdgeKey edge{std::min(a, b), std::max(a, b)};
                         const size_t occurrence = i * 4 + k;
-                        auto [it, inserted] = chains.try_emplace(edge, EdgeChain{noEdge, occurrence});
-                        previousOccurrence[occurrence] = it->second.head;
-                        it->second.head = occurrence;
+                        previousOccurrence[occurrence] = chains.prepend(edge, occurrence);
                     }
                 }
             };
@@ -491,16 +542,15 @@ void ModelDeduplicator::GreedyMesh(ModelData& data) {
 
             // Concatenate chains in ascending chunk (hence face) order: the
             // earliest local occurrence links to the latest earlier chunk's
-            // head. Maps are immutable after build, and each worker patches
+            // head. Tables are immutable after build, and each worker patches
             // only its own tails, so these deterministic links can be parallel.
-            // No unordered-map iteration order reaches adjacency emission.
+            // No hash-table iteration order reaches adjacency emission.
             if (numThreads > 1) runChunks([&](unsigned t) {
-                for (const auto& [edge, chain] : partials[t].chains) {
+                for (const size_t pos : partials[t].occupied) {
+                    const auto& [edge, chain] = partials[t].slots[pos];
                     for (unsigned earlier = t; earlier > 0; --earlier) {
-                        const auto& chains = partials[earlier - 1].chains;
-                        const auto it = chains.find(edge);
-                        if (it != chains.end()) {
-                            previousOccurrence[chain.tail] = it->second.head;
+                        if (const auto* earlierChain = partials[earlier - 1].find(edge)) {
+                            previousOccurrence[chain.tail] = earlierChain->head;
                             break;
                         }
                     }
