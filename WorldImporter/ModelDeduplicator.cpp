@@ -26,17 +26,6 @@
 #include <stdexcept>
 #undef max
 #undef min
-// 顶点量化:统一使用四舍五入(std::round)。
-// 历史实现中不同阶段分别采用 std::round 与 int(v*10000+0.5f)，
-// 负数舍入结果不一致，会导致贪心合面反查顶点键时命中失败。
-inline VertexKey MakeVertexKey(float x, float y, float z) {
-    return VertexKey{
-        static_cast<int>(std::round(x * 10000.0f)),
-        static_cast<int>(std::round(y * 10000.0f)),
-        static_cast<int>(std::round(z * 10000.0f))
-    };
-}
-
 /* 并发预算与去重线程数 */
 namespace {
     std::atomic<int> g_modelThreadBudget{1};
@@ -65,7 +54,18 @@ namespace {
 
         size_t findSlot(const VertexKey& key) const {
             const size_t mask = slots.size() - 1;
-            size_t pos = std::hash<VertexKey>{}(key) & mask;
+            // Pack x/y without overlap and spread z across all bits before
+            // one avalanche. Grid keys have many low zero bits; masking an
+            // unfinalized spatial hash would cluster them in a few slots.
+            const uint64_t xy = (static_cast<uint64_t>(static_cast<uint32_t>(key.x)) << 32) |
+                static_cast<uint32_t>(key.y);
+            uint64_t hash = xy ^ (static_cast<uint32_t>(key.z) * 0x9e3779b97f4a7c15ULL);
+            hash ^= hash >> 30;
+            hash *= 0xbf58476d1ce4e5b9ULL;
+            hash ^= hash >> 27;
+            hash *= 0x94d049bb133111ebULL;
+            hash ^= hash >> 31;
+            size_t pos = static_cast<size_t>(hash) & mask;
             while (slots[pos].index != -1 && slots[pos].key != key)
                 pos = (pos + 1) & mask;
             return pos;

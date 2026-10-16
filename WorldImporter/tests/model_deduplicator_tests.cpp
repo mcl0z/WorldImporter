@@ -1,7 +1,9 @@
 #include "ModelDeduplicator.h"
 
 #include <algorithm>
+#include <bit>
 #include <iostream>
+#include <limits>
 #include <map>
 #include <stdexcept>
 
@@ -11,6 +13,39 @@ Config config;
 namespace {
 void require(bool condition, const char* message) {
     if (!condition) throw std::runtime_error(message);
+}
+
+void checkVertexQuantization() {
+    auto check = [](float value) {
+        const int expected = static_cast<int>(std::round(value * 10000.0f));
+        const auto key = MakeVertexKey(value, -value, value);
+        require(key.x == expected && key.y == -expected && key.z == expected,
+                "vertex quantization differs from std::round");
+    };
+    // Every half-step boundary in the dense world's coordinate range, and
+    // the adjacent floats on both sides (including negative coordinates).
+    for (int bucket = -1000000; bucket <= 2100000; ++bucket) {
+        const float value = (bucket + 0.5f) / 10000.0f;
+        check(value);
+        check(std::nextafter(value, -std::numeric_limits<float>::infinity()));
+        check(std::nextafter(value, std::numeric_limits<float>::infinity()));
+    }
+    // Cover the wider defined int-key domain too, especially scaled floats
+    // that are already integral, signed zero, and subnormal coordinates.
+    for (float scaled : {0.0f, -0.0f, 0.5f, -0.5f, 8388607.5f, -8388607.5f,
+                         8388608.0f, -8388608.0f, 2147483520.0f, -2147483520.0f})
+        check(scaled / 10000.0f);
+    check(std::numeric_limits<float>::denorm_min());
+    check(-std::numeric_limits<float>::denorm_min());
+    uint32_t bits = 0x12345678u;
+    for (int i = 0; i < 1000000; ++i) {
+        bits ^= bits << 13;
+        bits ^= bits >> 17;
+        bits ^= bits << 5;
+        const float value = std::bit_cast<float>(bits);
+        if (std::isfinite(value) && std::fabs(value * 10000.0f) <= 2147483520.0f)
+            check(value);
+    }
 }
 
 void checkFirstWins(int budget) {
@@ -359,6 +394,7 @@ void checkGreedyEdgeClique() {
 
 int main() {
     try {
+        checkVertexQuantization();
         checkFirstWins(2); // Multiple model workers: remap serially.
         checkFirstWins(1); // Single model worker: use available hardware threads.
         checkVertexTableGrowth();
