@@ -390,6 +390,62 @@ void checkGreedyEdgeClique() {
                            "ineligible/repeated-edge face changed");
     }
 }
+
+void checkGreedyGroupOrder() {
+    SetModelThreadBudget(2);
+    auto data = adjacentQuads();
+    const auto tileVertices = data.vertices;
+    const auto tileFaces = data.faces;
+    data.materials.emplace_back("animated", "", -1, ANIMATED);
+    for (int component = 1; component < 3; ++component) {
+        for (size_t v = 0; v < tileVertices.size(); v += 3) {
+            data.vertices.push_back(tileVertices[v] + component * 4.0f);
+            data.vertices.push_back(tileVertices[v + 1]);
+            data.vertices.push_back(tileVertices[v + 2]);
+        }
+    }
+    auto shifted = [&](Face face, int offset) {
+        for (int& index : face.vertexIndices) index += offset;
+        return face;
+    };
+    Face invalidUV = tileFaces[0];
+    invalidUV.uvIndices[0] = -1;
+    Face animated = shifted(tileFaces[0], 6);
+    animated.materialIndex = 1;
+    // Interleave two components with ineligible singleton groups, followed by
+    // an eligible singleton. Later members must return to their first group.
+    data.faces = {tileFaces[0], invalidUV, shifted(tileFaces[0], 6), animated,
+                  shifted(tileFaces[1], 6), tileFaces[1], shifted(tileFaces[0], 12)};
+    const auto original = data;
+    ModelDeduplicator::GreedyMesh(data);
+    Face mergedA = tileFaces[0];
+    mergedA.faceDirection = UNKNOWN;
+    mergedA.vertexIndices = {4, 1, 3, 0};
+    mergedA.uvIndices = {4, 5, 6, 7};
+    Face mergedB = shifted(mergedA, 6);
+    mergedB.uvIndices = {8, 9, 10, 11};
+    const std::vector<Face> expected = {mergedA, invalidUV, mergedB, animated, original.faces[6]};
+    require(data.vertices == original.vertices && data.faces.size() == expected.size(),
+            "interleaved grouping changed geometry/component count");
+    for (size_t i = 0; i < expected.size(); ++i)
+        require(sameFace(data.faces[i], expected[i]),
+                "interleaved grouping changed first-seen group/member order");
+    require(data.uvCoordinates == std::vector<float>{
+                0, 0, 1, 0, 1, 1, 0, 1,
+                0, 1, 0, 0, 2, 0, 2, 1,
+                0, 1, 0, 0, 2, 0, 2, 1},
+            "interleaved grouping changed UV publication order");
+
+    // No eligible roots: every face must retain its original group position.
+    data = original;
+    for (auto& face : data.faces) face.uvIndices[0] = -1;
+    const auto ineligible = data;
+    ModelDeduplicator::GreedyMesh(data);
+    require(data.vertices == ineligible.vertices && data.uvCoordinates == ineligible.uvCoordinates &&
+            data.faces.size() == ineligible.faces.size(), "ineligible singleton geometry changed");
+    for (size_t i = 0; i < data.faces.size(); ++i)
+        require(sameFace(data.faces[i], ineligible.faces[i]), "ineligible singleton order changed");
+}
 }
 
 int main() {
@@ -405,6 +461,7 @@ int main() {
         checkGreedyBucketOrder();
         checkGreedyParallelEquivalence();
         checkGreedyEdgeClique();
+        checkGreedyGroupOrder();
         std::cout << "Model deduplicator tests passed\n";
         return 0;
     } catch (const std::exception& error) {
