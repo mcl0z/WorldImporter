@@ -103,13 +103,26 @@ struct ModelData {
     std::vector<OverlayPair> overlayPairs;
 };
 
-// 自定义顶点键:用整数表示,精度保留到小数点后6位
+// Quantized vertex coordinates, with a 1e-4 step.
 struct VertexKey {
     int x, y, z;
     
     // C++20: 使用<=>运算符简化比较操作
     auto operator<=>(const VertexKey&) const = default;
 };
+
+inline VertexKey MakeVertexKey(float x, float y, float z) {
+    auto quantize = [](float coordinate) {
+        // Keep the original float multiplication before rounding. Add the
+        // half step in double: float addition could round a value just below
+        // a half boundary up to it, or move an already integral large value.
+        // Truncation then matches std::round (ties away from zero) wherever
+        // the original rounded value is representable as an int.
+        const float scaled = coordinate * 10000.0f;
+        return static_cast<int>(static_cast<double>(scaled) + std::copysign(0.5, scaled));
+    };
+    return VertexKey{quantize(x), quantize(y), quantize(z)};
+}
 
 // 自定义 UV 键
 struct UVKey {
