@@ -22,7 +22,7 @@
 #include <atomic> // 新增: 用于 std::atomic_bool
 #include <thread> // 新增: 用于 std::thread::hardware_concurrency()
 #include <chrono> // 新增: 用于性能计时
-#include <functional> // 新增: 用于 std::function
+#include <span>
 #include <stdexcept>
 #undef max
 #undef min
@@ -637,8 +637,15 @@ void ModelDeduplicator::GreedyMesh(ModelData& data) {
     // 并查集初始化
     std::vector<int> parent(faceCount);
     for (int i = 0; i < (int)faceCount; ++i) parent[i] = i;
-    std::function<int(int)> findp = [&](int x) {
-        return parent[x] == x ? x : parent[x] = findp(parent[x]);
+    auto findp = [&](int x) {
+        int root = x;
+        while (parent[root] != root) root = parent[root];
+        while (parent[x] != x) {
+            const int next = parent[x];
+            parent[x] = root;
+            x = next;
+        }
+        return root;
     };
     auto unite = [&](int a, int b) {
         int pa = findp(a), pb = findp(b);
@@ -700,9 +707,9 @@ void ModelDeduplicator::GreedyMesh(ModelData& data) {
     } else {
         skippedRotated = markEligible(0, faceCount);
     }
-    // Only the connected components matter. Roots may differ with hash edge
-    // order, but collecting faces below in index order preserves group order
-    // and the order of every group's members (and hence merge decisions).
+    auto t5_eligible_end = Clock::now();
+    // Keep adjacency traversal and parent[pb] = pa unchanged. Collection below
+    // assigns groups on first encounter and keeps members in face-index order.
     // 遍历邻接表做 union
     for (int i = 0; i < (int)faceCount; ++i) {
         if (!eligible[i]) continue;
@@ -720,29 +727,51 @@ void ModelDeduplicator::GreedyMesh(ModelData& data) {
             unite(i, nb);
         }
     }
-    // 收集分组结果
-    std::unordered_map<int, int> rootToGroup;
-    rootToGroup.reserve(faceCount);
-    std::vector<std::vector<int>> groups;
-    groups.reserve(faceCount);
-    for (int i = 0; i < (int)faceCount; ++i) {
-        if (!eligible[i]) {
-            groups.push_back({i});
-        } else {
-            int r = findp(i);
-            auto it = rootToGroup.find(r);
-            if (it == rootToGroup.end()) {
-                int idx = groups.size();
-                rootToGroup[r] = idx;
-                groups.emplace_back();
-                groups.back().push_back(i);
+    auto t5_union_end = Clock::now();
+    // Roots are face indices: direct lookup avoids hashing and node allocations.
+    // Count in first-seen group order, then fill flat spans in face-index order.
+    // Ineligible faces still create individual groups at their original turn.
+    std::vector<size_t> groupOffsets;
+    groupOffsets.reserve(faceCount + 1);
+    groupOffsets.push_back(0);
+    std::vector<int> groupMembers(faceCount);
+    {
+        std::vector<int> rootToGroup(faceCount, -1);
+        std::vector<int> faceGroup(faceCount);
+        for (int i = 0; i < (int)faceCount; ++i) {
+            int group;
+            if (!eligible[i]) {
+                group = static_cast<int>(groupOffsets.size() - 1);
+                groupOffsets.push_back(0);
             } else {
-                groups[it->second].push_back(i);
+                const int root = findp(i);
+                int& slot = rootToGroup[root];
+                if (slot == -1) {
+                    slot = static_cast<int>(groupOffsets.size() - 1);
+                    groupOffsets.push_back(0);
+                }
+                group = slot;
             }
+            faceGroup[i] = group;
+            ++groupOffsets[group + 1];
+        }
+        for (size_t i = 1; i < groupOffsets.size(); ++i)
+            groupOffsets[i] += groupOffsets[i - 1];
+        auto nextOffset = groupOffsets;
+        for (int i = 0; i < (int)faceCount; ++i) {
+            groupMembers[nextOffset[faceGroup[i]]++] = i;
         }
     }
+    const size_t groupCount = groupOffsets.size() - 1;
+    auto groupAt = [&](size_t group) {
+        return std::span<const int>(groupMembers.data() + groupOffsets[group],
+                                    groupOffsets[group + 1] - groupOffsets[group]);
+    };
     auto t5_end = Clock::now();
     std::cerr << "GreedyMesh: non-grid-aligned (rotated) faces kept unmerged: " << skippedRotated << "\n";
+    std::cerr << "GreedyMesh Step5 eligibility: " << Ms(t5_eligible_end - t5_start).count() << " ms\n";
+    std::cerr << "GreedyMesh Step5 union: " << Ms(t5_union_end - t5_eligible_end).count() << " ms\n";
+    std::cerr << "GreedyMesh Step5 collect: " << Ms(t5_end - t5_union_end).count() << " ms\n";
     std::cerr << "GreedyMesh Step5 grouping (UF): " << Ms(t5_end - t5_start).count() << " ms\n";
 
     // 6. 处理每个可合并组 (串行化)
@@ -751,7 +780,7 @@ void ModelDeduplicator::GreedyMesh(ModelData& data) {
         std::vector<float> uvCoords;
         std::vector<Vector3> positions;
     };
-    auto processGroup = [&](const std::vector<int>& grp_indices)->MergedResult {
+    auto processGroup = [&](std::span<const int> grp_indices)->MergedResult {
         MergedResult res;
         if (grp_indices.empty()) return res;
 
@@ -1162,8 +1191,8 @@ void ModelDeduplicator::GreedyMesh(ModelData& data) {
     // then publish vertices/faces/UVs in the same order as the serial algorithm.
     auto t7_start = Clock::now();
     const unsigned mergeThreads = faceCount >= 10000
-        ? std::min<unsigned>(DedupThreadCount(), static_cast<unsigned>(groups.size())) : 1;
-    std::vector<MergedResult> mergedGroups(mergeThreads > 1 ? groups.size() : 0);
+        ? std::min<unsigned>(DedupThreadCount(), static_cast<unsigned>(groupCount)) : 1;
+    std::vector<MergedResult> mergedGroups(mergeThreads > 1 ? groupCount : 0);
     if (mergeThreads > 1) {
         std::atomic<size_t> nextGroup{0};
         std::exception_ptr error;
@@ -1174,8 +1203,9 @@ void ModelDeduplicator::GreedyMesh(ModelData& data) {
                 try {
                     for (;;) {
                         const size_t i = nextGroup.fetch_add(1, std::memory_order_relaxed);
-                        if (i >= groups.size()) break;
-                        if (groups[i].size() > 1) mergedGroups[i] = processGroup(groups[i]);
+                        if (i >= groupCount) break;
+                        const auto group = groupAt(i);
+                        if (group.size() > 1) mergedGroups[i] = processGroup(group);
                     }
                 } catch (...) {
                     std::lock_guard<std::mutex> lock(errorMutex);
@@ -1197,8 +1227,8 @@ void ModelDeduplicator::GreedyMesh(ModelData& data) {
         data.uvCoordinates.reserve(data.uvCoordinates.size() + faceCount * 8); // 为每个面准备充足UV空间
         
         // 逐个处理每个组
-        for (size_t groupNo = 0; groupNo < groups.size(); ++groupNo) {
-            const auto& grp = groups[groupNo];
+        for (size_t groupNo = 0; groupNo < groupCount; ++groupNo) {
+            const auto grp = groupAt(groupNo);
             if (grp.size() > 1) {
                 MergedResult mr = mergeThreads > 1
                     ? std::move(mergedGroups[groupNo]) : processGroup(grp);
