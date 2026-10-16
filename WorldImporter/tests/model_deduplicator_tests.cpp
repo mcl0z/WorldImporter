@@ -179,6 +179,34 @@ void checkFaceDeduplication(bool strict) {
     require(empty.faces.empty(), "empty face list changed");
 }
 
+void checkFaceHashCollisions() {
+    config.strictDeduplication = true;
+    ModelData data;
+    std::vector<Face> expected;
+    // Force a cluster at the end of the power-of-two table, including wraparound.
+    // UV-only differences must survive collisions; later cyclic copies must not.
+    for (int uv = 0; uv < 100000 && expected.size() < 32; ++uv) {
+        Face face{};
+        face.vertexIndices = {0, 1, 2, 3};
+        face.uvIndices = {uv, uv + 1, uv + 2, uv + 3};
+        face.materialIndex = 2;
+        if ((FaceKeyHasher{}(FaceKey{face.vertexIndices, face.uvIndices, 2}) & 255) != 255)
+            continue;
+        face.tintIndex = static_cast<int>(expected.size());
+        expected.push_back(face);
+        data.faces.push_back(face);
+        std::rotate(face.vertexIndices.begin(), face.vertexIndices.begin() + 1, face.vertexIndices.end());
+        std::rotate(face.uvIndices.begin(), face.uvIndices.begin() + 1, face.uvIndices.end());
+        face.tintIndex = -1;
+        data.faces.push_back(face);
+    }
+    require(expected.size() == 32, "could not generate colliding face keys");
+    ModelDeduplicator::DeduplicateFaces(data);
+    require(data.faces.size() == expected.size(), "face hash collisions lost distinct UV keys");
+    for (size_t i = 0; i < expected.size(); ++i)
+        require(sameFace(data.faces[i], expected[i]), "face hash collisions changed first face/order");
+}
+
 ModelData adjacentQuads() {
     ModelData data;
     // Unique, deliberately unsorted keys, including negative coordinates.
@@ -336,6 +364,7 @@ int main() {
         checkVertexTableGrowth();
         checkFaceDeduplication(true);
         checkFaceDeduplication(false);
+        checkFaceHashCollisions();
         checkGreedyVertexIndices();
         checkGreedyBucketOrder();
         checkGreedyParallelEquivalence();
