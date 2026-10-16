@@ -51,8 +51,7 @@ namespace {
             return capacity;
         }
 
-        size_t findSlot(const VertexKey& key) const {
-            const size_t mask = slots.size() - 1;
+        static size_t hashKey(const VertexKey& key) {
             // Pack x/y without overlap and spread z across all bits before
             // one avalanche. Grid keys have many low zero bits; masking an
             // unfinalized spatial hash would cluster them in a few slots.
@@ -64,7 +63,12 @@ namespace {
             hash ^= hash >> 27;
             hash *= 0x94d049bb133111ebULL;
             hash ^= hash >> 31;
-            size_t pos = static_cast<size_t>(hash) & mask;
+            return static_cast<size_t>(hash);
+        }
+
+        size_t findSlot(const VertexKey& key, size_t hash) const {
+            const size_t mask = slots.size() - 1;
+            size_t pos = hash & mask;
             while (slots[pos].index != -1 && slots[pos].key != key)
                 pos = (pos + 1) & mask;
             return pos;
@@ -73,8 +77,23 @@ namespace {
     public:
         explicit VertexIndexMap(size_t expected) : slots(capacityFor(expected)) {}
 
+        // Prepare independent lookups ahead of the ordered insert pass. A
+        // growth between preparation and insertion only makes this cache hint
+        // stale; insertion always probes the current table with the full hash.
+        size_t prepare(const VertexKey& key) const {
+            const size_t hash = hashKey(key);
+#if defined(__GNUC__) || defined(__clang__)
+            __builtin_prefetch(&slots[hash & (slots.size() - 1)], 0, 1);
+#endif
+            return hash;
+        }
+
         std::pair<int, bool> tryEmplace(const VertexKey& key, int index) {
-            size_t pos = findSlot(key);
+            return tryEmplace(key, index, hashKey(key));
+        }
+
+        std::pair<int, bool> tryEmplace(const VertexKey& key, int index, size_t hash) {
+            size_t pos = findSlot(key, hash);
             if (slots[pos].index != -1) return {slots[pos].index, false};
             if (count + 1 >= slots.size() - slots.size() / 8) {
                 // Only new keys can grow the table. Rehashing never changes
@@ -82,9 +101,9 @@ namespace {
                 std::vector<Slot> oldSlots(capacityFor(count + 1));
                 oldSlots.swap(slots);
                 for (const auto& slot : oldSlots) {
-                    if (slot.index != -1) slots[findSlot(slot.key)] = slot;
+                    if (slot.index != -1) slots[findSlot(slot.key, hashKey(slot.key))] = slot;
                 }
-                pos = findSlot(key);
+                pos = findSlot(key, hash);
             }
             slots[pos] = Slot{key, index};
             ++count;
@@ -221,18 +240,30 @@ void ModelDeduplicator::DeduplicateVertices(ModelData& data) {
     // Visit original indices in order: the first vertex for each quantized key
     // supplies the original float coordinates, just like the old stable sort.
     int newIndex = 0;
-    for (size_t i = 0; i < vertCount; ++i) {
-        const float x = data.vertices[3*i];
-        const float y = data.vertices[3*i + 1];
-        const float z = data.vertices[3*i + 2];
-        const auto [index, inserted] = vertexIndices.tryEmplace(MakeVertexKey(x, y, z), newIndex);
-        if (inserted) {
-            newVertices.push_back(x);
-            newVertices.push_back(y);
-            newVertices.push_back(z);
-            ++newIndex;
+    // Batching exposes independent quantization and cache misses. Only the
+    // final loop inserts, so duplicates within/across batches stay first-wins.
+    constexpr size_t batchSize = 64;
+    std::array<VertexKey, batchSize> keys;
+    std::array<size_t, batchSize> hashes;
+    for (size_t base = 0; base < vertCount; base += batchSize) {
+        const size_t size = std::min(batchSize, vertCount - base);
+        for (size_t j = 0; j < size; ++j) {
+            const size_t i = base + j;
+            keys[j] = MakeVertexKey(data.vertices[3*i], data.vertices[3*i + 1], data.vertices[3*i + 2]);
         }
-        indexMap[i] = index;
+        for (size_t j = 0; j < size; ++j)
+            hashes[j] = vertexIndices.prepare(keys[j]);
+        for (size_t j = 0; j < size; ++j) {
+            const size_t i = base + j;
+            const auto [index, inserted] = vertexIndices.tryEmplace(keys[j], newIndex, hashes[j]);
+            if (inserted) {
+                newVertices.push_back(data.vertices[3*i]);
+                newVertices.push_back(data.vertices[3*i + 1]);
+                newVertices.push_back(data.vertices[3*i + 2]);
+                ++newIndex;
+            }
+            indexMap[i] = index;
+        }
     }
     data.vertices = std::move(newVertices);
 
