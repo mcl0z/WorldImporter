@@ -102,6 +102,23 @@ bool SaveTextureToFile(const std::string& namespaceName, const std::string& bloc
             std::cerr << "Texture not found: " << namespaceName << ":" << blockId << std::endl;
             return false;
         }
+
+        // PNG 与 .mcmeta 可能分属不同 jar/资源包(pack 只改贴图、mcmeta 仍用原版)。
+        // 上面只查了与 PNG 同一 cacheKey 的 mcmeta；这里按路径再取一份,保证写出 .mcmeta
+        // 供 Crafter 动态纹理节点使用。
+        if (mcmetaData.empty()) {
+            std::string metaIndexKey = std::string("mcmetas:") + namespaceName + ":" + blockId;
+            auto metaIdx = GlobalCache::mcmetaIndex.find(metaIndexKey);
+            if (metaIdx != GlobalCache::mcmetaIndex.end()) {
+                auto mcmetaIt = GlobalCache::mcmetaCache.find(metaIdx->second);
+                if (mcmetaIt != GlobalCache::mcmetaCache.end()) {
+                    mcmetaData = mcmetaIt->second;
+                    if (mcmetaData.contains("animation")) {
+                        isDynamic = true;
+                    }
+                }
+            }
+        }
     }
 
     // 处理保存路径
@@ -347,10 +364,59 @@ bool ParseMcmetaFile(const std::string& cacheKey, MaterialType& outType) {
     return ParseMcmetaFile(cacheKey, outType, dummyAspectRatio);
 }
 
+// 按与 SaveTextureToFile 相同的优先级,取"最终生效"贴图的尺寸来算 UV 帧数缩放。
+// mcmeta 可能来自原版 jar,而 PNG 被资源包覆盖(或反过来),两者 cacheKey 不同:
+// 若只用 mcmeta 的 key 查 textureDimensionCache 会 miss,aspectRatio 停在 1,
+// 于是 ANIMATED 材质的 V 不裁到第 0 帧 → 灯笼等 16xN 条带贴图 UV 整体偏到后续帧(框采到发光区)。
+static float AspectRatioFromTextureDimensions(int width, int height) {
+    if (width <= 0 || height <= 0) return 1.0f;
+    if (height > width && height % width == 0) {
+        return static_cast<float>(height / width);
+    }
+    return static_cast<float>(height) / static_cast<float>(width);
+}
+
+static float LookupTextureAspectRatio(const std::string& namespaceName, const std::string& texturePath) {
+    // 1) 已写出的贴图尺寸(SaveTextureToFile 写入, key 是实际命中的 cacheKey)
+    {
+        std::string indexKey = std::string("textures:") + namespaceName + ":" + texturePath;
+        std::string cacheKey;
+        {
+            std::shared_lock<std::shared_mutex> lock(GlobalCache::cacheMutex);
+            auto idxIt = GlobalCache::textureIndex.find(indexKey);
+            if (idxIt != GlobalCache::textureIndex.end()) {
+                cacheKey = idxIt->second;
+            }
+        }
+        if (!cacheKey.empty()) {
+            std::lock_guard<std::mutex> dimLock(textureDimensionMutex);
+            auto dimIt = textureDimensionCache.find(cacheKey);
+            if (dimIt != textureDimensionCache.end()) {
+                return AspectRatioFromTextureDimensions(dimIt->second.width, dimIt->second.height);
+            }
+        }
+    }
+    // 2) 退回: 任意 jar 下同路径的尺寸缓存
+    {
+        std::lock_guard<std::mutex> dimLock(textureDimensionMutex);
+        const std::string suffix = ":" + namespaceName + ":" + texturePath;
+        for (const auto& entry : textureDimensionCache) {
+            if (entry.first.size() >= suffix.size() &&
+                entry.first.compare(entry.first.size() - suffix.size(), suffix.size(), suffix) == 0) {
+                float ar = AspectRatioFromTextureDimensions(entry.second.width, entry.second.height);
+                if (ar > 1.0f) return ar;
+            }
+        }
+    }
+    return 1.0f;
+}
+
 // 检测材质类型
 MaterialType DetectMaterialType(const std::string& namespaceName, const std::string& texturePath, float& outAspectRatio) {
     MaterialType type = NORMAL;
-    outAspectRatio = 1.0f;
+    // 先按实际贴图尺寸定 UV 缩放,再查 mcmeta 定类型。两者解耦,避免 pack PNG / 原版 mcmeta
+    // 分属不同 cacheKey 时 aspectRatio 被丢成 1。
+    outAspectRatio = LookupTextureAspectRatio(namespaceName, texturePath);
     
     {
         std::shared_lock<std::shared_mutex> lock(GlobalCache::cacheMutex);
@@ -358,7 +424,14 @@ MaterialType DetectMaterialType(const std::string& namespaceName, const std::str
         std::string indexKey = std::string("mcmetas:") + namespaceName + ":" + texturePath;
         auto it = GlobalCache::mcmetaIndex.find(indexKey);
         if (it != GlobalCache::mcmetaIndex.end()) {
-            if (ParseMcmetaFile(it->second, type, outAspectRatio)) {
+            MaterialType parsedType = NORMAL;
+            float ignoredAspect = 1.0f;
+            if (ParseMcmetaFile(it->second, parsedType, ignoredAspect)) {
+                type = parsedType;
+                // 若尺寸缓存尚空(极少),退回 mcmeta 路径算出的比例
+                if (outAspectRatio <= 1.0f && ignoredAspect > 1.0f) {
+                    outAspectRatio = ignoredAspect;
+                }
                 return type;
             }
         }
@@ -367,7 +440,13 @@ MaterialType DetectMaterialType(const std::string& namespaceName, const std::str
         for (size_t i = 0; i < GlobalCache::jarOrder.size(); ++i) {
             const std::string& modId = GlobalCache::jarOrder[i];
             std::string cacheKey = modId + ":" + namespaceName + ":" + texturePath;
-            if (ParseMcmetaFile(cacheKey, type, outAspectRatio)) {
+            MaterialType parsedType = NORMAL;
+            float ignoredAspect = 1.0f;
+            if (ParseMcmetaFile(cacheKey, parsedType, ignoredAspect)) {
+                type = parsedType;
+                if (outAspectRatio <= 1.0f && ignoredAspect > 1.0f) {
+                    outAspectRatio = ignoredAspect;
+                }
                 break;
             }
         }
