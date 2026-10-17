@@ -871,6 +871,23 @@ void RenameBlockMaterials(ModelData& model, const std::string& namespaceName, co
         // 只处理来自模型 textures 的材质；占位/特殊材质(无贴图键)保持原名
         if (material.textureKey.empty()) continue;
 
+        // 光方块：硬编码旧版名 minecraft:block/light_block_NN，避免与 light_blue 等混淆
+        if (namespaceName == "minecraft" && baseBlockId == "light") {
+            std::string level = "15";
+            const std::string texBase = MaterialTextureBasename(material.texturePath);
+            size_t i = texBase.size();
+            while (i > 0 && texBase[i - 1] >= '0' && texBase[i - 1] <= '9') --i;
+            if (i < texBase.size() && i > 0 && texBase[i - 1] == '_') {
+                std::string digits = texBase.substr(i);
+                if (!digits.empty()) {
+                    if (digits.size() == 1) digits = "0" + digits;
+                    level = digits;
+                }
+            }
+            material.name = "minecraft:block/light_block_" + level;
+            continue;
+        }
+
         // 可复用的前提：贴图有效、该材质不参与 tint、且这个模型没有共面叠加层
         // (叠加层元数据按材质名索引，共享材质会把叠加层扩散到别的方块)
         const bool mergeEligible = config.mergeModTextures

@@ -1012,14 +1012,9 @@ ModelData SpecialBlock::GenerateLightBlockModel(const string& texturePath) {
         0.0f, 1.0f, 1.0f, 1.0f, 1.0f, 0.0f, 0.0f, 0.0f
     };
 
-    // 创建材质（名字以方块 id 为主：minecraft:light#light_block_<level>）
+    // 创建材质（旧版显示名：minecraft:block/light_block_<level>）
     Material material;
-    {
-        std::string leaf = texturePath;
-        size_t slash = leaf.find_last_of('/');
-        if (slash != std::string::npos) leaf = leaf.substr(slash + 1);
-        material.name = "minecraft:light#" + leaf;
-    }
+    material.name = texturePath;
     material.texturePath = "None";
     material.tintIndex = -1;  // 设置默认tint索引
     cubeModel.materials = { material };
