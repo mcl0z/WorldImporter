@@ -239,7 +239,8 @@ static void applyFaceRotation(ModelData& modelData, size_t faceIdx, int angle) {
             float frameRatio = 1.0f;
             if (f.materialIndex >= 0 && static_cast<size_t>(f.materialIndex) < modelData.materials.size()) {
                 const auto& material = modelData.materials[f.materialIndex];
-                if (material.type == ANIMATED && material.aspectRatio > 0)
+                // 与 ComputeFaceUvCoords 一致: 以实际条带比例为准, 不依赖 ANIMATED 标记
+                if (material.aspectRatio > 1.0f)
                     frameRatio = material.aspectRatio;
             }
             // Undo animation cropping before rotation, then map back to frame 0.
@@ -979,8 +980,10 @@ static std::vector<std::vector<float>> ComputeFaceUvCoords(
         {uvRegion[0] / 16.0f, 1 - uvRegion[3] / 16.0f}
     };
 
-    // 动态材质只显示一帧: 缩放 V 坐标
-    if (material != nullptr && material->type == ANIMATED) {
+    // 条带贴图(高>宽, 如灯笼 16x48)只显示第 0 帧: 缩放 V。
+    // 用 aspectRatio>1 判定, 不依赖 type==ANIMATED——资源包覆盖 PNG 而 mcmeta
+    // 仍指向原版 key 时 type 可能是 ANIMATED 但 aspect 曾被算成 1, 或反过来只有尺寸没有 mcmeta。
+    if (material != nullptr && material->aspectRatio > 1.0f) {
         float aspectRatio = material->aspectRatio;
         for (auto& uv : uvCoords) {
             float v = 1.0f - uv[1];
