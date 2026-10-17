@@ -1,0 +1,81 @@
+# Build Release WorldImporter.exe on Windows (MSVC + vcpkg).
+# Trigger: workflow_dispatch, or push to ci/windows-exe / main.
+name: Windows Release EXE
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - ci/windows-exe
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup CMake 3.30+
+        uses: jwlawson/actions-setup-cmake@v2
+        with:
+          cmake-version: "3.30.5"
+
+      - name: Setup MSVC environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Cache vcpkg
+        uses: actions/cache@v4
+        with:
+          path: |
+            C:/vcpkg
+            C:/Users/runneradmin/AppData/Local/vcpkg
+          key: vcpkg-win-x64-${{ hashFiles('vcpkg.json') }}
+          restore-keys: vcpkg-win-x64-
+
+      - name: Bootstrap vcpkg and install deps
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "C:/vcpkg/vcpkg.exe")) {
+            git clone --depth 1 https://github.com/microsoft/vcpkg.git C:/vcpkg
+            & C:/vcpkg/bootstrap-vcpkg.bat
+          }
+          & C:/vcpkg/vcpkg.exe install zlib:x64-windows libzip:x64-windows --triplet x64-windows
+          echo "VCPKG_ROOT=C:/vcpkg" >> $env:GITHUB_ENV
+
+      - name: Configure (Release / MSVC / vcpkg)
+        shell: pwsh
+        run: |
+          cmake -S . -B build -G "Visual Studio 17 2022" -A x64 `
+            -DCMAKE_TOOLCHAIN_FILE="C:/vcpkg/scripts/buildsystems/vcpkg.cmake" `
+            -DVCPKG_TARGET_TRIPLET=x64-windows `
+            -DBUILD_TESTING=OFF `
+            -DWI_BUILD_CTM_TESTS=OFF
+
+      - name: Build Release
+        shell: pwsh
+        run: cmake --build build --config Release --parallel
+
+      - name: Locate and stage exe
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem -Path build -Recurse -Filter WorldImporter.exe |
+            Where-Object { $_.FullName -match 'Release' } |
+            Select-Object -First 1
+          if (-not $exe) {
+            $exe = Get-ChildItem -Path build -Recurse -Filter WorldImporter.exe | Select-Object -First 1
+          }
+          if (-not $exe) { throw "WorldImporter.exe not found under build/" }
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item $exe.FullName dist/WorldImporter.exe
+          Get-Item dist/WorldImporter.exe | Format-List FullName, Length, LastWriteTime
+
+      - name: Upload WorldImporter.exe artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: WorldImporter-windows-x64
+          path: dist/WorldImporter.exe
+          if-no-files-found: error
+          retention-days: 30
