@@ -33,12 +33,16 @@ tests because production colormap extraction shares an output directory.
 The synthetic suite covers legacy priority, integers, decimal/`0x` strings,
 lower/uppercase `#rrggbb`, black, invalid/missing values, attributes without
 effects, malformed containers, and explicit/implicit override objects for fog,
-sky and water fog. It also checks hex colors still in `effects` (water/plants).
+sky and water fog. It also checks hex and RGB float array colors in `effects`
+(water/plants) and attributes, including malformed array rejection. Additional
+regressions cover empty blend samples, map reinitialization dimensions, and the
+`useBiomeColors` switch in base/overlay metadata while retaining fixed tints.
+The metadata checks write `tint.json` and `overlay.json` beside the test executable.
 
 The attribute keys and `{modifier, argument}` format are verified against the
 [official 1.21.11 release notes](https://www.minecraft.net/en-us/article/minecraft-java-edition-1-21-11).
 Only constant colors and override objects are resolved. Dimension inheritance,
-other modifiers, timelines/weather, and RGB float arrays are outside this fix;
+other modifiers and timelines/weather are outside this fix;
 non-override objects fall back instead of treating their argument as a color.
 Missing fog uses WI's existing `0xC0D8FF` fallback. Existing sky/water-fog
 fallbacks (which differ depending on the presence of `effects`) are preserved.
