@@ -12,6 +12,7 @@
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <cmath>
 #include "hashutils.h"
 
 #ifdef _WIN32
@@ -249,6 +250,17 @@ BiomeColors Biome::ParseBiomeColors(const nlohmann::json& biomeJson) {
         if (!j.is_object() || !j.contains(k)) return def;
         const auto& v = j[k];
         if (v.is_number()) return v.get<int>();
+        // 1.21.11 RGB codec also accepts three normalized numeric channels.
+        if (v.is_array() && v.size() == 3) {
+            int color = 0;
+            for (const auto& channel : v) {
+                if (!channel.is_number()) return def;
+                const double value = channel.get<double>();
+                if (!std::isfinite(value) || value < 0.0 || value > 1.0) return def;
+                color = (color << 8) | static_cast<int>(value * 255.0);
+            }
+            return color;
+        }
         if (v.is_string()) {
             const auto& str = v.get_ref<const std::string&>();
             try {
@@ -533,6 +545,7 @@ int Biome::GetBiomeColor(int blockX, int blockY, int blockZ, BiomeColorType colo
     }
 
     // 计算各分量的平均值
+    if (count == 0) return 0xFFFFFF; // No loaded samples: neutral multiplicative tint.
     int avgR = rSum / count;
     int avgG = gSum / count;
     int avgB = bSum / count;
@@ -627,7 +640,7 @@ int g_biomeMapMinZ = 0;
 void Biome::InitializeBiomeMap(int minX, int minZ, int maxX, int maxZ) {
     int width = maxX - minX + 1;
     int height = maxZ - minZ + 1;
-    g_biomeMap.resize(height, std::vector<int>(width));
+    g_biomeMap.assign(height, std::vector<int>(width));
     g_biomeMapMinX = minX;
     g_biomeMapMinZ = minZ;
 }

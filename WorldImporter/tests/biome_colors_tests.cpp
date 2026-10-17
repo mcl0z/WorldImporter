@@ -1,9 +1,12 @@
 #include "biome.h"
 #include "GlobalCache.h"
 #include "include/stb_image.h"
+#include "block.h"
+#include "objExporter.h"
 
 #include <array>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <sstream>
 #include <stdexcept>
@@ -146,6 +149,63 @@ void syntheticTests() {
     expectColor(id, BiomeColorType::Grass, 0x123ABC, "grass hex");
     expectColor(id, BiomeColorType::Foliage, 0x456DEF, "foliage hex");
     expectColor(id, BiomeColorType::DryFoliage, 0x789ABC, "dry foliage hex");
+
+    // RGB float arrays are legal in both effects and visual attributes (1.21.11).
+    for (const auto* key : {"grass_color", "foliage_color", "dry_foliage_color", "water_color"}) {
+        plants["effects"][key] = Json::array({1.0, 0.0, 0.5});
+    }
+    plants["attributes"]["minecraft:visual/sky_color"] = Json::array({0.0, 1.0, 0.0});
+    plants["attributes"]["minecraft:visual/fog_color"] = {
+        {"modifier", "override"}, {"argument", Json::array({1.0, 0.0, 0.5})}};
+    const int arrayId = registerJson(plants);
+    for (auto type : {BiomeColorType::Grass, BiomeColorType::Foliage,
+                      BiomeColorType::DryFoliage, BiomeColorType::Water, BiomeColorType::Fog}) {
+        expectColor(arrayId, type, 0xFF007F, "RGB float array");
+    }
+    expectColor(arrayId, BiomeColorType::Sky, 0x00FF00, "sky RGB array");
+    for (const Json& invalid : {Json::array({1.0, 0.0}), Json::array({1.0, 0.0, 0.0, 1.0}),
+                               Json::array({-0.1, 0.0, 0.0}), Json::array({1.1, 0.0, 0.0}),
+                               Json::array({true, 0, 0}), Json::array({"1", 0, 0})}) {
+        auto json = biome();
+        json["effects"]["water_color"] = invalid;
+        expectColor(registerJson(json), BiomeColorType::Water, 0x3F76E4, "invalid RGB array");
+    }
+
+    require(sectionCache.empty(), "synthetic blending test needs an empty section cache");
+    require(Biome::GetBiomeColor(0, 63, 0, BiomeColorType::Grass) == 0xFFFFFF,
+            "missing blend samples must return neutral white");
+}
+
+void mapAndTintTests(const char* executable) {
+    const auto dir = std::filesystem::absolute(executable).parent_path();
+    // Reinitializing an existing map must also reset widths of retained rows.
+    Biome::InitializeBiomeMap(0, 0, 3, 2);
+    Biome::InitializeBiomeMap(-1, -1, -1, 1);
+    require(Biome::ExportToPNG("biome-colors-resize.png", BiomeColorType::Fog), "resized map export");
+    int w = 0, h = 0, channels = 0;
+    auto* pixels = stbi_load((dir / "biomeTex/biome-colors-resize.png").string().c_str(), &w, &h, &channels, 3);
+    require(pixels != nullptr, "resized map PNG readback");
+    stbi_image_free(pixels);
+    require(w == 1 && h == 3, "reinitialized map must be 1x3");
+
+    TintResult grass, fixed;
+    grass.kind = TintKind::Grass;
+    fixed.kind = TintKind::Fixed;
+    fixed.color = 0x123456;
+    RegisterOverlaySequence("biome-colors-test", {{"grass", "grass.png", grass}, {"fixed", "fixed.png", fixed}});
+    for (bool enabled : {false, true}) {
+        config.useBiomeColors = enabled;
+        CreateTintJsonFile({{"grass", grass}, {"fixed", fixed}});
+        CreateOverlayJsonFile();
+        Json tint, overlays;
+        std::ifstream(dir / "tint.json") >> tint;
+        std::ifstream(dir / "overlay.json") >> overlays;
+        require(tint["grass"].contains("kind") == enabled, "biome tint metadata must honor switch");
+        const auto& layers = overlays.at("biome-colors-test");
+        require(layers[0].contains("kind") == enabled, "overlay biome tint must honor switch");
+        require(tint["fixed"]["kind"] == "fixed" && layers[1]["kind"] == "fixed", "fixed tint must stay enabled");
+        require(tint["fixed"]["color"][0].get<float>() < 0.01f, "fixed tint must remain linear");
+    }
 }
 
 void archiveTests(const char* path, bool modern) {
@@ -188,6 +248,7 @@ int main(int argc, char** argv) {
         std::string mode = "synthetic";
         if (argc == 1) {
             syntheticTests();
+            mapAndTintTests(argv[0]);
         } else {
             require(argc == 3, "usage: biome_colors_tests [--LEGACY|--ATTRIBUTES archive]");
             mode = argv[1];

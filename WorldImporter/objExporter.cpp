@@ -511,7 +511,7 @@ void CreateTintJsonFile(const std::unordered_map<std::string, TintResult>& uniqu
     for (const auto& entry : uniqueTints) {
         const TintResult& tint = entry.second;
         nlohmann::json value = nlohmann::json::object();
-        if (tint.on()) {
+        if (tint.on() && (tint.kind == TintKind::Fixed || config.useBiomeColors)) {
             value["kind"] = TintKindName(tint.kind);
             if (tint.kind == TintKind::Fixed) {
                 nlohmann::json color = nlohmann::json::array();
@@ -590,7 +590,7 @@ void CreateOverlayJsonFile() {
                 nlohmann::json value = nlohmann::json::object();
                 value["name"] = layer.name;
                 value["texture"] = layer.texturePath;
-                if (layer.tint.on()) {
+                if (layer.tint.on() && (layer.tint.kind == TintKind::Fixed || config.useBiomeColors)) {
                     value["kind"] = TintKindName(layer.tint.kind);
                     if (layer.tint.kind == TintKind::Fixed) {
                         nlohmann::json color = nlohmann::json::array();
