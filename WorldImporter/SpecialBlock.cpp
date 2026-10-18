@@ -842,6 +842,62 @@ namespace {
         return result;
     }
 
+    // factory_gauge: block.json has no elements; FactoryPanelModel adds one panel partial per
+    // active slot (NBT key = slot name), FactoryPanelRenderer adds a bulb when FilterAmount > 0.
+    // Both: translate(slot * 0.5), rotateY(180), rotateX(xRot + 90), rotateY(yRot), centred.
+    ModelData GenerateCreateFactoryGauge(const unordered_map<string, string>& states, const NbtTagPtr& nbt) {
+        ModelData result;
+        if (!nbt || nbt->type != TagType::COMPOUND) return result;
+        auto rotateMc = [](ModelData& model, char axis, float degrees) {
+            if (model.vertices.empty() || fmodf(degrees, 360.0f) == 0.0f) return;
+            const float rad = degrees * (float)M_PI / 180.0f;
+            const float c = roundf(cosf(rad) * 1e6f) / 1e6f, s = roundf(sinf(rad) * 1e6f) / 1e6f;
+            for (size_t i = 0; i + 2 < model.vertices.size(); i += 3) {
+                float vx = model.vertices[i] - 0.5f, vy = model.vertices[i + 1] - 0.5f, vz = model.vertices[i + 2] - 0.5f;
+                float nx = vx, ny = vy, nz = vz;
+                if (axis == 'x') { ny = vy * c - vz * s; nz = vy * s + vz * c; }
+                else if (axis == 'y') { nx = vx * c + vz * s; nz = -vx * s + vz * c; }
+                model.vertices[i] = nx + 0.5f; model.vertices[i + 1] = ny + 0.5f; model.vertices[i + 2] = nz + 0.5f;
+            }
+        };
+        const string face = states.contains("face") ? states.at("face") : "floor";
+        const string facing = states.contains("facing") ? states.at("facing") : "south";
+        const float xRot = face == "ceiling" ? 90.0f : face == "floor" ? -90.0f : 0.0f;
+        // AngleHelper.horizontalAngle: toYRot, negated on the X axis.
+        float yRot = facing == "west" ? -90.0f : facing == "north" ? 180.0f : facing == "east" ? -270.0f : 0.0f;
+        if (face == "ceiling") yRot += 180.0f;
+        const bool restocker = getChildByName(nbt, "Promises") != nullptr; // only saved for restockers
+        auto listSize = [](const NbtTagPtr& tag) {
+            return tag && tag->type == TagType::LIST ? tag->children.size() : size_t(0);
+        };
+        static const struct { const char* name; int xOffset, yOffset; } slots[] = {
+            {"top_left", 1, 1}, {"top_right", 0, 1}, {"bottom_left", 1, 0}, {"bottom_right", 0, 0}};
+        for (const auto& slot : slots) {
+            NbtTagPtr panel = getChildByName(nbt, slot.name);
+            if (!panel || panel->type != TagType::COMPOUND || panel->children.empty()) continue;
+            auto amountTag = getChildByName(panel, "FilterAmount");
+            int count = amountTag && amountTag->type == TagType::INT ? bytesToInt(amountTag->payload) : 0;
+            string partial = string("block/factory_gauge/panel") + (restocker ? "_restocker" : "") + (count == 0 ? "" : "_with_bulb");
+            ModelData piece = LoadCreateModel(partial, 260);
+            if (count > 0) {
+                bool linked = listSize(getChildByName(panel, "TargetedBy")) > 0 || restocker;
+                bool missingAddress = linked && NbtString(panel, "RecipeAddress").empty();
+                Append(piece, LoadCreateModel(NbtBool(panel, "RedstonePowered") || missingAddress ?
+                    "block/factory_gauge/bulb_red" : "block/factory_gauge/bulb_light", 261));
+            }
+            for (size_t i = 0; i + 2 < piece.vertices.size(); i += 3) {
+                piece.vertices[i] += slot.xOffset * 0.5f;
+                piece.vertices[i + 2] += slot.yOffset * 0.5f;
+            }
+            rotateMc(piece, 'y', 180.0f);
+            rotateMc(piece, 'x', xRot + 90.0f);
+            rotateMc(piece, 'y', yRot);
+            Append(result, std::move(piece));
+        }
+        DisableCulling(result);
+        return result;
+    }
+
 }
 
 bool SpecialBlock::TryGenerateCreateBlockModel(const string& blockName,
@@ -919,6 +975,10 @@ bool SpecialBlock::TryGenerateCreateBlockModel(const string& blockName,
     }
     if (baseName == "create:hand_crank") {
         outModel = GenerateCreateHandCrank(blockName, ParseBlockStates(blockName));
+        return !outModel.vertices.empty();
+    }
+    if (baseName == "create:factory_gauge") {
+        outModel = GenerateCreateFactoryGauge(ParseBlockStates(blockName), blockEntityNbt);
         return !outModel.vertices.empty();
     }
     {
