@@ -164,6 +164,9 @@
     <ClCompile Include="decompressor.cpp">
       <Filter>源文件\Utils</Filter>
     </ClCompile>
+    <ClCompile Include="CreateSpoutCannonPulley.cpp">
+      <Filter>源文件\Blocks</Filter>
+    </ClCompile>
     <ClCompile Include="GlobalCache.cpp">
       <Filter>源文件\Core\Cache</Filter>
     </ClCompile>
@@ -268,6 +271,9 @@
     </ClInclude>
     <ClInclude Include="decompressor.h">
       <Filter>头文件\Utils</Filter>
+    </ClInclude>
+    <ClInclude Include="CreateSpoutCannonPulley.h">
+      <Filter>头文件\Blocks</Filter>
     </ClInclude>
     <ClInclude Include="GlobalCache.h">
       <Filter>头文件\Core\Cache</Filter>

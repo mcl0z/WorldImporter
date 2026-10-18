@@ -5,6 +5,7 @@
 #include "objExporter.h"
 #include "include/stb_image.h"
 #include "biome.h"
+#include "CreateSpoutCannonPulley.h"
 #include "model.h"
 #include "blocktint.h"
 #include "fluid.h"
@@ -431,6 +432,9 @@ void ChunkGenerator::ProcessBlockForModel(ModelData& chunkModel, int x, int y, i
             base == "create:gearshift" || base == "create:sequenced_gearshift" ||
             base == "create:encased_fluid_pipe";
     }
+    // Create spout / schematicannon / pulleys: BE-rendered partials appended to the block model.
+    if (ns == "create")
+        AppendCreateSpoutCannonPulley("create:" + blockName, blockEntityNbt, blockModel);
     if ((!specialHandled || createSpecialNeedsCT) && ns == "create") {
         useCtm = ApplyCreateCTToBlockModel(blockModel, ns, blockName, x, y, z);
     }
