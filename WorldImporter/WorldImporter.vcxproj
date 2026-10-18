@@ -189,6 +189,7 @@
     <ClCompile Include="nbtutils.cpp" />
     <ClCompile Include="ObjExporter.cpp" />
     <ClCompile Include="RegionModelExporter.cpp" />
+    <ClCompile Include="SignText.cpp" />
     <ClCompile Include="TaskMonitor.cpp" />
     <ClCompile Include="texture.cpp" />
   </ItemGroup>
@@ -243,6 +244,7 @@
     <ClInclude Include="nbtutils.h" />
     <ClInclude Include="ObjExporter.h" />
     <ClInclude Include="RegionModelExporter.h" />
+    <ClInclude Include="SignText.h" />
     <ClInclude Include="TaskMonitor.h" />
     <ClInclude Include="texture.h" />
   </ItemGroup>
