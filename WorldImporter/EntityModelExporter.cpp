@@ -10,6 +10,8 @@
 #include "objExporter.h"
 #include "texture.h"
 #include "blocktint.h"
+#include "include/stb_image.h"
+#include "include/stb_image_write.h"
 
 #include <algorithm>
 #include <cmath>
@@ -59,7 +61,8 @@ struct Ctx {
     std::map<std::string, int> counters;
     std::map<std::string, int> exported;
     std::map<std::string, int> skippedItems;                    // 无法渲染的物品 (特殊渲染器等)
-    std::map<std::string, TintResult> tints;                    // 材质名 -> 固定色 (并入 tint.json)
+    std::map<std::string, TintResult> tints;                    // 材质名 -> 非固定色 (并入 tint.json)
+    std::map<std::string, std::string> tintedTex;               // rel+color -> 烘焙后的 png
 
     // 贴图写到 textures/<ns>/<path>.png, 返回相对路径; 不存在返回 ""
     std::string Texture(const std::string& ns, const std::string& path) {
@@ -73,6 +76,54 @@ struct Ctx {
         }
         textureCache[key] = rel;
         return rel;
+    }
+    // 实体材质落在 CI- 组, 插件没有 tint 输入。固定色乘进贴图副本 (失败则原路径)。
+    std::string TintedTexture(const std::string& rel, uint32_t rgb) {
+        if (rel.empty()) return rel;
+        const uint32_t color = rgb & 0xFFFFFFu;
+        std::ostringstream hex;
+        hex << std::uppercase << std::hex << std::setw(6) << std::setfill('0') << color;
+        const std::string cacheKey = rel + hex.str();
+        if (auto it = tintedTex.find(cacheKey); it != tintedTex.end()) return it->second;
+
+        const std::string tag = "_t" + hex.str();
+        std::string out = rel;
+        if (out.size() >= 4 && out.compare(out.size() - 4, 4, ".png") == 0)
+            out.insert(out.size() - 4, tag);
+        else
+            out += tag;
+
+        int w = 0, h = 0, n = 0;
+        unsigned char* px = stbi_load(rel.c_str(), &w, &h, &n, 4);
+        if (!px || w <= 0 || h <= 0) {
+            if (px) stbi_image_free(px);
+            tintedTex.emplace(cacheKey, rel);
+            return rel;
+        }
+        const double sr = static_cast<double>((color >> 16) & 255) / 255.0;
+        const double sg = static_cast<double>((color >> 8) & 255) / 255.0;
+        const double sb = static_cast<double>(color & 255) / 255.0;
+        auto mul = [](unsigned char v, double f) -> unsigned char {
+            const long r = std::lround(static_cast<double>(v) * f);
+            if (r <= 0) return 0;
+            if (r >= 255) return 255;
+            return static_cast<unsigned char>(r);
+        };
+        const size_t count = static_cast<size_t>(w) * static_cast<size_t>(h);
+        for (size_t i = 0; i < count; ++i) {
+            unsigned char* p = px + i * 4;
+            p[0] = mul(p[0], sr);
+            p[1] = mul(p[1], sg);
+            p[2] = mul(p[2], sb);
+        }
+        const int wrote = stbi_write_png(out.c_str(), w, h, 4, px, w * 4);
+        stbi_image_free(px);
+        if (!wrote) {
+            tintedTex.emplace(cacheKey, rel);
+            return rel;
+        }
+        tintedTex.emplace(cacheKey, out);
+        return out;
     }
     int Material(const std::string& name, const std::string& texture) {
         auto it = materialIndex.find(name);
@@ -240,7 +291,7 @@ ArmorInfo ArmorOf(const ItemStackInfo& item) {
     return a;
 }
 
-// 网格 (ModelData + 自带材质) 并入实体对象, 材质按名字登记到 ctx (固定色 tint 一并记录)
+// 网格 (ModelData + 自带材质) 并入实体对象。固定色烘焙进贴图; 其它 tint 记入 ctx.tints。
 void AppendMesh(Ctx& ctx, OutObject& obj, const ModelData& m);
 
 // 盔甲层材质: 基础层 + 叠加层 (皮革: 染色基础层 + 不染色 overlay)
@@ -255,15 +306,18 @@ int ArmorMaterial(Ctx& ctx, const std::vector<ArmorTexLayer>& layers) {
     std::string baseTex = ctx.Texture(layers[0].texNs, layers[0].texPath);
     if (baseTex.empty()) return -1;
     auto [baseName, baseTint] = nameOf(layers[0]);
+    if (baseTint.kind == TintKind::Fixed) baseTex = ctx.TintedTexture(baseTex, baseTint.color);
+    else if (baseTint.on()) ctx.tints[baseName] = baseTint;
     int mat = ctx.Material(baseName, baseTex);
-    if (baseTint.on()) ctx.tints[baseName] = baseTint;
     std::vector<OverlayLayerInfo> over;
     for (size_t i = 1; i < layers.size(); ++i) {
         std::string t = ctx.Texture(layers[i].texNs, layers[i].texPath);
         if (t.empty()) continue;
         OverlayLayerInfo info;
         auto [n, tint] = nameOf(layers[i]);
-        info.name = n; info.texturePath = t; info.tint = tint;
+        info.name = n;
+        if (tint.kind == TintKind::Fixed) info.texturePath = ctx.TintedTexture(t, tint.color);
+        else { info.texturePath = t; info.tint = tint; }
         over.push_back(info);
     }
     if (!over.empty()) RegisterOverlaySequence(baseName, over);
@@ -335,8 +389,10 @@ void AppendMesh(Ctx& ctx, OutObject& obj, const ModelData& m) {
     for (size_t i = 0; i < m.materials.size(); ++i) {
         const auto& mat = m.materials[i];
         if (mat.texturePath.empty()) continue;
-        remap[i] = ctx.Material(mat.name, mat.texturePath);
-        if (mat.tint.on()) ctx.tints[mat.name] = mat.tint;
+        std::string tex = mat.texturePath;
+        if (mat.tint.kind == TintKind::Fixed) tex = ctx.TintedTexture(tex, mat.tint.color);
+        else if (mat.tint.on()) ctx.tints[mat.name] = mat.tint;
+        remap[i] = ctx.Material(mat.name, tex);
     }
     ModelData& out = obj.mesh;
     int vBase = static_cast<int>(out.vertices.size() / 3), uBase = static_cast<int>(out.uvCoordinates.size() / 2);
