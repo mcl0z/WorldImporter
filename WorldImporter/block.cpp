@@ -17,6 +17,7 @@
 // --- 项目头文件 ---
 #include "config.h"
 #include "block.h"
+#include "ModCT.h"
 #include "Occlusion.h"
 #include "RegionCache.h"
 #include "model.h"
@@ -523,24 +524,16 @@ void ProcessEntityBlocks(int chunkX, int chunkZ, const NbtTagPtr& blockEntitiesT
 
             entityBlocks.push_back(yuushyaEntity);
         }
-        else if (false && (id.rfind("copycats:", 0) == 0 || id.rfind("create:copycat_", 0) == 0)) { // warm disabled: ProcessBlockstate during region load segfaults
-            auto matTag = getChildByName(entityTag, "Material");
-            if (matTag && matTag->type == TagType::COMPOUND) {
-                auto nameTag = getChildByName(matTag, "Name");
-                if (nameTag && nameTag->type == TagType::STRING) {
-                    std::string full(nameTag->payload.begin(), nameTag->payload.end());
-                    std::string cns = "minecraft", clocal = full;
-                    size_t c = full.find(':');
-                    if (c != std::string::npos) {
-                        cns = full.substr(0, c);
-                        clocal = full.substr(c + 1);
-                    }
-                    size_t br = clocal.find('[');
-                    if (br != std::string::npos) clocal = clocal.substr(0, br);
-                    if (!clocal.empty() && clocal != "copycat_base")
-                        ProcessBlockstate(cns, { clocal });
-                }
-            }
+        else if (id == "create:copycat" || id.rfind("copycats:", 0) == 0) {
+            // Material models are warmed after chunk load (ProcessBlockstate is not
+            // safe from the parallel loaders); see ModCT_FlushCopycatWarm.
+            ModCT_QueueCopycatWarm(entityTag);
+            auto basicEntity = std::make_shared<YuushyaShowBlockEntity>();
+            basicEntity->id = id;
+            basicEntity->x = x;
+            basicEntity->y = y;
+            basicEntity->z = z;
+            entityBlocks.push_back(basicEntity);
         }
         else if (id.rfind("framedblocks:", 0) == 0) {
             // Warm camo / camo_two block models during load (before blockstateCachesFrozen).
