@@ -11,6 +11,7 @@
 #include "LODManager.h"
 #include "CTM.h"
 #include "CreateCT.h"
+#include "CreateFlaps.h"
 #include "ModCT.h"
 #include "texture.h"
 #include "Occlusion.h"
@@ -496,6 +497,10 @@ void ChunkGenerator::ProcessBlockForModel(ModelData& chunkModel, int x, int y, i
     const bool selfGlassLike =
         curBaseName.find("glass") != std::string::npos ||
         curBaseName.find("pane") != std::string::npos;
+
+    // Create funnel and belt-tunnel flaps (static flapness 0, DO_NOT_CULL).
+    if (ns == "create")
+        AppendCreateFlaps("create:" + blockName, blockEntityNbt, blockModel);
 
     // 遍历所有面
     for (size_t faceIdx = 0; faceIdx < blockModel.faces.size(); ++faceIdx) {

@@ -182,6 +182,9 @@
     <ClCompile Include="TaskMonitor.cpp">
       <Filter>源文件\Tools</Filter>
     </ClCompile>
+    <ClCompile Include="CreateFlaps.cpp">
+      <Filter>源文件\Blocks</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <!-- 核心文件 -->
@@ -285,6 +288,9 @@
       <Filter>头文件\Tools</Filter>
     </ClInclude>
     <ClInclude Include="Fluid.h">
+      <Filter>头文件\Blocks</Filter>
+    </ClInclude>
+    <ClInclude Include="CreateFlaps.h">
       <Filter>头文件\Blocks</Filter>
     </ClInclude>
   </ItemGroup>
