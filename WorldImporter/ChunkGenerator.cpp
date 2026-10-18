@@ -12,6 +12,7 @@
 #include "CTM.h"
 #include "CreateCT.h"
 #include "ModCT.h"
+#include "CreateFrogportPsi.h"
 #include "texture.h"
 #include "Occlusion.h"
 #include <iomanip>
@@ -430,6 +431,10 @@ void ChunkGenerator::ProcessBlockForModel(ModelData& chunkModel, int x, int y, i
     }
 
     if (blockModel.vertices.empty()) return;
+
+    // Create frogport / portable interfaces: BE-rendered partials appended to the block model.
+    if (ns == "create")
+        AppendCreateFrogportPsi("create:" + blockName, x, y, z, blockEntityNbt, blockModel);
 
     // FramedBlocks: retexture frame materials from BE camo (shape stays).
     // Double/fluid camo + position camo alias for Mek CT connect groups.
