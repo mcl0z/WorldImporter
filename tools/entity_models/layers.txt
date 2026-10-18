@@ -220,3 +220,22 @@ modern minecraft:cold_cow_baby#main
 modern minecraft:warm_cow#main
 modern minecraft:warm_cow_baby#main
 modern minecraft:cold_chicken#main
+# special item entity models (shield, trident, skulls). Both families.
+legacy minecraft:shield#main
+legacy minecraft:trident#main
+legacy minecraft:skeleton_skull#main
+legacy minecraft:wither_skeleton_skull#main
+legacy minecraft:zombie_head#main
+legacy minecraft:creeper_head#main
+legacy minecraft:player_head#main
+legacy minecraft:dragon_skull#main
+legacy minecraft:piglin_head#main
+modern minecraft:shield#main
+modern minecraft:trident#main
+modern minecraft:skeleton_skull#main
+modern minecraft:wither_skeleton_skull#main
+modern minecraft:zombie_head#main
+modern minecraft:creeper_head#main
+modern minecraft:player_head#main
+modern minecraft:dragon_skull#main
+modern minecraft:piglin_head#main
