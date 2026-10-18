@@ -47,5 +47,6 @@
     "LOD1renderDistance": 8,
     "LOD2renderDistance": 8,
     "LOD3renderDistance": 8,
-    "solid": 0
+    "solid": 0,
+    "optifineCtm": "auto"
 }
