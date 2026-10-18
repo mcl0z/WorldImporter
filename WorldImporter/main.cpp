@@ -5,6 +5,7 @@
 #include "TaskMonitor.h"   // 包含任务监控器头文件
 #include "EntityExporter.h"
 #include "EntityModelExporter.h"
+#include "PaintingExporter.h"
 
 Config config;  // 定义全局变量
 
@@ -38,6 +39,7 @@ int main() {
         if (config.importEntities) {
             EntityExporter::Export("entities.json");
         }
+        PaintingExporter::Export();
         auto end_time = high_resolution_clock::now();
         auto duration = duration_cast<milliseconds>(end_time - start_time);
         cout << "Total time: " << duration.count() << " milliseconds" << endl;

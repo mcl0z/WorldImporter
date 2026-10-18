@@ -222,6 +222,7 @@ void JarReader::cacheAllResources(
     std::unordered_map<std::string, std::string>& ctmPropertiesCache,
     std::unordered_map<std::string, std::vector<unsigned char>>& ctmTexturesCache,
     std::unordered_map<std::string, nlohmann::json>& atlasCache,
+    std::unordered_map<std::string, nlohmann::json>& paintingVariantCache,
     size_t rangeIndex, size_t rangeCount)
 {
     if (!zipFile) {
@@ -533,6 +534,39 @@ void JarReader::cacheAllResources(
                             biomeCache.emplace(cacheKey, nlohmann::json::parse(content));
                         } catch (...) {
                             std::cerr << "Invalid biome JSON: " << filePath << std::endl;
+                        }
+                    }
+                }
+            }
+            // data/<namespace>/painting_variant/[...]/<name>.json (1.21+)
+            else if (parts.size() >= 4 && parts[0] == "data" && parts[2] == "painting_variant") {
+                std::string namespaceName = parts[1];
+                std::vector<std::string> idParts;
+                bool jsonFile = false;
+                for (auto it = parts.begin() + 3; it != parts.end(); ++it) {
+                    if (it + 1 == parts.end()) {
+                        if (it->size() >= 5 && it->substr(it->size() - 5) == ".json") {
+                            idParts.push_back(it->substr(0, it->size() - 5));
+                            jsonFile = true;
+                        }
+                    } else {
+                        idParts.push_back(*it);
+                    }
+                }
+                if (!jsonFile || idParts.empty()) continue;
+                std::string variantId;
+                for (size_t idx = 0; idx < idParts.size(); ++idx) {
+                    if (idx != 0) variantId += "/";
+                    variantId += idParts[idx];
+                }
+                std::string cacheKey = namespaceName + ":" + variantId;
+                if (paintingVariantCache.find(cacheKey) == paintingVariantCache.end()) {
+                    std::string content = readText();
+                    if (!content.empty()) {
+                        try {
+                            paintingVariantCache.emplace(cacheKey, nlohmann::json::parse(content));
+                        } catch (...) {
+                            std::cerr << "Invalid painting variant JSON: " << filePath << std::endl;
                         }
                     }
                 }

@@ -236,6 +236,8 @@
     </ClCompile>
     <ClCompile Include="BannerModel.cpp">
       <Filter>源文件\Blocks</Filter>
+    <ClCompile Include="PaintingExporter.cpp">
+      <Filter>源文件\Exporter</Filter>
     </ClCompile>
     <ClCompile Include="init.cpp">
       <Filter>源文件</Filter>
@@ -335,6 +337,8 @@
     </ClInclude>
     <ClInclude Include="SignText.h">
       <Filter>头文件\Blocks</Filter>
+    <ClInclude Include="PaintingExporter.h">
+      <Filter>头文件\Exporter</Filter>
     </ClInclude>
     <ClInclude Include="hashutils.h">
       <Filter>头文件\Utils</Filter>
