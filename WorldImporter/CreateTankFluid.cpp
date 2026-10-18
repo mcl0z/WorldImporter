@@ -257,6 +257,18 @@ namespace {
         const float yOffset = (11.0f / 16.0f) * level;
         AppendFluidBox(model, slot.fluid, minV, minV, minV, maxV, minV + yOffset, maxV);
     }
+
+    // ItemDrainRenderer.renderFluid: box (2/16, yMin - yOffset, 2/16)..(14/16, yMin, 14/16)
+    // translated by yOffset = 7/16 * level, yMin = 5/16. Level.Value is the 0..1 fill.
+    void AppendItemDrain(const NbtTagPtr& nbt, ModelData& model) {
+        auto tanks = getChildByName(nbt, "Tanks");
+        if (!tanks || tanks->type != TagType::LIST || tanks->children.empty()) return;
+        TankSlot slot = ReadTankSlot(tanks->children[0]);
+        if (TankEmpty(slot) || !slot.hasLevel || slot.level == 0.0f) return;
+        const float yMin = 0.3125f, minV = 0.125f, maxV = minV + 0.75f;
+        const float yOffset = 0.4375f * slot.level;
+        AppendFluidBox(model, slot.fluid, minV, yMin, minV, maxV, yMin + yOffset, maxV);
+    }
 }
 
 void AppendCreateTankFluid(const string& blockName, const NbtTagPtr& nbt,
@@ -269,4 +281,6 @@ void AppendCreateTankFluid(const string& blockName, const NbtTagPtr& nbt,
         AppendBasin(nbt, model);
     else if (base == "create:spout")
         AppendSpout(nbt, model);
+    else if (base == "create:item_drain")
+        AppendItemDrain(nbt, model);
 }
