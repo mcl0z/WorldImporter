@@ -2277,6 +2277,70 @@ namespace {
         return 0.0f;
     }
     const float kPi = 3.14159265358979f;
+    // DecoratedPotRenderer: 侧面按 PotDecorations.ordered() = back, left, right, front 取图案
+    ModelData DecoratedPotModel(const string& ns, const string& blockID, const string& facing, const std::vector<string>& sherds) {
+        ModelData model;
+        // rotateAround(Y, 180 - facing.toYRot(), 0.5, 0.5, 0.5)
+        float deg = 180.0f - DirToYRot(facing);
+        Aff root = AffT(0.5f, 0.5f, 0.5f) * AffRY(deg * kPi / 180.0f) * AffT(-0.5f, -0.5f, -0.5f);
+        int base = AddEntityMaterial(model, ns, blockID, "entity/decorated_pot/decorated_pot_base", "base");
+        int side = AddEntityMaterial(model, ns, blockID, "entity/decorated_pot/decorated_pot_side", "side");
+        if (base < 0 || side < 0) return ModelData();
+        Aff neck = root * PartPose(0, 37, 16, kPi, 0, 0);
+        AddEntityCube(model, base, neck, 0, 0, 4, 17, 4, 8, 3, 8, -0.1f, 32, 32);
+        AddEntityCube(model, base, neck, 0, 5, 5, 20, 5, 6, 1, 6, 0.2f, 32, 32);
+        AddEntityCube(model, base, root * PartPose(1, 16, 1), -14, 13, 0, 0, 0, 14, 0, 14, 0, 32, 32);
+        AddEntityCube(model, base, root * PartPose(1, 0, 1), -14, 13, 0, 0, 0, 14, 0, 14, 0, 32, 32);
+        const float sides[4][6] = { {15, 16, 1, 0, 0, kPi}, {1, 16, 1, 0, -kPi / 2, kPi},
+                                    {15, 16, 15, 0, kPi / 2, kPi}, {1, 16, 15, kPi, 0, 0} };
+        for (int i = 0; i < 4; ++i) {
+            int mat = side;
+            // DecoratedPotPatterns: <name>_pottery_sherd -> entity/decorated_pot/<name>_pottery_pattern, 其他(砖)用默认侧面
+            string item = i < (int)sherds.size() ? sherds[i] : "";
+            size_t c = item.find(':');
+            string ins = c == string::npos ? "minecraft" : item.substr(0, c), id = c == string::npos ? item : item.substr(c + 1);
+            const string suf = "_pottery_sherd";
+            if (id.size() > suf.size() && id.compare(id.size() - suf.size(), suf.size(), suf) == 0) {
+                int m = AddEntityMaterial(model, ins, blockID,
+                    "entity/decorated_pot/" + id.substr(0, id.size() - suf.size()) + "_pottery_pattern", "side");
+                if (m >= 0) mat = m;
+            }
+            const auto& s = sides[i];
+            AddEntityCube(model, mat, root * PartPose(s[0], s[1], s[2], s[3], s[4], s[5]), 1, 0, 0, 0, 0, 14, 16, 0, 0, 16, 16, F_NORTH);
+        }
+        return model;
+    }
+}
+
+std::vector<string> SpecialBlock::ReadPotSherds(const NbtTagPtr& blockEntityNbt) {
+    // 方块实体 sherds(back, left, right, front), 缺省为砖:
+    // 1.20-1.21 为物品 id 列表; 26.1+ 为 {back/left/right/front: 物品} 的 compound
+    std::vector<string> sherds;
+    NbtTagPtr tag = blockEntityNbt ? getChildByName(blockEntityNbt, "sherds") : nullptr;
+    auto itemId = [](const NbtTagPtr& t) -> string {
+        if (!t) return "";
+        if (t->type == TagType::STRING) return getStringTag(t);
+        if (t->type == TagType::COMPOUND) {
+            NbtTagPtr id = getChildByName(t, "id");
+            if (id && id->type == TagType::STRING) return getStringTag(id);
+        }
+        return "";
+    };
+    if (tag && tag->type == TagType::LIST)
+        for (const auto& t : tag->children) sherds.push_back(itemId(t));
+    else if (tag && tag->type == TagType::COMPOUND)
+        for (const char* k : { "back", "left", "right", "front" }) sherds.push_back(itemId(getChildByName(tag, k)));
+    return sherds;
+}
+
+ModelData SpecialBlock::GenerateDecoratedPotModel(const string& blockName, const NbtTagPtr& blockEntityNbt) {
+    std::vector<string> sherds = ReadPotSherds(blockEntityNbt);
+    bool any = false;
+    for (const auto& id : sherds) if (id.find("_pottery_sherd") != string::npos) any = true;
+    if (!any) return ModelData();
+    auto states = ParseBlockStates(blockName);
+    auto it = states.find("facing");
+    return DecoratedPotModel("minecraft", "decorated_pot", it == states.end() ? "north" : it->second, sherds);
 }
 
 ModelData SpecialBlock::GenerateBlockEntityModel(const string& blockName) {
@@ -2289,24 +2353,7 @@ ModelData SpecialBlock::GenerateBlockEntityModel(const string& blockName) {
     auto state = [&](const string& k, const string& def) { auto it = states.find(k); return it == states.end() ? def : it->second; };
     ModelData model;
 
-    if (blockID == "decorated_pot") {
-        // DecoratedPotRenderer: rotateAround(Y, 180 - facing.toYRot(), 0.5, 0.5, 0.5)
-        float deg = 180.0f - DirToYRot(state("facing", "north"));
-        Aff root = AffT(0.5f, 0.5f, 0.5f) * AffRY(deg * kPi / 180.0f) * AffT(-0.5f, -0.5f, -0.5f);
-        int base = AddEntityMaterial(model, ns, blockID, "entity/decorated_pot/decorated_pot_base", "base");
-        int side = AddEntityMaterial(model, ns, blockID, "entity/decorated_pot/decorated_pot_side", "side");
-        if (base < 0 || side < 0) return ModelData();
-        Aff neck = root * PartPose(0, 37, 16, kPi, 0, 0);
-        AddEntityCube(model, base, neck, 0, 0, 4, 17, 4, 8, 3, 8, -0.1f, 32, 32);
-        AddEntityCube(model, base, neck, 0, 5, 5, 20, 5, 6, 1, 6, 0.2f, 32, 32);
-        AddEntityCube(model, base, root * PartPose(1, 16, 1), -14, 13, 0, 0, 0, 14, 0, 14, 0, 32, 32);
-        AddEntityCube(model, base, root * PartPose(1, 0, 1), -14, 13, 0, 0, 0, 14, 0, 14, 0, 32, 32);
-        const float sides[4][6] = { {15, 16, 1, 0, 0, kPi}, {1, 16, 1, 0, -kPi / 2, kPi},
-                                    {15, 16, 15, 0, kPi / 2, kPi}, {1, 16, 15, kPi, 0, 0} };
-        for (const auto& s : sides)
-            AddEntityCube(model, side, root * PartPose(s[0], s[1], s[2], s[3], s[4], s[5]), 1, 0, 0, 0, 0, 14, 16, 0, 0, 16, 16, F_NORTH);
-        return model;
-    }
+    if (blockID == "decorated_pot") return DecoratedPotModel(ns, blockID, state("facing", "north"), {});
     if (blockID == "conduit") {
         // ConduitRenderer(未激活): translate(0.5,0.5,0.5) 外壳 6x6x6
         int mat = AddEntityMaterial(model, ns, blockID, "entity/conduit/base", "");

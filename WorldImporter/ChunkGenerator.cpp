@@ -44,6 +44,14 @@ namespace {
     std::vector<PreparedBlockName> preparedBlockNames;
 }
 
+// 饰纹陶罐: 方块实体 sherds 中有图案时按图案重建侧面
+static void ApplyPotSherds(ModelData& model, const std::string& ns, const std::string& blockName, const NbtTagPtr& nbt) {
+    if (!nbt || model.vertices.empty() || ns != "minecraft" || blockName.rfind("decorated_pot", 0) != 0 ||
+        (blockName.size() > 13 && blockName[13] != '[')) return;
+    ModelData pot = SpecialBlock::GenerateDecoratedPotModel(blockName, nbt);
+    if (!pot.vertices.empty()) model = std::move(pot);
+}
+
 void ChunkGenerator::PrepareBlockNames() {
     // Palette indices are append-only across export batches. Keep already
     // prepared names instead of reallocating every block-state string each time.
@@ -336,6 +344,7 @@ void ChunkGenerator::ProcessBlockForModel(ModelData& chunkModel, int x, int y, i
         AssignFluidMaterials(liquidModel, fluidName);
 
         ModelData waterloggedBlockModel = GetRandomModelFromCache(ns, blockName, BlockPosSeed(x, y, z));
+        ApplyPotSherds(waterloggedBlockModel, ns, blockName, blockEntityNbt);
         if (waterloggedBlockModel.vertices.empty()) {
             blockModel = liquidModel;
         }
@@ -371,6 +380,7 @@ void ChunkGenerator::ProcessBlockForModel(ModelData& chunkModel, int x, int y, i
     {
         // 处理其他方块
         blockModel = GetRandomModelFromCache(ns, blockName, BlockPosSeed(x, y, z));
+        ApplyPotSherds(blockModel, ns, blockName, blockEntityNbt);
         // 钟: 方块模型只有支架, 钟体由 BellRenderer 绘制
         if (ns == "minecraft" && blockName.rfind("bell", 0) == 0 && (blockName.size() == 4 || blockName[4] == '[') &&
             !blockModel.vertices.empty()) {

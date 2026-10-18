@@ -98,6 +98,14 @@ if (BUILD_TESTING AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/WorldImporter/tests/bi
     set_tests_properties(biome_colors PROPERTIES TIMEOUT 30 RESOURCE_LOCK biome_texture_output)
 endif()
 
+if (BUILD_TESTING AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/WorldImporter/tests/pot_sherds_tests.cpp")
+    add_executable(pot_sherds_tests WorldImporter/tests/pot_sherds_tests.cpp)
+    target_link_libraries(pot_sherds_tests PRIVATE WorldImporterCore)
+    wi_apply_defaults(pot_sherds_tests)
+    add_test(NAME pot_sherds COMMAND pot_sherds_tests)
+    set_tests_properties(pot_sherds PROPERTIES TIMEOUT 30)
+endif()
+
 # tests/ 是可选目录：删掉它（例如只发布主程序源码）时必须仍能正常编译主程序。
 set(WI_TESTS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/tests")
 if (BUILD_TESTING AND NOT EXISTS "${WI_TESTS_DIR}")
