@@ -26,6 +26,7 @@
     "ctmPrefixMatchTiles": true,
     "mergeModTextures": true,
     "exportFullModel": true,
+    "exportEntityModels": true,
     "partitionSize": 4,
     "maxTasksPerBatch": 32768,
     "activeLOD": false,

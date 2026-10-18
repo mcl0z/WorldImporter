@@ -11,6 +11,7 @@
 #include <sstream>
 #include <vector>
 #include <cstdint>
+#include <functional>
 
 namespace fs = std::filesystem;
 using nlohmann::json;
@@ -167,6 +168,45 @@ void ExportEntityRecursive(const NbtTagPtr& entity, json& output) {
 }
 
 namespace EntityExporter {
+size_t VisitEntities(const std::function<void(const NbtTagPtr&)>& visit) {
+    fs::path dir = GetEntitiesDirectory();
+    std::error_code ec;
+    if (!fs::is_directory(dir, ec)) {
+        std::cout << "[Entities] Directory not found: " << dir.string() << std::endl;
+        return 0;
+    }
+    // 只读与选区相交的区域文件 (r.<rx>.<rz>.mca, 每个 512x512 方块)
+    auto floorDiv = [](int v, int d) { return v >= 0 ? v / d : -((-v + d - 1) / d); };
+    const int rx0 = floorDiv(config.minX, 512), rx1 = floorDiv(config.maxX + 1, 512);
+    const int rz0 = floorDiv(config.minZ, 512), rz1 = floorDiv(config.maxZ + 1, 512);
+    std::function<void(const NbtTagPtr&)> walk = [&](const NbtTagPtr& e) {
+        if (!e || e->type != TagType::COMPOUND) return;
+        visit(e);
+        auto passengers = getChildByName(e, "Passengers");
+        if (passengers) for (const auto& p : passengers->children) walk(p);
+    };
+    size_t chunks = 0;
+    for (int rx = rx0; rx <= rx1; ++rx) {
+        for (int rz = rz0; rz <= rz1; ++rz) {
+            fs::path file = dir / ("r." + std::to_string(rx) + "." + std::to_string(rz) + ".mca");
+            if (!fs::is_regular_file(file, ec)) continue;
+            std::ifstream in(file, std::ios::binary);
+            if (!in) continue;
+            std::vector<char> bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+            for (size_t slot = 0; slot < 1024; ++slot) {
+                NbtTagPtr root;
+                if (!ReadChunkNbt(bytes, slot, root)) continue;
+                ++chunks;
+                auto list = getChildByName(root, "Entities");
+                if (!list) list = getChildByName(root, "entities");
+                if (!list) continue;
+                for (const auto& e : list->children) walk(e);
+            }
+        }
+    }
+    return chunks;
+}
+
 size_t Export(const std::string& outputPath) {
     json result;
     result["format"] = 1;
