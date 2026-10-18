@@ -556,6 +556,12 @@ void ChunkGenerator::ProcessBlockForModel(ModelData& chunkModel, int x, int y, i
     const bool selfGlassLike =
         curBaseName.find("glass") != std::string::npos ||
         curBaseName.find("pane") != std::string::npos;
+    // 原版 HalfTransparentBlock（冰/霜冰/黏液块/蜂蜜块）与相同方块相邻时不渲染该面
+    const bool selfHalfTransparent =
+        curBaseName == "minecraft:ice" || curBaseName == "minecraft:frosted_ice" ||
+        curBaseName == "minecraft:slime_block" || curBaseName == "minecraft:honey_block";
+    // 原版 MangroveRootsBlock 只在竖直方向与红树根相邻时不渲染该面
+    const bool selfMangroveRoots = curBaseName == "minecraft:mangrove_roots";
 
     // Create chain conveyor shaft, wheel, guards and chains (static, DO_NOT_CULL).
     if (ns == "create")
@@ -583,7 +589,11 @@ void ChunkGenerator::ProcessBlockForModel(ModelData& chunkModel, int x, int y, i
                 // 邻居被当作 air（透明/非实心）时，只有「同类连接方块」的
                 // 内部面才可剔除。旧代码把 useCtm 当成直接剔除条件，命中任意
                 // CTM 规则后会删掉该块全部 cullface（玻璃/水整块消失）。
-                if (selfGlassLike && isSameTransparentNeighbor(dir)) {
+                if ((selfGlassLike || selfHalfTransparent) && isSameTransparentNeighbor(dir)) {
+                    continue;
+                }
+                if (selfMangroveRoots && (dir == FaceType::UP || dir == FaceType::DOWN) &&
+                    isSameTransparentNeighbor(dir)) {
                     continue;
                 }
             }
