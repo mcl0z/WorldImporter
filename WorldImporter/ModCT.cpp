@@ -56,6 +56,8 @@ static void AddGroup(std::unordered_map<std::string, std::unordered_set<std::str
 }
 
 static void LoadConnectFromMcmeta() {
+    // extra.connect_to 只有 ConnectedTexturesMod 会读
+    if (!config.mcmetaCtmEnabled) return;
     std::shared_lock<std::shared_mutex> lock(GlobalCache::cacheMutex);
     for (const auto& entry : GlobalCache::mcmetaIndex) {
         auto it = GlobalCache::mcmetaCache.find(entry.second);

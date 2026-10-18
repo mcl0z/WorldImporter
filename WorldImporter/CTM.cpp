@@ -533,7 +533,8 @@ void InitializeCtmRules() {
 
     g_hasCtmRules = !g_ctmRules.empty();
     // mcmeta CTM(proxy/pattern/random/pillar 或直接 type=CTM)不依赖 OptiFine
-    // properties; 只要存在任一支持的 mcmeta 就开启 CTM 管线。
+    // properties; 仅在 mcmetaCtm 开启时(有 ConnectedTexturesMod)才因此打开管线。
+    // LDLib / GTCEu 的 ldlib.connection 与该开关无关。
     for (const auto& entry : GlobalCache::mcmetaIndex) {
         auto it = GlobalCache::mcmetaCache.find(entry.second);
         if (it == GlobalCache::mcmetaCache.end() || !it->second.is_object()) continue;
@@ -543,6 +544,7 @@ void InitializeCtmRules() {
             g_hasCtmRules = true;
             break;
         }
+        if (!config.mcmetaCtmEnabled) continue;
         if (!it->second.contains("ctm") || !it->second["ctm"].is_object()) continue;
         const auto& ctm = it->second["ctm"];
         if (ctm.value("ctm_version", 0) != 1) continue;
@@ -2654,9 +2656,9 @@ void ApplyCtmToBlockModel(ModelData& model,
             break;
         }
 
-        if (!got) {
+        if (!got && config.mcmetaCtmEnabled) {
             // Yuushya 式网格 mcmeta(proxy/pattern/random/pillar): 整张网格作 atlas,
-            // 面 UV 映射到选中格子。
+            // 面 UV 映射到选中格子。没有 ConnectedTexturesMod 时游戏不读这段。
             McmetaGridRule grid;
             if (GetMcmetaGridRuleCached(matNs, textureName, grid)) {
                 const CtmTexInfo gi = GetOrCreateMcmetaGridTexInfo(grid);
@@ -2670,7 +2672,7 @@ void ApplyCtmToBlockModel(ModelData& model,
             }
         }
 
-        if (!got) {
+        if (!got && config.mcmetaCtmEnabled) {
             std::string ctmNs, ctmPath;
             if (GetMcmetaCtmTexture(matNs, textureName, ctmNs, ctmPath)) {
                 info = GetOrCreateMcmetaCtmTexInfo(

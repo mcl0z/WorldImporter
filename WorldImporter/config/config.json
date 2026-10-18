@@ -24,6 +24,7 @@
     "doubleSidedFaceOffset": 0.0005,
     "overlayLayerStep": 0.0005,
     "ctmPrefixMatchTiles": true,
+    "mcmetaCtm": "auto",
     "mergeModTextures": true,
     "exportFullModel": true,
     "partitionSize": 4,
