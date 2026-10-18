@@ -35,6 +35,7 @@
     "activeLOD3": false,
     "activeLOD4": false,
     "useBiomeColors": true,
+    "downloadPlayerSkins": true,
     "variantSeedMode": "game",
     "useUnderwaterLOD": false,
     "useGreedyMesh": true,

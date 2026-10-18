@@ -13,6 +13,9 @@ list(REMOVE_ITEM SOURCE_FILES "${CMAKE_CURRENT_SOURCE_DIR}/WorldImporter/main.cp
 add_library(WorldImporterCore STATIC ${SOURCE_FILES})
 target_include_directories(WorldImporterCore PUBLIC WorldImporter)
 target_link_libraries(WorldImporterCore PUBLIC libzip::zip ZLIB::ZLIB)
+if (WIN32)
+    target_link_libraries(WorldImporterCore PUBLIC winhttp)
+endif()
 add_executable(WorldImporter WorldImporter/main.cpp)
 target_link_libraries(WorldImporter PRIVATE WorldImporterCore)
 
