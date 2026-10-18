@@ -421,6 +421,12 @@ void ChunkGenerator::ProcessBlockForModel(ModelData& chunkModel, int x, int y, i
     {
         // 处理其他方块
         blockModel = GetRandomModelFromCache(ns, blockName, BlockPosSeed(x, y, z));
+        // 钟: 方块模型只有支架, 钟体由 BellRenderer 绘制
+        if (ns == "minecraft" && blockName.rfind("bell", 0) == 0 && (blockName.size() == 4 || blockName[4] == '[') &&
+            !blockModel.vertices.empty()) {
+            static const ModelData bellBody = SpecialBlock::GenerateBlockEntityModel("minecraft:bell");
+            if (!bellBody.faces.empty()) MergeModelsDirectly(blockModel, bellBody);
+        }
     }
 
     // Copycats / Create copycat: material camo may rebuild empty air placeholders.

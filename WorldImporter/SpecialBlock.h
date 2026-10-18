@@ -15,6 +15,8 @@ public:
     static ModelData GenerateObjModel(const nlohmann::json& modelJson);
     static bool TryGenerateCreateBlockModel(const std::string& blockName,
         int x, int y, int z, const NbtTagPtr& blockEntityNbt, ModelData& outModel);
+    // 原版实体渲染方块(饰纹陶罐/潮涌核心/钟体/潜影盒), 不支持时返回空模型
+    static ModelData GenerateBlockEntityModel(const std::string& blockName);
 
 private:
     static ModelData GenerateLightBlockModel(const std::string& texturePath);

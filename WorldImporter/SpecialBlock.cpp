@@ -967,6 +967,12 @@ ModelData SpecialBlock::GenerateSpecialBlockModel(const string& blockName) {
         if (!sign.faces.empty()) return sign;
     }
 
+    // 原版实体渲染方块(饰纹陶罐/潮涌核心/钟/潜影盒)
+    {
+        ModelData be = GenerateBlockEntityModel(blockName);
+        if (!be.faces.empty()) return be;
+    }
+
     // 其他类型方块的生成逻辑
     ModelData defaultModel;
     return defaultModel;
@@ -1549,4 +1555,182 @@ ModelData SpecialBlock::GenerateSignModel(const string& blockName) {
     addBox(-12, -14, -1, 24, 12, 2, 0, 0);       // 牌面
     if (!wall) addBox(-1, -2, -1, 2, 14, 2, 0, 14); // 立杆
     return model;
+}
+
+// ---------------------------------------------------------------------------
+// 原版实体渲染方块(方块模型没有 elements, 由 BlockEntityRenderer 绘制):
+// 饰纹陶罐 / 潮涌核心 / 钟 / 潜影盒。几何按原版 ModelPart.Cube + PartPose 移植,
+// 变换按各自 Renderer 的 PoseStack 链计算, 单位: 方块(0..1)。
+namespace {
+    struct Aff {  // 3x4 仿射矩阵
+        float m[3][4] = { {1,0,0,0},{0,1,0,0},{0,0,1,0} };
+        Aff operator*(const Aff& o) const {
+            Aff r;
+            for (int i = 0; i < 3; ++i) for (int j = 0; j < 4; ++j) {
+                float s = (j == 3) ? m[i][3] : 0.0f;
+                for (int k = 0; k < 3; ++k) s += m[i][k] * o.m[k][j];
+                r.m[i][j] = s;
+            }
+            return r;
+        }
+        void Apply(const float p[3], float out[3], bool dir = false) const {
+            for (int i = 0; i < 3; ++i)
+                out[i] = m[i][0] * p[0] + m[i][1] * p[1] + m[i][2] * p[2] + (dir ? 0.0f : m[i][3]);
+        }
+    };
+    Aff AffT(float x, float y, float z) { Aff a; a.m[0][3] = x; a.m[1][3] = y; a.m[2][3] = z; return a; }
+    Aff AffS(float x, float y, float z) { Aff a; a.m[0][0] = x; a.m[1][1] = y; a.m[2][2] = z; return a; }
+    Aff AffRX(float r) { Aff a; float c = cosf(r), s = sinf(r); a.m[1][1] = c; a.m[1][2] = -s; a.m[2][1] = s; a.m[2][2] = c; return a; }
+    Aff AffRY(float r) { Aff a; float c = cosf(r), s = sinf(r); a.m[0][0] = c; a.m[0][2] = s; a.m[2][0] = -s; a.m[2][2] = c; return a; }
+    Aff AffRZ(float r) { Aff a; float c = cosf(r), s = sinf(r); a.m[0][0] = c; a.m[0][1] = -s; a.m[1][0] = s; a.m[1][1] = c; return a; }
+    // ModelPart.translateAndRotate: translate(xyz/16) * rotationZYX(z, y, x)
+    Aff PartPose(float x, float y, float z, float rx = 0, float ry = 0, float rz = 0) {
+        return AffT(x / 16.0f, y / 16.0f, z / 16.0f) * AffRZ(rz) * AffRY(ry) * AffRX(rx);
+    }
+    enum : unsigned { F_DOWN = 1, F_UP = 2, F_WEST = 4, F_NORTH = 8, F_EAST = 16, F_SOUTH = 32, F_ALL = 63 };
+
+    // 原版 ModelPart.Cube 构造(顶点 / UV / 面), pose 为该部件到方块空间的变换(输入像素坐标/16)
+    void AddEntityCube(ModelData& model, int mat, const Aff& pose, int texU, int texV,
+                       float x, float y, float z, float w, float h, float d, float grow,
+                       float texW, float texH, unsigned faces = F_ALL) {
+        float x0 = x - grow, y0 = y - grow, z0 = z - grow, x1 = x + w + grow, y1 = y + h + grow, z1 = z + d + grow;
+        const float P[8][3] = { {x0,y0,z0},{x1,y0,z0},{x1,y1,z0},{x0,y1,z0},   // t0..t3
+                                {x0,y0,z1},{x1,y0,z1},{x1,y1,z1},{x0,y1,z1} }; // l0..l3
+        float u0 = (float)texU, u1 = texU + d, u2 = texU + d + w, u22 = texU + d + w + w, u3 = texU + d + w + d, u4 = texU + d + w + d + w;
+        float v0 = (float)texV, v1 = texV + d, v2 = texV + d + h;
+        struct Q { unsigned bit; int a, b, c, e; float ua, va, ub, vb; float n[3]; };
+        const Q qs[6] = {
+            {F_DOWN,  5, 4, 0, 1, u1, v0, u2, v1,  {0,-1,0}},
+            {F_UP,    2, 3, 7, 6, u2, v1, u22, v0, {0,1,0}},
+            {F_WEST,  0, 4, 7, 3, u0, v1, u1, v2,  {-1,0,0}},
+            {F_NORTH, 1, 0, 3, 2, u1, v1, u2, v2,  {0,0,-1}},
+            {F_EAST,  5, 1, 2, 6, u2, v1, u3, v2,  {1,0,0}},
+            {F_SOUTH, 4, 5, 6, 7, u3, v1, u4, v2,  {0,0,1}},
+        };
+        for (const Q& q : qs) {
+            if (!(faces & q.bit)) continue;
+            int idx[4] = { q.a, q.b, q.c, q.e };
+            // Polygon: v0->(u1,v0) v1->(u0,v0) v2->(u0,v1) v3->(u1,v1)
+            float uv[4][2] = { {q.ub, q.va}, {q.ua, q.va}, {q.ua, q.vb}, {q.ub, q.vb} };
+            float W[4][3];
+            for (int i = 0; i < 4; ++i) {
+                float p[3] = { P[idx[i]][0] / 16.0f, P[idx[i]][1] / 16.0f, P[idx[i]][2] / 16.0f };
+                pose.Apply(p, W[i]);
+            }
+            // 零面积面(零厚度平面的侧面)跳过
+            float e1[3], e2[3], cr[3];
+            for (int k = 0; k < 3; ++k) { e1[k] = W[1][k] - W[0][k]; e2[k] = W[2][k] - W[0][k]; }
+            cr[0] = e1[1] * e2[2] - e1[2] * e2[1]; cr[1] = e1[2] * e2[0] - e1[0] * e2[2]; cr[2] = e1[0] * e2[1] - e1[1] * e2[0];
+            if (fabsf(cr[0]) + fabsf(cr[1]) + fabsf(cr[2]) < 1e-9f) {
+                for (int k = 0; k < 3; ++k) e2[k] = W[3][k] - W[0][k];
+                cr[0] = e1[1] * e2[2] - e1[2] * e2[1]; cr[1] = e1[2] * e2[0] - e1[0] * e2[2]; cr[2] = e1[0] * e2[1] - e1[1] * e2[0];
+                if (fabsf(cr[0]) + fabsf(cr[1]) + fabsf(cr[2]) < 1e-9f) continue;
+            }
+            // 绕序与变换后的面法线一致(变换可能含镜像)
+            float n[3]; pose.Apply(q.n, n, true);
+            bool flip = cr[0] * n[0] + cr[1] * n[1] + cr[2] * n[2] < 0.0f;
+            int vs = (int)model.vertices.size() / 3, us = (int)model.uvCoordinates.size() / 2;
+            for (int j = 0; j < 4; ++j) {
+                int i = flip ? 3 - j : j;
+                for (int k = 0; k < 3; ++k) model.vertices.push_back(W[i][k]);
+                model.uvCoordinates.push_back(uv[i][0] / texW);
+                model.uvCoordinates.push_back(1.0f - uv[i][1] / texH);
+            }
+            Face face;
+            face.vertexIndices = { vs, vs + 1, vs + 2, vs + 3 };
+            face.uvIndices = { us, us + 1, us + 2, us + 3 };
+            face.materialIndex = mat;
+            face.faceDirection = DO_NOT_CULL;
+            model.faces.push_back(face);
+        }
+    }
+
+    // 注册实体贴图并返回材质下标; 失败返回 -1
+    int AddEntityMaterial(ModelData& model, const string& ns, const string& blockID, const string& texPath, const string& key) {
+        string dir = "textures";
+        if (!SaveTextureToFile(ns, texPath, dir)) return -1;
+        string saved = "textures/" + ns + "/" + texPath + ".png";
+        RegisterTexture(ns, texPath, saved);
+        Material m;
+        string base = texPath.substr(texPath.rfind('/') + 1);
+        m.name = ns + ":" + blockID + (key.empty() ? "" : "#" + key + "~" + base);
+        m.texturePath = saved;
+        m.tintIndex = -1;
+        model.materials.push_back(m);
+        return (int)model.materials.size() - 1;
+    }
+
+    float DirToYRot(const string& f) {  // Direction.toYRot
+        if (f == "south") return 0.0f;
+        if (f == "west") return 90.0f;
+        if (f == "north") return 180.0f;
+        if (f == "east") return 270.0f;
+        return 0.0f;
+    }
+    const float kPi = 3.14159265358979f;
+}
+
+ModelData SpecialBlock::GenerateBlockEntityModel(const string& blockName) {
+    string ns = "minecraft", processed = blockName;
+    size_t colonPos = processed.find(':');
+    if (colonPos != string::npos) { ns = processed.substr(0, colonPos); processed = processed.substr(colonPos + 1); }
+    if (ns != "minecraft") return ModelData();
+    string blockID = processed.substr(0, processed.find('['));
+    auto states = ParseBlockStates(blockName);
+    auto state = [&](const string& k, const string& def) { auto it = states.find(k); return it == states.end() ? def : it->second; };
+    ModelData model;
+
+    if (blockID == "decorated_pot") {
+        // DecoratedPotRenderer: rotateAround(Y, 180 - facing.toYRot(), 0.5, 0.5, 0.5)
+        float deg = 180.0f - DirToYRot(state("facing", "north"));
+        Aff root = AffT(0.5f, 0.5f, 0.5f) * AffRY(deg * kPi / 180.0f) * AffT(-0.5f, -0.5f, -0.5f);
+        int base = AddEntityMaterial(model, ns, blockID, "entity/decorated_pot/decorated_pot_base", "base");
+        int side = AddEntityMaterial(model, ns, blockID, "entity/decorated_pot/decorated_pot_side", "side");
+        if (base < 0 || side < 0) return ModelData();
+        Aff neck = root * PartPose(0, 37, 16, kPi, 0, 0);
+        AddEntityCube(model, base, neck, 0, 0, 4, 17, 4, 8, 3, 8, -0.1f, 32, 32);
+        AddEntityCube(model, base, neck, 0, 5, 5, 20, 5, 6, 1, 6, 0.2f, 32, 32);
+        AddEntityCube(model, base, root * PartPose(1, 16, 1), -14, 13, 0, 0, 0, 14, 0, 14, 0, 32, 32);
+        AddEntityCube(model, base, root * PartPose(1, 0, 1), -14, 13, 0, 0, 0, 14, 0, 14, 0, 32, 32);
+        const float sides[4][6] = { {15, 16, 1, 0, 0, kPi}, {1, 16, 1, 0, -kPi / 2, kPi},
+                                    {15, 16, 15, 0, kPi / 2, kPi}, {1, 16, 15, kPi, 0, 0} };
+        for (const auto& s : sides)
+            AddEntityCube(model, side, root * PartPose(s[0], s[1], s[2], s[3], s[4], s[5]), 1, 0, 0, 0, 0, 14, 16, 0, 0, 16, 16, F_NORTH);
+        return model;
+    }
+    if (blockID == "conduit") {
+        // ConduitRenderer(未激活): translate(0.5,0.5,0.5) 外壳 6x6x6
+        int mat = AddEntityMaterial(model, ns, blockID, "entity/conduit/base", "");
+        if (mat < 0) return ModelData();
+        AddEntityCube(model, mat, AffT(0.5f, 0.5f, 0.5f), 0, 0, -3, -3, -3, 6, 6, 6, 0, 32, 16);
+        return model;
+    }
+    if (blockID == "bell") {
+        // BellRenderer: 钟体(方块模型只有支架), bell_body offset(8,12,8) / bell_base 相对 (-8,-12,-8)
+        int mat = AddEntityMaterial(model, ns, blockID, "entity/bell/bell_body", "body");
+        if (mat < 0) return ModelData();
+        Aff body = PartPose(8, 12, 8);
+        AddEntityCube(model, mat, body, 0, 0, -3, -6, -3, 6, 7, 6, 0, 32, 32);
+        AddEntityCube(model, mat, body * PartPose(-8, -12, -8), 0, 13, 4, 4, 4, 8, 2, 8, 0, 32, 32);
+        return model;
+    }
+    if (blockID == "shulker_box" || (blockID.size() > 12 && blockID.compare(blockID.size() - 12, 12, "_shulker_box") == 0)) {
+        // ShulkerBoxRenderer: T(.5,.5,.5) S(.9995) R(facing) S(1,-1,-1) T(0,-1,0); lid/base offset(0,24,0)
+        string color = blockID == "shulker_box" ? "" : "_" + blockID.substr(0, blockID.size() - 12);
+        int mat = AddEntityMaterial(model, ns, blockID, "entity/shulker/shulker" + color, "");
+        if (mat < 0) return ModelData();
+        string f = state("facing", "up");
+        Aff rot;  // Direction.getRotation()
+        if (f == "down") rot = AffRX(kPi);
+        else if (f == "north") rot = AffRX(kPi / 2) * AffRZ(kPi);
+        else if (f == "south") rot = AffRX(kPi / 2);
+        else if (f == "west") rot = AffRX(kPi / 2) * AffRZ(kPi / 2);
+        else if (f == "east") rot = AffRX(kPi / 2) * AffRZ(-kPi / 2);
+        Aff root = AffT(0.5f, 0.5f, 0.5f) * AffS(0.9995f, 0.9995f, 0.9995f) * rot * AffS(1, -1, -1) * AffT(0, -1, 0);
+        AddEntityCube(model, mat, root * PartPose(0, 24, 0), 0, 0, -8, -16, -8, 16, 12, 16, 0, 64, 64);
+        // 底座与盖子侧面共面, 盖子侧面下沿是镂空的; 底座略微内缩避免 z-fighting
+        AddEntityCube(model, mat, root * PartPose(0, 24, 0), 0, 28, -8, -8, -8, 16, 8, 16, -0.02f, 64, 64);
+        return model;
+    }
+    return ModelData();
 }
