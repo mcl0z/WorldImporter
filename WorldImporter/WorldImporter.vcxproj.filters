@@ -179,6 +179,9 @@
     <ClCompile Include="ChunkLoader.cpp">
       <Filter>源文件\Core\Loader</Filter>
     </ClCompile>
+    <ClCompile Include="HangingSignModel.cpp">
+      <Filter>源文件\Blocks</Filter>
+    </ClCompile>
     <ClCompile Include="ChunkGenerator.cpp">
       <Filter>源文件\Exporter</Filter>
     </ClCompile>

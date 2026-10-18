@@ -152,6 +152,7 @@
     <ClCompile Include="BannerModel.cpp" />
     <ClCompile Include="ChunkGroupAllocator.cpp" />
     <ClCompile Include="ChunkLoader.cpp" />
+    <ClCompile Include="HangingSignModel.cpp" />
     <ClCompile Include="CTM.cpp" />
     <ClCompile Include="CreateBoilerGauge.cpp" />
     <ClCompile Include="CreateCT.cpp" />
@@ -203,6 +204,7 @@
     <ClInclude Include="BannerModel.h" />
     <ClInclude Include="ChunkGroupAllocator.h" />
     <ClInclude Include="ChunkLoader.h" />
+    <ClInclude Include="HangingSignModel.h" />
     <ClInclude Include="config.h" />
     <ClInclude Include="Fluid.h" />
     <ClInclude Include="init.h" />

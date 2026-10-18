@@ -1,6 +1,7 @@
 #include "model.h"
 #include "fileutils.h"
 #include "SpecialBlock.h"
+#include "HangingSignModel.h"
 #include <Windows.h>   
 #include <iostream>
 #include <fstream>
@@ -1695,7 +1696,11 @@ ModelData ProcessModelData(const nlohmann::json& modelJson, const std::string& b
     }
     else {
         // 当模型中没有 "elements" 字段时,生成实体方块模型
-        data = SpecialBlock::GenerateSpecialBlockModel(blockName);
+        // 1.20-1.21 悬挂告示牌只有 particle; 26.x 自带 elements, 不会走到这里
+        data = GenerateHangingSignModel(blockName);
+        if (data.faces.empty()) {
+            data = SpecialBlock::GenerateSpecialBlockModel(blockName);
+        }
     }
     
 
