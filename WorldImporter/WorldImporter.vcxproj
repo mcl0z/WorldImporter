@@ -193,6 +193,7 @@
     <ClCompile Include="CreateBlazePackager.cpp" />
     <ClCompile Include="plantoffset.cpp" />
     <ClCompile Include="ModelDeduplicator.cpp" />
+    <ClCompile Include="RenderLayer.cpp" />
     <ClCompile Include="nbtutils.cpp" />
     <ClCompile Include="ObjExporter.cpp" />
     <ClCompile Include="RegionModelExporter.cpp" />
@@ -257,6 +258,7 @@
     <ClInclude Include="CreateBlazePackager.h" />
     <ClInclude Include="plantoffset.h" />
     <ClInclude Include="ModelDeduplicator.h" />
+    <ClInclude Include="RenderLayer.h" />
     <ClInclude Include="nbtutils.h" />
     <ClInclude Include="ObjExporter.h" />
     <ClInclude Include="RegionModelExporter.h" />
