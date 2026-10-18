@@ -447,16 +447,20 @@ float VAt(int localY, int sectionStart, float factor) {
 } // namespace
 
 void AppendBeaconBeam(ModelData& blockModel, const NbtTagPtr& blockEntityNbt, int x, int y, int z) {
+    // The saved "Levels" is not trusted: the server does not load it back
+    // and only refreshes it every 80 ticks, so a world saved soon after a
+    // restart stores Levels:0 under a complete pyramid. The client computes
+    // the base itself, so do the same; NBT is kept for the log only.
     bool nbtPresent = false;
-    int levels = 0;
+    int nbtLevels = 0;
     if (blockEntityNbt) {
         const NbtTagPtr levelsTag = getChildByName(blockEntityNbt, "Levels");
         if (levelsTag && levelsTag->type == TagType::INT && levelsTag->payload.size() >= 4) {
-            levels = bytesToInt(levelsTag->payload);
+            nbtLevels = bytesToInt(levelsTag->payload);
             nbtPresent = true;
         }
     }
-    if (!nbtPresent) levels = ComputeBaseLevels(x, y, z);
+    const int levels = ComputeBaseLevels(x, y, z);
 
     std::vector<Section> sections;
     if (levels > 0) ScanSections(sections, x, y, z);
@@ -519,7 +523,7 @@ void AppendBeaconBeam(ModelData& blockModel, const NbtTagPtr& blockEntityNbt, in
 
     std::ostringstream line;
     line << "beacon beam pos=(" << x << "," << y << "," << z << ")"
-         << " nbtLevels=" << (nbtPresent ? "present" : "absent")
+         << " nbtLevels=" << (nbtPresent ? std::to_string(nbtLevels) : std::string("absent"))
          << " levels=" << levels
          << " faces=" << faceCount
          << " sections=";
