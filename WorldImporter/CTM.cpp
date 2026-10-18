@@ -2034,7 +2034,8 @@ static std::array<int, 3> FaceNormalOffset(FaceType ft) {
 
 // 邻居方块是否也是本 overlay 规则的目标(Continuity: hasSameOverlay)。
 // 判定: 邻居名命中 rule.matchBlocks(容忍状态后缀写法), 或邻居模型材质命中 rule.matchTiles;
-// 两者都存在时必须同时命中。Continuity 此判定不查遮挡, 这里保持一致。
+// 两者都存在时必须同时命中。本函数不查遮挡; 角上的调用处再套斜前方遮挡
+// (hasSameOverlayUnobscured)。
 static bool OverlaySideIsSameOverlay(const CtmRule& rule, int x, int y, int z,
     const std::array<int, 3>& off) {
     int id = GetBlockId(x + off[0], y + off[1], z + off[2]);
@@ -2112,21 +2113,22 @@ static bool OverlayNeighborMatches(const CtmRule& rule, int x, int y, int z, con
     return false;
 }
 
-// 标准 overlay(17 tile)的 tile 选择, 对齐 Continuity 的 StandardOverlayQuadProcessor:
-//   1) 每条边的连接 = 邻居命中 connectBlocks/connectTiles, 且该边"斜前方"
-//      (pos + dir + 面法线)不是完整不透明方块(被墙挡住的边不发 overlay);
-//   2) 边 tile 表与 Continuity 的 applications 表一致(9=左 7=右 15=上 1=下 ...);
-//   3) 内角 tile: 该角两条相邻边都未连接 + 斜对角连接 + 角两侧至少一侧也是本规则
-//      目标(hasSameOverlay) 时补一个角 tile: 左下 2 / 右下 0 / 右上 14 / 左上 16。
-//   (旧实现把内角画在"连接侧"的角上, 与游戏镜像相反, 且相邻两边连接时漏画对角。)
+// 标准 overlay(17 tile)的 tile 选择, 对齐 Continuity 3.0.0-beta.5
+// StandardOverlayQuadProcessor:
+//   1) 边 = appliesOverlay 且斜前方(pos+dir+面法线)不是不透明满方块
+//      (appliesOverlayUnobscured; 被挡住的边不发 overlay);
+//   2) 边 tile 与 Continuity 一致(9=左 7=右 15=上 1=下, 邻边 4/3/10/11,
+//      三边 5/6/13/12, 四边 8, 对边 9+7 / 1+15);
+//   3) 角(左下 2 / 右下 0 / 右上 14 / 左上 16):
+//      三边、四边或对边不加角;
+//      两条邻边(fromCorner): 对侧角只看 appliesOverlayCorner, 不查 hasSameOverlay
+//      (左下->14, 右下->16, 右上->2, 左上->0);
+//      单边或无边: 角两侧至少一侧 hasSameOverlayUnobscured, 且斜对角 appliesOverlayCorner。
 static std::vector<int> SelectOverlayTiles(const CtmRule& rule, const FaceLayout& L,
     FaceType face, int x, int y, int z) {
     const std::array<int, 3> faceNormal = FaceNormalOffset(face);
-    // Continuity 的 appliesOverlay(overlay 方法 + connect=block):
-    //   邻居必须是满方块(用"不透明满立方"近似 isFullCube; 本包规则的连接方块
-    //   grass_block/gravel/rooted_dirt 都是不透明满立方)、命中 connectBlocks/
-    //   connectTiles, 且与宿主不是同类方块。
-    //   侧面连接没有"斜前方遮挡"判定; 只有内角的斜对角才有 isOpaqueFullCube 检查。
+    // appliesOverlay(Continuity): 邻居为不透明满立方(近似 isFullCube)、命中
+    // connectBlocks/connectTiles, 且与宿主不是同类。斜前方遮挡不在这里查。
     const std::string selfBase = GetBlockById(GetBlockId(x, y, z)).GetNameAndNameSpaceWithoutState();
     auto appliesOverlay = [&](const std::array<int, 3>& dir) -> bool {
         int id = GetBlockId(x + dir[0], y + dir[1], z + dir[2]);
@@ -2135,8 +2137,18 @@ static std::vector<int> SelectOverlayTiles(const CtmRule& rule, const FaceLayout
         if (GetBlockById(id).GetNameAndNameSpaceWithoutState() == selfBase) return false;
         return OverlayNeighborMatches(rule, x, y, z, dir);
     };
-    const bool l = appliesOverlay(L.left), d = appliesOverlay(L.down);
-    const bool r = appliesOverlay(L.right), u = appliesOverlay(L.up);
+    // pos+dir+面法线 处为不透明满方块(Continuity isOpaqueFullCube)
+    auto opaqueAhead = [&](const std::array<int, 3>& dir) -> bool {
+        int id = GetBlockId(x + dir[0] + faceNormal[0],
+                            y + dir[1] + faceNormal[1],
+                            z + dir[2] + faceNormal[2]);
+        return id >= 0 && GetBlockOcclusion(id).occludes;
+    };
+    // appliesOverlayUnobscured: 边连接且斜前方没被挡住
+    const bool l = appliesOverlay(L.left) && !opaqueAhead(L.left);
+    const bool d = appliesOverlay(L.down) && !opaqueAhead(L.down);
+    const bool r = appliesOverlay(L.right) && !opaqueAhead(L.right);
+    const bool u = appliesOverlay(L.up) && !opaqueAhead(L.up);
     const int mask = (l ? 1 : 0) | (d ? 2 : 0) | (r ? 4 : 0) | (u ? 8 : 0);
 
     std::vector<int> out;
@@ -2173,18 +2185,20 @@ static std::vector<int> SelectOverlayTiles(const CtmRule& rule, const FaceLayout
         { &L.right, &L.up,    r, u, &L.upRight,  14 },  // 右上角
         { &L.up,    &L.left,  u, l, &L.upLeft,   16 },  // 左上角
     };
+    // 两条邻边: fromCorner 补对侧角, 不要求 hasSameOverlay。三边/四边/对边时
+    // 每个角都至少有一条邻边已连接, 下面的 connected 判定会全部跳过。
+    const bool twoAdjacent = (mask == 3 || mask == 6 || mask == 12 || mask == 9);
     for (const OverlayCorner& c : corners) {
-        if (c.connectedA || c.connectedB) continue;              // 两条相邻边都必须未连接
-        if (!appliesOverlay(*c.diagonal)) continue;              // 斜对角要连接(同上 appliesOverlay)
-        // 对角的"斜前方"(pos + 对角 + 面法线)为不透明满方块时该内角被挡住, 不画
-        // (Continuity: appliesOverlayCorner 末尾的 isOpaqueFullCube 判定)
-        const std::array<int, 3>& dia = *c.diagonal;
-        int hidden = GetBlockId(x + dia[0] + faceNormal[0],
-                                y + dia[1] + faceNormal[1],
-                                z + dia[2] + faceNormal[2]);
-        if (hidden >= 0 && GetBlockOcclusion(hidden).occludes) continue;
-        if (!OverlaySideIsSameOverlay(rule, x, y, z, *c.sideA) &&
-            !OverlaySideIsSameOverlay(rule, x, y, z, *c.sideB)) continue; // 角两侧至少一侧同类
+        if (c.connectedA || c.connectedB) continue; // 该角两条邻边都未连接
+        // appliesOverlayCorner: 斜对角 appliesOverlay 且斜前方未被挡住
+        if (!appliesOverlay(*c.diagonal) || opaqueAhead(*c.diagonal)) continue;
+        if (!twoAdjacent) {
+            // 单边(fromOneSide)或无边: 角两侧至少一侧同类且斜前方未挡
+            // (hasSameOverlayUnobscured)
+            const bool sameA = OverlaySideIsSameOverlay(rule, x, y, z, *c.sideA) && !opaqueAhead(*c.sideA);
+            const bool sameB = OverlaySideIsSameOverlay(rule, x, y, z, *c.sideB) && !opaqueAhead(*c.sideB);
+            if (!sameA && !sameB) continue;
+        }
         out.push_back(c.tile);
     }
     return out;
