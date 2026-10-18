@@ -26,6 +26,9 @@ struct YuushyaBlockEntry {
     int slot;
 };
 
+// 展示方块 facing -> Direction.toYRot() (度), 供 GenerateModel 与测试使用
+float ShowBlockFacingYRot(const std::string& blockName);
+
 struct YuushyaShowBlockEntity : public EntityBlock {
     // 特有属性
     std::vector<YuushyaBlockEntry> blocks;  // 存储每个 Block 的信息

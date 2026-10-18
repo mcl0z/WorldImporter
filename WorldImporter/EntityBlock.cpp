@@ -29,6 +29,29 @@ void YuushyaShowBlockEntity::PrintDetails() const {
     }
 }
 
+// 方块名形如 "yuushya:showblock[facing=east,lit=0]"(属性分隔符也可能是 ':'),
+// 返回 Direction.toYRot(): south=0, west=90, north=180, east=270; 无 facing 时为 0。
+float ShowBlockFacingYRot(const std::string& blockName) {
+    const size_t bracket = blockName.find('[');
+    if (bracket == std::string::npos) return 0.0f;
+    size_t pos = bracket + 1;
+    while (pos < blockName.size()) {
+        size_t end = blockName.find_first_of(",]", pos);
+        if (end == std::string::npos) end = blockName.size();
+        const std::string kv = blockName.substr(pos, end - pos);
+        const size_t sep = kv.find_first_of("=:");
+        if (sep != std::string::npos && kv.compare(0, sep, "facing") == 0) {
+            const std::string v = kv.substr(sep + 1);
+            if (v == "west") return 90.0f;
+            if (v == "north") return 180.0f;
+            if (v == "east") return 270.0f;
+            return 0.0f;
+        }
+        pos = end + 1;
+    }
+    return 0.0f;
+}
+
 ModelData YuushyaShowBlockEntity::GenerateModel() const {
     ModelData mainModel;
     for (const auto& block : blocks) {
@@ -81,6 +104,17 @@ ModelData YuushyaShowBlockEntity::GenerateModel() const {
         // 合并模型
         if (mainModel.vertices.empty()) mainModel = blockModel;
         else MergeModelsDirectly(mainModel, blockModel);
+    }
+    // 展示方块自身的 facing: Yuushya ShowBlockModel 先绕方块中心按 Y 轴旋转
+    // -facing.toYRot() (south=0, west=90, north=180, east=270), 再对每个内容方块做
+    // 缩放/平移/旋转, 所以整体旋转放在最后。
+    if (!mainModel.vertices.empty()) {
+        const int selfId = GetBlockId(x, y, z);
+        const float yRot = selfId < 0 ? 0.0f : ShowBlockFacingYRot(GetBlockById(selfId).name);
+        if (yRot != 0.0f) {
+            ApplyRotationToVertices(std::span<float>(mainModel.vertices.data(), mainModel.vertices.size()),
+                0.0f, -yRot, 0.0f);
+        }
     }
     ApplyPositionOffset(mainModel, x, y, z); // 最终整体偏移
     return mainModel;
