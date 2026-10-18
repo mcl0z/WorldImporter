@@ -25,6 +25,9 @@ struct EntityAffine {
     static EntityAffine RZDeg(double deg);
 };
 
+// 顶层部件名 -> root 之前插入的变换 (旧版 AgeableListModel 幼体)
+using TopPre = std::function<EntityAffine(const std::string&)>;
+
 class EntityModel {
 public:
     // family: "legacy" (<=1.21.x) / "modern" (26.x); id: ModelLayerLocation, e.g. "minecraft:villager#main"
@@ -54,13 +57,13 @@ public:
 
     // 部件的完整变换 (base * [pre] * root * ... * part), 即 ModelPart.translateAndRotate 链
     EntityAffine PartTransform(int part, const EntityAffine& base,
-                               const std::function<EntityAffine(int)>& pre = nullptr) const;
+                               const TopPre& pre = nullptr) const;
 
     // 把可见部件写入 out。material(part) 返回材质索引(<0 跳过该部件);
     // pre(topLevel) 可选, 在 root 之前插入的变换 (旧版 AgeableListModel 幼体头/身缩放)。
     void Emit(ModelData& out, const EntityAffine& base,
               const std::function<int(int)>& material,
-              const std::function<EntityAffine(int)>& pre = nullptr) const;
+              const TopPre& pre = nullptr) const;
 
 private:
     int layer_ = -1;
