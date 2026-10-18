@@ -40,7 +40,8 @@ int ReadStateInt(std::string_view name, std::string_view key, int defaultValue) 
         size_t end = states.find(',', start);
         std::string_view pair = (end == std::string_view::npos) ? states.substr(start)
                                                                 : states.substr(start, end - start);
-        size_t eq = pair.find('=');
+        // 内部方块名的属性写作 key:value(见 block.cpp), 也兼容 key=value
+        size_t eq = pair.find_first_of("=:");
         if (eq != std::string_view::npos && pair.substr(0, eq) == key) {
             try {
                 return std::stoi(std::string(pair.substr(eq + 1)));
@@ -124,6 +125,8 @@ TintKind LookupVanillaKind(std::string_view baseName) {
         {"redstone_wire", TintKind::Fixed},
         {"melon_stem", TintKind::Fixed},
         {"pumpkin_stem", TintKind::Fixed},
+        {"attached_melon_stem", TintKind::Fixed},
+        {"attached_pumpkin_stem", TintKind::Fixed},
     };
     auto it = kTable.find(baseName);
     return (it == kTable.end()) ? TintKind::None : it->second;
@@ -196,6 +199,8 @@ TintResult ResolveTint(const std::string& blockStateName, int tintIndex) {
         result.color = RedstoneColor(ReadStateInt(blockStateName, "power", 0));
     } else if (base == "melon_stem" || base == "pumpkin_stem") {
         result.color = StemColor(ReadStateInt(blockStateName, "age", 0));
+    } else if (base == "attached_melon_stem" || base == "attached_pumpkin_stem") {
+        result.color = 0xE0C71C;
     } else {
         // 表里标了 Fixed 却没有具体颜色，视为不上色
         return TintResult{};
