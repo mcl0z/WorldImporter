@@ -449,6 +449,23 @@ static bool VariantKeyMatches(const std::string& variantKey,
     return true;
 }
 
+// 宽松匹配:condition 里有的属性必须一致,condition 里没有的属性不限制
+static bool VariantKeyAgrees(const std::string& variantKey,
+    const std::unordered_map<std::string, std::string>& conditionMap) {
+    size_t i = 0;
+    while (i < variantKey.size()) {
+        size_t comma = variantKey.find(',', i);
+        size_t end = (comma == std::string::npos) ? variantKey.size() : comma;
+        size_t eq = variantKey.find('=', i);
+        if (eq != std::string::npos && eq < end) {
+            auto it = conditionMap.find(variantKey.substr(i, eq - i));
+            if (it != conditionMap.end() && it->second != variantKey.substr(eq + 1, end - eq - 1)) return false;
+        }
+        i = end + 1;
+    }
+    return true;
+}
+
 void ProcessBlockstate(const std::string& namespaceName, const std::vector<std::string>& blockIds) {
     for (const auto& blockId : blockIds) {
         // 解析 blockId 和条件
@@ -479,9 +496,25 @@ void ProcessBlockstate(const std::string& namespaceName, const std::vector<std::
 
         // 处理 variants
         if (blockstateJson.contains("variants")) {
+            // 存档里的状态可能缺少属性(旧版本保存、模组后来新增属性),
+            // 游戏读取时缺的属性取默认值。没有完全匹配的 variant 时,
+            // 取第一个在已有属性上都一致的 variant,避免方块整个消失。
+            std::string fallbackKey;
+            if (!condition.empty()) {
+                bool anyMatch = false;
+                for (auto& variant : blockstateJson["variants"].items()) {
+                    if (VariantKeyMatches(variant.key(), blockConditions)) { anyMatch = true; break; }
+                }
+                if (!anyMatch) {
+                    for (auto& variant : blockstateJson["variants"].items()) {
+                        if (VariantKeyAgrees(variant.key(), blockConditions)) { fallbackKey = variant.key(); break; }
+                    }
+                }
+            }
             for (auto& variant : blockstateJson["variants"].items()) {
                 std::string variantKey = variant.key();
-                bool matched = condition.empty() || VariantKeyMatches(variantKey, blockConditions);
+                bool matched = condition.empty() || VariantKeyMatches(variantKey, blockConditions)
+                    || (!fallbackKey.empty() && variantKey == fallbackKey);
 
                 // 判断条件:variant 的所有键值对需存在于 condition 中
                 if (matched) {
