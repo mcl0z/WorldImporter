@@ -478,6 +478,9 @@ void ChunkGenerator::ProcessBlockForModel(ModelData& chunkModel, int x, int y, i
     if (bracketPos != std::string::npos) {
         curBaseName = curBaseName.substr(0, bracketPos);
     }
+    // Create funnel and belt-tunnel flaps (static flapness 0, DO_NOT_CULL).
+    if (ns == "create")
+        AppendCreateFlaps("create:" + blockName, blockEntityNbt, blockModel);
     auto isSameTransparentNeighbor = [&](FaceType dir) -> bool {
         // 仅用于「玻璃类方块」的同类内部面剔除（玻璃/染色玻璃/玻璃板等）。
         // 注意：不能对半砖、楼梯、栅栏等部分方块生效，否则会错误剔除侧面。
@@ -497,10 +500,6 @@ void ChunkGenerator::ProcessBlockForModel(ModelData& chunkModel, int x, int y, i
     const bool selfGlassLike =
         curBaseName.find("glass") != std::string::npos ||
         curBaseName.find("pane") != std::string::npos;
-
-    // Create funnel and belt-tunnel flaps (static flapness 0, DO_NOT_CULL).
-    if (ns == "create")
-        AppendCreateFlaps("create:" + blockName, blockEntityNbt, blockModel);
 
     // 遍历所有面
     for (size_t faceIdx = 0; faceIdx < blockModel.faces.size(); ++faceIdx) {
