@@ -2,6 +2,7 @@
 #include <vector>
 #include <algorithm>
 #include <sstream>
+#include "EndPortalModel.h"
 #include <span>
 #include "texture.h"
 #include "blockstate.h"
@@ -897,6 +898,11 @@ bool SpecialBlock::TryGenerateCreateBlockModel(const string& blockName,
 }
 
 ModelData SpecialBlock::GenerateSpecialBlockModel(const string& blockName) {
+    // 末地传送门/折跃门(着色器渲染, 方块模型没有 elements)
+    {
+        ModelData ep = GenerateEndPortalModel(blockName);
+        if (!ep.faces.empty()) return ep;
+    }
     string texturePath;
     int waterLevel;
     bool waterFalling;

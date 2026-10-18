@@ -163,6 +163,7 @@
     <ClCompile Include="RegionCache.cpp" />
     <ClCompile Include="SpecialBlock.cpp" />
     <ClCompile Include="fileutils.cpp" />
+    <ClCompile Include="EndPortalModel.cpp" />
     <ClCompile Include="Fluid.cpp" />
     <ClCompile Include="GlobalCache.cpp" />
     <ClCompile Include="JarReader.cpp" />
@@ -201,6 +202,7 @@
     <ClInclude Include="RegionCache.h" />
     <ClInclude Include="SpecialBlock.h" />
     <ClInclude Include="fileutils.h" />
+    <ClInclude Include="EndPortalModel.h" />
     <ClInclude Include="GlobalCache.h" />
     <ClInclude Include="JarReader.h" />
     <ClInclude Include="LODManager.h" />
