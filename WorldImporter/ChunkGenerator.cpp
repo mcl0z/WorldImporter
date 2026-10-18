@@ -7,6 +7,7 @@
 #include "include/stb_image.h"
 #include "biome.h"
 #include "CreateSpoutCannonPulley.h"
+#include "SignText.h"
 #include "model.h"
 #include "CreateBellCrafter.h"
 #include "blocktint.h"
@@ -417,7 +418,22 @@ void ChunkGenerator::ProcessBlockForModel(ModelData& chunkModel, int x, int y, i
     // Create sliding doors with visible=false are drawn by SlidingDoorRenderer.
     if (ns == "create") ApplyCreateSlidingDoor(ns, blockName, blockModel);
 
-    if (blockModel.vertices.empty()) return;
+    // Sign boards on 1.21 and earlier are particle-only on this branch, so the
+    // block model is empty and the early returns below would drop the text.
+    // Boards that do exist are not fully culled; this still covers that path.
+    // The lambda is also invoked after the board merge at the end of this function.
+    auto appendSignText = [&]() {
+        if (ns != "minecraft" || blockName.find("sign") == std::string::npos) return;
+        ModelData textModel;
+        if (!BuildSignTextModel(ns, blockName, blockEntityNbt, x, y, z, textModel)) return;
+        if (chunkModel.vertices.empty()) chunkModel = std::move(textModel);
+        else MergeModelsDirectly(chunkModel, textModel, materialLookup);
+    };
+
+    if (blockModel.vertices.empty()) {
+        appendSignText();
+        return;
+    }
 
     // Create frogport / portable interfaces: BE-rendered partials appended to the block model.
     if (ns == "create")
@@ -636,7 +652,10 @@ void ChunkGenerator::ProcessBlockForModel(ModelData& chunkModel, int x, int y, i
 
     // Hidden blocks contribute no geometry. Previously their unused vertices,
     // UVs and materials still reached the final mesh and global sort.
-    if (validFaceIndices.empty()) return;
+    if (validFaceIndices.empty()) {
+        appendSignText();
+        return;
+    }
     // Indices are ascending, so compact faces in place without copying the
     // already-owned vertex/UV/material arrays a second time.
     for (size_t i = 0; i < validFaceIndices.size(); ++i) {
@@ -665,6 +684,7 @@ void ChunkGenerator::ProcessBlockForModel(ModelData& chunkModel, int x, int y, i
     else {
         MergeModelsDirectly(chunkModel, blockModel, materialLookup);
     }
+    appendSignText();
 }
 
 ModelData ChunkGenerator::GenerateChunkModel(int chunkX, int sectionY, int chunkZ) {
