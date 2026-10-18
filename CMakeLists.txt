@@ -64,6 +64,12 @@ if (BUILD_TESTING AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/WorldImporter/tests/uv
     wi_apply_defaults(uvlock_tests)
     add_test(NAME uvlock COMMAND uvlock_tests)
     set_tests_properties(uvlock PROPERTIES TIMEOUT 30)
+if (BUILD_TESTING AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/WorldImporter/tests/obj_model_tests.cpp")
+    add_executable(obj_model_tests WorldImporter/tests/obj_model_tests.cpp)
+    target_link_libraries(obj_model_tests PRIVATE WorldImporterCore)
+    wi_apply_defaults(obj_model_tests)
+    add_test(NAME obj_model COMMAND obj_model_tests WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+    set_tests_properties(obj_model PROPERTIES TIMEOUT 30)
 endif()
 
 # This harness ships with the importer; tests/ below is an optional external suite.

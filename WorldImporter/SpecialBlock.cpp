@@ -49,9 +49,9 @@ namespace {
         return model;
     }
 
-    string GetCreateModelAsset(const string& path) {
+    string GetModelAsset(const string& ns, const string& path) {
         shared_lock<shared_mutex> lock(GlobalCache::cacheMutex);
-        auto index = GlobalCache::modelAssetIndex.find("modelassets:create:" + path);
+        auto index = GlobalCache::modelAssetIndex.find("modelassets:" + ns + ":" + path);
         if (index == GlobalCache::modelAssetIndex.end()) return "";
         auto asset = GlobalCache::modelAssets.find(index->second);
         return asset == GlobalCache::modelAssets.end() ? "" : asset->second;
@@ -83,18 +83,29 @@ namespace {
         return material;
     }
 
+    ModelData LoadObjFromModelJson(const nlohmann::json& modelJson);
+
     ModelData LoadCreateObjModel(const string& jsonPath, int index) {
         (void)index;
         nlohmann::json modelJson = GetModelJson("create", jsonPath);
         if (modelJson.is_null()) return {};
         modelJson = LoadParentModel("create", jsonPath, modelJson);
-        if (!modelJson.contains("model")) return {};
+        return LoadObjFromModelJson(modelJson);
+    }
 
+    // forge:obj / neoforge:obj / porting_lib:obj: "model" points at an OBJ asset
+    // ("<ns>:models/<path>.obj"); MTL map_Kd values are "#key" texture references.
+    ModelData LoadObjFromModelJson(const nlohmann::json& modelJson) {
+        if (!modelJson.contains("model") || !modelJson["model"].is_string()) return {};
         string objPath = modelJson["model"].get<string>();
+        string objNs = "minecraft";
         size_t colon = objPath.find(':');
-        if (colon != string::npos) objPath = objPath.substr(colon + 1);
+        if (colon != string::npos) {
+            objNs = objPath.substr(0, colon);
+            objPath = objPath.substr(colon + 1);
+        }
         if (objPath.starts_with("models/")) objPath = objPath.substr(7);
-        string obj = GetCreateModelAsset(objPath);
+        string obj = GetModelAsset(objNs, objPath);
         if (obj.empty()) return {};
 
         vector<array<float, 3>> positions;
@@ -106,7 +117,7 @@ namespace {
             if (!line.starts_with("mtllib ")) continue;
             string mtlName = line.substr(7);
             string directory = objPath.substr(0, objPath.find_last_of('/') + 1);
-            stringstream mtlStream(GetCreateModelAsset(directory + mtlName));
+            stringstream mtlStream(GetModelAsset(objNs, directory + mtlName));
             string materialName;
             while (getline(mtlStream, line)) {
                 if (line.starts_with("newmtl ")) materialName = line.substr(7);
@@ -898,6 +909,19 @@ namespace {
         return result;
     }
 
+}
+
+bool SpecialBlock::IsObjModelJson(const nlohmann::json& modelJson) {
+    auto isObj = [&](const char* key) {
+        if (!modelJson.contains(key) || !modelJson[key].is_string()) return false;
+        const string loader = modelJson[key].get<string>();
+        return loader.size() >= 4 && loader.compare(loader.size() - 4, 4, ":obj") == 0;
+    };
+    return (isObj("loader") || isObj("porting_lib:loader")) && modelJson.contains("model");
+}
+
+ModelData SpecialBlock::GenerateObjModel(const nlohmann::json& modelJson) {
+    return LoadObjFromModelJson(modelJson);
 }
 
 bool SpecialBlock::TryGenerateCreateBlockModel(const string& blockName,
