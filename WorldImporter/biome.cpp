@@ -3,6 +3,7 @@
 #include "include/stb_image_write.h"
 #include "include/stb_image.h"
 #include "biome.h"
+#include "legacybiomes.h"
 #include "fileutils.h"
 #include "block.h"
 #include "GlobalCache.h"
@@ -196,6 +197,12 @@ nlohmann::json Biome::GetBiomeJson(const std::string& namespaceName, const std::
         if (fallbackIt != GlobalCache::biomes.end()) {
             return fallbackIt->second;
         }
+    }
+
+    // 1.18.x–1.19.2 的客户端 jar 没有群系 JSON。只在 jar/模组都未命中时回退。
+    if (namespaceName == "minecraft") {
+        nlohmann::json legacy = LegacyVanillaBiomeJson(biomeId);
+        if (!legacy.is_null()) return legacy;
     }
 
     std::cerr << "Biome JSON not found: " << namespaceName << ":" << biomeId << std::endl;
