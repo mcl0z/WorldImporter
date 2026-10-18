@@ -162,6 +162,8 @@
     <ClCompile Include="MemoryMonitor.cpp" />
     <ClCompile Include="RegionCache.cpp" />
     <ClCompile Include="SpecialBlock.cpp" />
+    <ClCompile Include="ItemRender.cpp" />
+    <ClCompile Include="CampfireItems.cpp" />
     <ClCompile Include="fileutils.cpp" />
     <ClCompile Include="Fluid.cpp" />
     <ClCompile Include="GlobalCache.cpp" />
@@ -200,6 +202,10 @@
     <ClInclude Include="MemoryMonitor.h" />
     <ClInclude Include="RegionCache.h" />
     <ClInclude Include="SpecialBlock.h" />
+    <ClInclude Include="EntityModel.h" />
+    <ClInclude Include="EntityNbt.h" />
+    <ClInclude Include="ItemRender.h" />
+    <ClInclude Include="CampfireItems.h" />
     <ClInclude Include="fileutils.h" />
     <ClInclude Include="GlobalCache.h" />
     <ClInclude Include="JarReader.h" />

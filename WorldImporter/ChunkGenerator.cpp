@@ -30,6 +30,7 @@
 #include "hashutils.h"
 #include "ChunkLoader.h"
 #include "SpecialBlock.h"
+#include "CampfireItems.h"
 #include "CableMesher.h"
 #include "BbsModelSupport.h"
 using namespace std;
@@ -642,6 +643,10 @@ void ChunkGenerator::ProcessBlockForModel(ModelData& chunkModel, int x, int y, i
         blockModel.faces[i] = blockModel.faces[validFaceIndices[i]];
     }
     blockModel.faces.resize(validFaceIndices.size());
+
+    // Campfire / soul_campfire cooking items (CampfireRenderer).
+    if (blockEntityNbt && ns == "minecraft")
+        AppendCampfireItems(blockModel, blockEntityNbt, ns + ":" + blockName, x, y, z);
 
     ApplyPositionOffset(blockModel, x, y, z);
 

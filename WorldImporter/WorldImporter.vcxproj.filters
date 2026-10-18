@@ -140,6 +140,12 @@
     <ClCompile Include="BbsModelSupport.cpp">
       <Filter>源文件\Blocks</Filter>
     </ClCompile>
+    <ClCompile Include="CampfireItems.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="ItemRender.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="SpecialBlock.cpp">
       <Filter>源文件\Blocks</Filter>
     </ClCompile>
@@ -193,6 +199,18 @@
     <!-- 渲染相关文件 -->
     <ClInclude Include="BbsModelSupport.h">
       <Filter>头文件\Blocks</Filter>
+    </ClInclude>
+    <ClInclude Include="CampfireItems.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="ItemRender.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="EntityNbt.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="EntityModel.h">
+      <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="SpecialBlock.h">
       <Filter>头文件\Blocks</Filter>
