@@ -600,6 +600,8 @@ namespace {
         return result;
     }
 
+    void TranslateModel(ModelData& model, float dx, float dy, float dz);
+
     // Toolbox body is in the blockstate; lid (+ drawer) are Flywheel partials.
     ModelData GenerateCreateToolbox(const string& blockName,
         const unordered_map<string, string>& states) {
@@ -614,11 +616,20 @@ namespace {
             local.compare(local.size() - suffix.size(), suffix.size(), suffix) == 0) {
             color = local.substr(0, local.size() - suffix.size());
         }
-        Append(result, LoadCreateModel("block/toolbox/lid/" + color, 190));
-        ModelData drawer = LoadCreateModel("block/toolbox/drawer", 191);
-        if (!drawer.vertices.empty()) {
+        // ToolboxRenderer: lid + two drawers (second 1/8 higher), each rotated
+        // rotateYDegrees(-facing.opposite.toYRot()) == blockstate y of the body.
+        string facing = states.contains("facing") ? states.at("facing") : "north";
+        float yRot = fmodf(FacingY(facing) + 180.0f, 360.0f);
+        ModelData lid = LoadCreateModel("block/toolbox/lid/" + color, 190);
+        if (yRot != 0.0f) Rotate(lid, 0.0f, yRot, 0.0f);
+        Append(result, std::move(lid));
+        for (int offset = 0; offset < 2; ++offset) {
+            ModelData drawer = LoadCreateModel("block/toolbox/drawer", 191);
+            if (drawer.vertices.empty()) break;
             // Drawer JSON hardcodes brown; remap to this toolbox's dye sheet.
             ReplaceTexture(drawer, "block/toolbox/brown", "block/toolbox/" + color);
+            TranslateModel(drawer, 0.0f, offset / 8.0f, 0.0f);
+            if (yRot != 0.0f) Rotate(drawer, 0.0f, yRot, 0.0f);
             Append(result, std::move(drawer));
         }
         (void)states;
