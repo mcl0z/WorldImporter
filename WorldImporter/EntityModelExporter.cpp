@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <cmath>
 #include <filesystem>
+#include <initializer_list>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
@@ -632,6 +633,12 @@ const AgeableParams kAgeDefault  { false, 5.0f, 2.0f, 2.0f, 2.0f, 24.0f, { "head
 const AgeableParams kAgeChicken  { false, 5.0f, 2.0f, 2.0f, 2.0f, 24.0f, { "head", "beak", "red_thing" } };
 const AgeableParams kAgeOcelot   { true, 10.0f, 4.0f, 2.0f, 2.0f, 24.0f, { "head" } };
 const AgeableParams kAgeHorse    { true, 16.2f, 1.36f, 2.7272f, 2.0f, 20.0f, { "head_parts" } };
+const AgeableParams kAgeFox      { true, 8.0f, 3.35f, 2.0f, 2.0f, 24.0f, { "head" } };          // FoxModel
+const AgeableParams kAgeBee      { false, 24.0f, 0.0f, 2.0f, 2.0f, 24.0f, {} };                  // BeeModel, headParts empty
+const AgeableParams kAgeGoat     { true, 19.0f, 1.0f, 2.5f, 2.0f, 24.0f, { "head" } };
+const AgeableParams kAgePolarBear{ true, 16.0f, 4.0f, 2.25f, 2.0f, 24.0f, { "head" } };
+const AgeableParams kAgePanda    { true, 23.0f, 4.8f, 2.7f, 3.0f, 49.0f, { "head" } };
+const AgeableParams kAgeTurtle   { true, 120.0f, 0.0f, 9.0f, 6.0f, 120.0f, { "head" } };
 
 TopPre LegacyAgeablePre(const AgeableParams& p) {
     return [p](const std::string& top) {
@@ -655,6 +662,46 @@ void EmitTextured(Ctx& ctx, OutObject& obj, EntityModel& model, const EntityAffi
 void ApplyHeadLook(EntityModel& model, const Placement& pl, const char* headPart = "head") {
     // netHeadYaw relative to body; NoAI entities keep head yRot = 0
     model.SetRot(headPart, static_cast<float>(pl.pitch * kPi / 180.0), 0.0f, 0.0f);
+}
+
+void AddPos(EntityModel& model, const char* part, float dx, float dy, float dz) {
+    int i = model.Find(part); if (i < 0) return;
+    float* q = model.Pose(i); q[0] += dx; q[1] += dy; q[2] += dz;
+}
+void SetXRot(EntityModel& model, const char* part, float x) {
+    int i = model.Find(part); if (i < 0) return;
+    model.Pose(i)[3] = x;
+}
+float HeadPitch(const Placement& pl) { return static_cast<float>(pl.pitch * kPi / 180.0); }
+
+// 26.x baby layer when it exists, otherwise the adult layer of this family.
+std::string MobLayer(const Ctx& ctx, const std::string& kind, bool baby, const std::string& sub = "#main") {
+    const std::string fam = ctx.modern ? "modern" : "legacy";
+    if (ctx.modern && baby) {
+        const std::string b = "minecraft:" + kind + "_baby" + sub;
+        if (EntityModel::Exists(fam, b)) return b;
+    }
+    return "minecraft:" + kind + sub;
+}
+std::string PickTex(std::initializer_list<const char*> paths) {
+    std::string fallback;
+    for (const char* p : paths) {
+        if (!p || !*p) continue;
+        if (fallback.empty()) fallback = p;
+        if (TextureExists("minecraft", p)) return p;
+    }
+    return fallback;
+}
+// Anger: legacy AngerTime (ticks left), 1.21.5+ anger_end_time (game tick; -1 = calm).
+bool IsAngry(const NbtTagPtr& e) {
+    return NumOr(e, "Angry", 0) != 0 || NumOr(e, "AngerTime", 0) > 0 || NumOr(e, "anger_end_time", -1) > 0;
+}
+
+bool NbtFlag(const NbtTagPtr& e, const char* name, bool def) {
+    auto t = getChildByName(e, name);
+    if (!t) return def;
+    double v;
+    return Num(t, v) ? v != 0.0 : def;
 }
 
 // DyeColor.textureDiffuseColor (1.21) — sheep wool / wolf collar
@@ -886,7 +933,7 @@ void RenderWolf(Ctx& ctx, const NbtTagPtr& e) {
     EntityModel model(fam, lid);
     if (!model.Valid()) return;
     Placement pl = ReadPlacement(e);
-    bool angry = NumOr(e, "Angry", 0) != 0 || NumOr(e, "AngerTime", 0) > 0;
+    bool angry = IsAngry(e);
     bool tame = getChildByName(e, "Owner") != nullptr || getChildByName(e, "OwnerUUID") != nullptr;
     PoseWolf(model, IsSitting(e), ctx.modern && baby, WolfTailAngle(e, tame, angry));
     ApplyHeadLook(model, pl);
@@ -996,6 +1043,645 @@ void RenderHorse(Ctx& ctx, const NbtTagPtr& e) {
         texPath = std::string("entity/horse/horse_") + kVar[std::clamp(variant & 0xFF, 0, 6)];
     }
     EmitTextured(ctx, obj, model, base, pre, "minecraft:" + texPath, ctx.Texture("minecraft", texPath));
+}
+
+// ---------- spider / cave spider ----------
+// SpiderModel.setupAnim (limbSwing 0): static splayed legs. Legacy bake stores rot 0, so they must be set.
+// 26.x bakes the same angles; setting them again matches. EyesLayer re-emits the posed model.
+void PoseSpider(EntityModel& model) {
+    const float q = static_cast<float>(kPi / 4.0);
+    const float e = static_cast<float>(kPi / 8.0);
+    struct Leg { const char* n; float y, z; };
+    const Leg legs[] = {
+        { "right_hind_leg", q, -q }, { "left_hind_leg", -q, q },
+        { "right_middle_hind_leg", e, -0.58119464f }, { "left_middle_hind_leg", -e, 0.58119464f },
+        { "right_middle_front_leg", -e, -0.58119464f }, { "left_middle_front_leg", e, 0.58119464f },
+        { "right_front_leg", -q, -q }, { "left_front_leg", q, q },
+    };
+    for (const auto& l : legs) model.SetRot(l.n, 0.0f, l.y, l.z);
+}
+
+void RenderSpider(Ctx& ctx, const NbtTagPtr& e, bool cave) {
+    const std::string fam = ctx.modern ? "modern" : "legacy";
+    const std::string kind = cave ? "cave_spider" : "spider";
+    EntityModel model(fam, "minecraft:" + kind + "#main");
+    if (!model.Valid()) return;
+    Placement pl = ReadPlacement(e);
+    PoseSpider(model);
+    ApplyHeadLook(model, pl);
+    // CaveSpiderRenderer.scale 0.7 (legacy). 26.x bakes scale 0.7 and y=7.205 into the cave_spider root.
+    const double rs = (cave && !ctx.modern) ? 0.7 : 1.0;
+    EntityAffine base = LivingBase(pl, (cave ? 0.45 : 0.65), rs);
+    OutObject& obj = ctx.NewObject("minecraft:" + kind);
+    const std::string texPath = cave ? "entity/spider/cave_spider" : "entity/spider/spider";
+    EmitTextured(ctx, obj, model, base, nullptr, "minecraft:" + texPath, ctx.Texture("minecraft", texPath));
+    // 1.21 eyes live at entity/spider_eyes; 26.x moved them under entity/spider/.
+    const std::string eyes = ctx.modern
+        ? PickTex({ "entity/spider/spider_eyes", "entity/spider_eyes" })
+        : PickTex({ "entity/spider_eyes", "entity/spider/spider_eyes" });
+    EmitTextured(ctx, obj, model, base, nullptr, "minecraft:" + eyes, ctx.Texture("minecraft", eyes));
+}
+
+// ---------- enderman ----------
+bool EndermanCarrying(const NbtTagPtr& e) {
+    auto c = getChildByName(e, "carriedBlockState");
+    if (!c) c = getChildByName(e, "CarriedBlockState");
+    if (!c || c->type != TagType::COMPOUND) return false;
+    std::string name = Str(c, "Name");
+    if (name.empty()) name = Str(c, "name");
+    return !name.empty() && name != "minecraft:air" && name != "air";
+}
+
+void RenderEnderman(Ctx& ctx, const NbtTagPtr& e) {
+    const std::string fam = ctx.modern ? "modern" : "legacy";
+    EntityModel model(fam, "minecraft:enderman#main");
+    if (!model.Valid()) return;
+    Placement pl = ReadPlacement(e);
+    // HumanoidModel idle at ageInTicks 0: arm zRot ±0.1, leg yRot/zRot ±0.005. EndermanModel then
+    // halves xRot (still 0) and, while carrying, overwrites the arms. Creepy head dip is runtime; skipped.
+    // Baked positions (head/hat y=-13, body y=-14, arms, legs) already match setupAnim's restores.
+    const bool carrying = EndermanCarrying(e);
+    model.SetRot("head", HeadPitch(pl), 0.0f, 0.0f);
+    if (carrying) {
+        model.SetRot("right_arm", -0.5f, 0.0f, 0.05f);
+        model.SetRot("left_arm", -0.5f, 0.0f, -0.05f);
+    } else {
+        model.SetRot("right_arm", 0.0f, 0.0f, 0.1f);
+        model.SetRot("left_arm", 0.0f, 0.0f, -0.1f);
+    }
+    model.SetRot("right_leg", 0.0f, 0.005f, 0.005f);
+    model.SetRot("left_leg", 0.0f, -0.005f, -0.005f);
+    // Legacy hat is a sibling of head (copy the look). 26.x hat is a child at identity; copying would double.
+    int head = model.Find("head"), hat = model.Find("hat");
+    if (head >= 0 && hat >= 0 && model.Parent(hat) != head)
+        for (int k = 3; k < 6; ++k) model.Pose(hat)[k] = model.Pose(head)[k];
+    EntityAffine base = LivingBase(pl, 2.55, 1.0);
+    OutObject& obj = ctx.NewObject("minecraft:enderman");
+    const std::string texPath = "entity/enderman/enderman";
+    EmitTextured(ctx, obj, model, base, nullptr, "minecraft:" + texPath, ctx.Texture("minecraft", texPath));
+    const std::string eyes = "entity/enderman/enderman_eyes";
+    EmitTextured(ctx, obj, model, base, nullptr, "minecraft:" + eyes, ctx.Texture("minecraft", eyes));
+    // TODO: carriedBlockState is not drawn. Rendering an arbitrary block state (properties, multipart) is
+    // more than a single item model, so the carrying arm pose is applied and the block itself is skipped.
+}
+
+// ---------- iron golem / snow golem ----------
+void RenderIronGolem(Ctx& ctx, const NbtTagPtr& e) {
+    const std::string fam = ctx.modern ? "modern" : "legacy";
+    EntityModel model(fam, "minecraft:iron_golem#main");
+    if (!model.Valid()) return;
+    Placement pl = ReadPlacement(e);
+    // Walk and attack/offer-flower swings are 0 at rest, so arms and legs stay at the baked pose.
+    // Crackiness overlays and the flower item layer are skipped.
+    ApplyHeadLook(model, pl);
+    EntityAffine base = LivingBase(pl, 2.7, 1.0);
+    OutObject& obj = ctx.NewObject("minecraft:iron_golem");
+    const std::string texPath = "entity/iron_golem/iron_golem";
+    EmitTextured(ctx, obj, model, base, nullptr, "minecraft:" + texPath, ctx.Texture("minecraft", texPath));
+}
+
+// SnowGolemModel.setupAnim at yaw 0: arm z moves from the baked ±1 to 0. zRot stays ±1.
+void PoseSnowGolem(EntityModel& model, float pitch) {
+    model.SetRot("head", pitch, 0.0f, 0.0f);
+    int ub = model.Find("upper_body");
+    if (ub >= 0) model.Pose(ub)[4] = 0.0f;
+    int la = model.Find("left_arm");
+    if (la >= 0) { model.Pose(la)[0] = 5.0f; model.Pose(la)[2] = 0.0f; model.Pose(la)[4] = 0.0f; }
+    int ra = model.Find("right_arm");
+    if (ra >= 0) {
+        model.Pose(ra)[0] = -5.0f; model.Pose(ra)[2] = 0.0f;
+        model.Pose(ra)[4] = static_cast<float>(kPi);
+    }
+}
+
+void RenderSnowGolem(Ctx& ctx, const NbtTagPtr& e) {
+    using A = EntityAffine;
+    const std::string fam = ctx.modern ? "modern" : "legacy";
+    EntityModel model(fam, "minecraft:snow_golem#main");
+    if (!model.Valid()) return;
+    Placement pl = ReadPlacement(e);
+    PoseSnowGolem(model, HeadPitch(pl));
+    EntityAffine base = LivingBase(pl, 1.7, 1.0);
+    OutObject& obj = ctx.NewObject("minecraft:snow_golem");
+    const std::string texPath = ctx.modern
+        ? PickTex({ "entity/snow_golem/snow_golem", "entity/snow_golem" })
+        : PickTex({ "entity/snow_golem", "entity/snow_golem/snow_golem" });
+    EmitTextured(ctx, obj, model, base, nullptr, "minecraft:" + texPath, ctx.Texture("minecraft", texPath));
+    // Pumpkin defaults on (Pumpkin:1b). SnowGolemHeadLayer: head * T(0,-0.34375,0) * RY(180) * S(0.625,-0.625,-0.625).
+    // ItemDisplay::Head already applies translate(-0.5). 1.21 renders the item; 26.x renders the block model the same way.
+    if (NbtFlag(e, "Pumpkin", true)) {
+        int head = model.Find("head");
+        if (head >= 0) {
+            ItemStackInfo pumpkin;
+            pumpkin.id = "minecraft:carved_pumpkin";
+            pumpkin.count = 1;
+            A m = model.PartTransform(head, base) * A::T(0.0, -0.34375, 0.0) * A::RY(kPi) * A::S(0.625, -0.625, -0.625);
+            AppendItem(ctx, obj, pumpkin, ItemDisplay::Head, false, m);
+        }
+    }
+}
+
+// ---------- llama / trader llama ----------
+std::string LlamaVariantName(const NbtTagPtr& e) {
+    static const char* k[] = { "creamy", "white", "brown", "gray" };
+    std::string vs = Str(e, "variant");
+    if (vs.empty()) vs = Str(e, "Variant");
+    if (!vs.empty()) {
+        auto v = SplitId(vs).second;
+        if (v.rfind("llama_", 0) == 0) v = v.substr(6);
+        if (v.size() > 5 && v.compare(v.size() - 5, 5, "_baby") == 0) v = v.substr(0, v.size() - 5);
+        if (!v.empty()) return v;
+    }
+    int variant = static_cast<int>(NumOr(e, "Variant", 0));
+    if (variant < 0 || variant > 3) variant = 0;
+    return k[variant];
+}
+
+// LlamaModel.renderToBuffer young branch. scale-then-translate on the pose stack is S*T here.
+TopPre LlamaBabyPre() {
+    return [](const std::string& top) {
+        using A = EntityAffine;
+        if (top == "head") return A::S(0.71428573, 0.64935064, 0.7936508) * A::T(0.0, 1.3125, 0.22);
+        if (top == "body") return A::S(0.625, 0.45454544, 0.45454544) * A::T(0.0, 2.0625, 0.0);
+        return A::S(0.45454544, 0.41322312, 0.45454544) * A::T(0.0, 2.0625, 0.0);
+    };
+}
+
+std::string CarpetColor(const ItemStackInfo& item) {
+    if (item.empty()) return {};
+    std::string p = SplitId(item.id).second;
+    const std::string suf = "_carpet";
+    if (p.size() <= suf.size() || p.compare(p.size() - suf.size(), suf.size(), suf) != 0) return {};
+    return p.substr(0, p.size() - suf.size());
+}
+
+void RenderLlama(Ctx& ctx, const NbtTagPtr& e, bool trader) {
+    const std::string fam = ctx.modern ? "modern" : "legacy";
+    const bool baby = IsBaby(e);
+    const std::string kind = trader ? "trader_llama" : "llama";
+    EntityModel model(fam, MobLayer(ctx, kind, baby));
+    if (!model.Valid()) return;
+    Placement pl = ReadPlacement(e);
+    ApplyHeadLook(model, pl);
+    // Both families hide chests on babies. 26.x extractRenderState: hasChest = !baby && hasChest.
+    const bool chest = !baby && (NbtFlag(e, "ChestedHorse", false) || NbtFlag(e, "Chested", false));
+    model.SetVisible("left_chest", chest);
+    model.SetVisible("right_chest", chest);
+    const double eye = 1.78 * (baby ? 0.5 : 1.0);
+    EntityAffine base = LivingBase(pl, eye, 1.0);
+    TopPre pre = (!ctx.modern && baby) ? LlamaBabyPre() : nullptr;
+    OutObject& obj = ctx.NewObject("minecraft:" + kind);
+    const std::string var = LlamaVariantName(e);
+    // 26.x renamed body textures to llama_<variant>[_baby]. Trader uses the same variant body.
+    std::string texPath = ctx.modern
+        ? "entity/llama/llama_" + var + (baby ? "_baby" : "")
+        : "entity/llama/" + var;
+    if (!TextureExists("minecraft", texPath))
+        texPath = ctx.modern ? "entity/llama/" + var : "entity/llama/llama_" + var;
+    EmitTextured(ctx, obj, model, base, pre, "minecraft:" + texPath, ctx.Texture("minecraft", texPath));
+
+    ItemStackInfo decorItem;
+    if (auto eq = getChildByName(e, "equipment"))
+        decorItem = ItemRender::ParseItemStack(getChildByName(eq, "body"));
+    // 1.20.5-1.21.4 store the carpet in body_armor_item, older versions in DecorItem.
+    if (decorItem.empty()) decorItem = ItemRender::ParseItemStack(getChildByName(e, "body_armor_item"));
+    if (decorItem.empty()) decorItem = ItemRender::ParseItemStack(getChildByName(e, "DecorItem"));
+    const std::string color = CarpetColor(decorItem);
+    const bool carpet = !color.empty();
+    // 1.21: swag wins over trader, including babies. 26.x: carpet only when adult; else trader decor
+    // (baby trader uses trader_llama_baby, and a carpet on a baby trader is ignored).
+    std::string decorTex;
+    if (!ctx.modern) {
+        if (carpet) decorTex = "entity/llama/decor/" + color;
+        else if (trader) decorTex = "entity/llama/decor/trader_llama";
+    } else if (carpet && !baby) {
+        decorTex = "entity/equipment/llama_body/" + color;
+    } else if (trader) {
+        decorTex = baby ? "entity/equipment/llama_body/trader_llama_baby" : "entity/equipment/llama_body/trader_llama";
+    }
+    if (!decorTex.empty() && !TextureExists("minecraft", decorTex)) {
+        if (carpet) decorTex = PickTex({ ("entity/llama/decor/" + color).c_str(), ("entity/equipment/llama_body/" + color).c_str() });
+        else decorTex = PickTex({ "entity/llama/decor/trader_llama", "entity/equipment/llama_body/trader_llama",
+                                  "entity/equipment/llama_body/trader_llama_baby" });
+    }
+    if (decorTex.empty()) return;
+    // No trader_llama#decor layer; decor geometry is llama#decor / llama_baby#decor.
+    EntityModel decor(fam, MobLayer(ctx, "llama", baby, "#decor"));
+    if (!decor.Valid()) return;
+    decor.CopyPoseFrom(model, { "head", "body", "right_hind_leg", "left_hind_leg", "right_front_leg", "left_front_leg",
+                                "right_chest", "left_chest" }, true);
+    decor.SetVisible("left_chest", chest);
+    decor.SetVisible("right_chest", chest);
+    EmitTextured(ctx, obj, decor, base, pre, "minecraft:" + decorTex, ctx.Texture("minecraft", decorTex));
+}
+
+// ---------- fox ----------
+// Adult (and legacy baby, same mesh) sitting/sleeping. Modern baby is a different mesh; see PoseFoxBaby.
+void PoseFoxAdult(EntityModel& model, bool sleeping, bool sitting, bool legacyBaby) {
+    const float pi = static_cast<float>(kPi);
+    if (sleeping) {
+        SetXRot(model, "body", pi / 2.0f);                 // standing xRot kept
+        int body = model.Find("body");
+        if (body >= 0) model.Pose(body)[5] = -pi / 2.0f;   // zRot
+        if (legacyBaby) {
+            model.SetPose("body", 0.0f, 21.0f, -2.0f);
+            if (body >= 0) model.Pose(body)[5] = -pi / 2.0f;
+            SetXRot(model, "tail", -2.1816616f);
+        } else {
+            AddPos(model, "body", 0.0f, 5.0f, 0.0f);
+            SetXRot(model, "tail", -pi * 5.0f / 6.0f);
+        }
+        AddPos(model, "head", 2.0f, 2.99f, 0.0f);
+        model.SetRot("head", 0.0f, -pi * 2.0f / 3.0f, 1.0f / 22.0f);
+        for (const char* leg : { "right_hind_leg", "left_hind_leg", "right_front_leg", "left_front_leg" })
+            model.SetVisible(leg, false);
+        return;
+    }
+    if (!sitting) return;
+    SetXRot(model, "body", pi / 6.0f);
+    AddPos(model, "body", 0.0f, -7.0f, 3.0f);
+    SetXRot(model, "tail", pi / 4.0f);
+    AddPos(model, "tail", 0.0f, 0.0f, -1.0f);
+    if (legacyBaby) model.SetPose("head", -1.0f, 13.0f, -3.75f);
+    else AddPos(model, "head", 0.0f, -6.5f, 2.75f);
+    SetXRot(model, "right_front_leg", -pi / 12.0f);
+    SetXRot(model, "left_front_leg", -pi / 12.0f);
+    SetXRot(model, "right_hind_leg", -pi * 5.0f / 12.0f);
+    SetXRot(model, "left_hind_leg", -pi * 5.0f / 12.0f);
+    AddPos(model, "right_hind_leg", 0.0f, 4.0f, -0.25f);
+    AddPos(model, "left_hind_leg", 0.0f, 4.0f, -0.25f);
+}
+
+// BabyFoxModel, ageScale 0.5. Crouch / pounce / faceplant are not applied.
+void PoseFoxBaby(EntityModel& model, bool sleeping, bool sitting) {
+    const float pi = static_cast<float>(kPi);
+    const float s = 0.5f;
+    if (sleeping) {
+        int body = model.Find("body");
+        if (body >= 0) { model.Pose(body)[3] = -pi / 18.0f; model.Pose(body)[5] = -pi / 2.0f; }
+        AddPos(model, "body", -1.0f, 1.0f, -1.0f);
+        SetXRot(model, "tail", -2.1816616f);
+        AddPos(model, "tail", -0.7f, 0.9f, 0.6f);
+        AddPos(model, "head", -2.0f, 2.8f, -4.0f);
+        model.SetRot("head", 0.0f, -pi * 2.0f / 3.0f, 1.0f / 22.0f);
+        for (const char* leg : { "right_hind_leg", "left_hind_leg", "right_front_leg", "left_front_leg" })
+            model.SetVisible(leg, false);
+        return;
+    }
+    if (!sitting) return;
+    SetXRot(model, "body", -0.959931f);
+    AddPos(model, "body", 0.0f, 3.0f * s, -4.5f * s);
+    AddPos(model, "tail", 0.0f, -0.6f, -2.0f * s);
+    SetXRot(model, "tail", 0.95993114f);
+    AddPos(model, "head", 0.0f, -0.75f, 0.0f);
+    SetXRot(model, "right_front_leg", -pi / 12.0f);
+    SetXRot(model, "left_front_leg", -pi / 12.0f);
+    AddPos(model, "right_front_leg", 0.01f, 0.0f, -1.0f);
+    AddPos(model, "left_front_leg", -0.01f, 0.0f, -1.0f);
+    AddPos(model, "right_hind_leg", 0.01f, 0.0f, -3.75f);
+    AddPos(model, "left_hind_leg", -0.01f, 0.0f, -3.75f);
+}
+
+void RenderFox(Ctx& ctx, const NbtTagPtr& e) {
+    const std::string fam = ctx.modern ? "modern" : "legacy";
+    const bool baby = IsBaby(e);
+    const bool modernBaby = ctx.modern && baby && EntityModel::Exists(fam, "minecraft:fox_baby#main");
+    EntityModel model(fam, modernBaby ? "minecraft:fox_baby#main" : "minecraft:fox#main");
+    if (!model.Valid()) return;
+    Placement pl = ReadPlacement(e);
+    // Fox "Sleeping" is the curl-up flag, not a bed (ReadPlacement only treats SleepingX / sleeping_pos as a bed).
+    const bool sleeping = NbtFlag(e, "Sleeping", false);
+    const bool sitting = !sleeping && IsSitting(e);
+    if (modernBaby) PoseFoxBaby(model, sleeping, sitting);
+    else PoseFoxAdult(model, sleeping, sitting, !ctx.modern && baby);
+    if (!sleeping) ApplyHeadLook(model, pl);   // sitting still receives the head look
+    // Held-item layer, crouch, pounce and faceplant are skipped.
+    EntityAffine base = LivingBase(pl, 0.4 * (baby ? 0.5 : 1.0), 1.0);
+    TopPre pre = (!ctx.modern && baby) ? LegacyAgeablePre(kAgeFox) : nullptr;
+    std::string type = Str(e, "Type");
+    if (type.empty()) type = Str(e, "variant");
+    if (type.empty()) type = Str(e, "Variant");
+    const bool snow = type.find("snow") != std::string::npos;
+    std::string stem;
+    if (!ctx.modern) stem = snow ? (sleeping ? "snow_fox_sleep" : "snow_fox") : (sleeping ? "fox_sleep" : "fox");
+    else if (snow) stem = sleeping ? "fox_snow_sleep" : "fox_snow";
+    else stem = sleeping ? "fox_sleep" : "fox";
+    if (modernBaby) stem += "_baby";
+    std::string texPath = "entity/fox/" + stem;
+    OutObject& obj = ctx.NewObject("minecraft:fox");
+    EmitTextured(ctx, obj, model, base, pre, "minecraft:" + texPath, ctx.Texture("minecraft", texPath));
+}
+
+// ---------- bee ----------
+// On the ground setupAnim leaves the baked wings and legs. In the air (ageInTicks 0) it poses them once.
+void PoseBeeAir(EntityModel& model, bool angry) {
+    const float pi = static_cast<float>(kPi);
+    const float wz = pi * 0.15f;   // cos(0) * pi * 0.15
+    int rw = model.Find("right_wing"), lw = model.Find("left_wing");
+    if (rw >= 0) { model.Pose(rw)[4] = 0.0f; model.Pose(rw)[5] = wz; }
+    if (lw >= 0 && rw >= 0) {
+        model.Pose(lw)[3] = model.Pose(rw)[3];
+        model.Pose(lw)[4] = 0.0f;
+        model.Pose(lw)[5] = -model.Pose(rw)[5];
+    }
+    const float leg = pi / 4.0f;
+    SetXRot(model, "front_legs", leg);
+    SetXRot(model, "middle_legs", leg);
+    SetXRot(model, "back_legs", leg);
+    if (angry) return;
+    int bone = model.Find("bone");
+    if (bone >= 0) {
+        model.Pose(bone)[3] = 0.1f + pi * 0.025f;
+        model.Pose(bone)[1] -= 0.9f;
+    }
+    SetXRot(model, "front_legs", -pi * 0.1f + pi / 8.0f);
+    SetXRot(model, "back_legs", -pi * 0.05f + pi / 4.0f);
+}
+
+void RenderBee(Ctx& ctx, const NbtTagPtr& e) {
+    const std::string fam = ctx.modern ? "modern" : "legacy";
+    const bool baby = IsBaby(e);
+    const bool modernBaby = ctx.modern && baby && EntityModel::Exists(fam, "minecraft:bee_baby#main");
+    EntityModel model(fam, modernBaby ? "minecraft:bee_baby#main" : "minecraft:bee#main");
+    if (!model.Valid()) return;
+    Placement pl = ReadPlacement(e);
+    model.SetVisible("stinger", !NbtFlag(e, "HasStung", false));
+    const bool angry = IsAngry(e);
+    const bool onGround = NbtFlag(e, "OnGround", true);
+    if (!onGround) PoseBeeAir(model, angry);
+    EntityAffine base = LivingBase(pl, 0.3 * (baby ? 0.5 : 1.0), 1.0);
+    TopPre pre = (!ctx.modern && baby) ? LegacyAgeablePre(kAgeBee) : nullptr;
+    const bool nectar = NbtFlag(e, "HasNectar", false);
+    std::string stem = "bee";
+    if (angry && nectar) stem = "bee_angry_nectar";
+    else if (angry) stem = "bee_angry";
+    else if (nectar) stem = "bee_nectar";
+    if (modernBaby) stem += "_baby";
+    const std::string texPath = "entity/bee/" + stem;
+    OutObject& obj = ctx.NewObject("minecraft:bee");
+    EmitTextured(ctx, obj, model, base, pre, "minecraft:" + texPath, ctx.Texture("minecraft", texPath));
+}
+
+// ---------- goat / polar bear / panda / rabbit / turtle / parrot / slime ----------
+void RenderGoat(Ctx& ctx, const NbtTagPtr& e) {
+    const std::string fam = ctx.modern ? "modern" : "legacy";
+    const bool baby = IsBaby(e);
+    const bool modernBaby = ctx.modern && baby && EntityModel::Exists(fam, "minecraft:goat_baby#main");
+    EntityModel model(fam, modernBaby ? "minecraft:goat_baby#main" : "minecraft:goat#main");
+    if (!model.Valid()) return;
+    Placement pl = ReadPlacement(e);
+    ApplyHeadLook(model, pl);
+    // BabyGoatModel forces head.xRot = pi/8 when not ramming. Ramming is skipped.
+    if (modernBaby) SetXRot(model, "head", static_cast<float>(kPi / 8.0));
+    model.SetVisible("left_horn", NbtFlag(e, "HasLeftHorn", true));
+    model.SetVisible("right_horn", NbtFlag(e, "HasRightHorn", true));
+    EntityAffine base = LivingBase(pl, 1.1 * (baby ? 0.5 : 1.0), 1.0);
+    TopPre pre = (!ctx.modern && baby) ? LegacyAgeablePre(kAgeGoat) : nullptr;
+    std::string texPath = (modernBaby ? "entity/goat/goat_baby" : "entity/goat/goat");
+    OutObject& obj = ctx.NewObject("minecraft:goat");
+    EmitTextured(ctx, obj, model, base, pre, "minecraft:" + texPath, ctx.Texture("minecraft", texPath));
+}
+
+void RenderPolarBear(Ctx& ctx, const NbtTagPtr& e) {
+    const std::string fam = ctx.modern ? "modern" : "legacy";
+    const bool baby = IsBaby(e);
+    const bool modernBaby = ctx.modern && baby && EntityModel::Exists(fam, "minecraft:polar_bear_baby#main");
+    EntityModel model(fam, modernBaby ? "minecraft:polar_bear_baby#main" : "minecraft:polar_bear#main");
+    if (!model.Valid()) return;
+    Placement pl = ReadPlacement(e);
+    // Standing (standScale 0) is the baked pose: adult body xRot = pi/2, baby body xRot = 0. Head pitch only.
+    // Rear-up animation is skipped. Renderer scale 1.2 is legacy-only; 26.x bakes it into the adult root.
+    ApplyHeadLook(model, pl);
+    const double rs = ctx.modern ? 1.0 : 1.2;
+    EntityAffine base = LivingBase(pl, 1.19 * (baby ? 0.5 : 1.0), rs);
+    TopPre pre = (!ctx.modern && baby) ? LegacyAgeablePre(kAgePolarBear) : nullptr;
+    std::string texPath = modernBaby ? "entity/bear/polarbear_baby" : "entity/bear/polarbear";
+    OutObject& obj = ctx.NewObject("minecraft:polar_bear");
+    EmitTextured(ctx, obj, model, base, pre, "minecraft:" + texPath, ctx.Texture("minecraft", texPath));
+}
+
+std::string PandaGene(const NbtTagPtr& e) {
+    std::string g = Str(e, "MainGene");
+    if (g.empty()) g = Str(e, "main_gene");
+    if (g.empty()) return "normal";
+    g = SplitId(g).second;
+    return g.empty() ? "normal" : g;
+}
+
+void RenderPanda(Ctx& ctx, const NbtTagPtr& e) {
+    const std::string fam = ctx.modern ? "modern" : "legacy";
+    const bool baby = IsBaby(e);
+    const bool modernBaby = ctx.modern && baby && EntityModel::Exists(fam, "minecraft:panda_baby#main");
+    EntityModel model(fam, modernBaby ? "minecraft:panda_baby#main" : "minecraft:panda#main");
+    if (!model.Valid()) return;
+    Placement pl = ReadPlacement(e);
+    // sit / lie / roll / sneeze / unhappy are animated (amounts 0 at rest). Do not clear the baked body xRot.
+    // Held item layer is skipped.
+    ApplyHeadLook(model, pl);
+    EntityAffine base = LivingBase(pl, 1.06 * (baby ? 0.5 : 1.0), 1.0);
+    TopPre pre = (!ctx.modern && baby) ? LegacyAgeablePre(kAgePanda) : nullptr;
+    const std::string gene = PandaGene(e);
+    std::string texPath;
+    if (!ctx.modern) texPath = gene == "normal" ? "entity/panda/panda" : "entity/panda/" + gene + "_panda";
+    else if (!modernBaby) texPath = gene == "normal" ? "entity/panda/panda" : "entity/panda/panda_" + gene;
+    else texPath = gene == "normal" ? "entity/panda/panda_baby" : "entity/panda/" + gene + "_panda_baby";
+    OutObject& obj = ctx.NewObject("minecraft:panda");
+    EmitTextured(ctx, obj, model, base, pre, "minecraft:" + texPath, ctx.Texture("minecraft", texPath));
+}
+
+// RabbitModel.renderToBuffer. Adult S(0.6)*T(0,1,0). Baby head group vs body group differ.
+TopPre RabbitPre(bool baby) {
+    return [baby](const std::string& top) {
+        using A = EntityAffine;
+        if (!baby) return A::S(0.6) * A::T(0.0, 1.0, 0.0);
+        if (top == "head" || top == "left_ear" || top == "right_ear" || top == "nose")
+            return A::S(0.56666666) * A::T(0.0, 1.375, 0.125);
+        return A::S(0.4) * A::T(0.0, 2.25, 0.0);
+    };
+}
+
+bool NameIsToast(const std::string& raw) {
+    if (raw.empty()) return false;
+    if (raw == "Toast") return true;
+    if (raw.size() >= 2 && raw.front() == '"' && raw.back() == '"' && raw.substr(1, raw.size() - 2) == "Toast") return true;
+    const auto k = raw.find("\"text\"");
+    if (k == std::string::npos) return false;
+    const auto c = raw.find(':', k);
+    if (c == std::string::npos) return false;
+    const auto q1 = raw.find('"', c + 1);
+    if (q1 == std::string::npos) return false;
+    const auto q2 = raw.find('"', q1 + 1);
+    if (q2 == std::string::npos) return false;
+    return raw.substr(q1 + 1, q2 - q1 - 1) == "Toast" && raw.find("\"extra\"") == std::string::npos;
+}
+
+std::string RabbitTextureName(const NbtTagPtr& e) {
+    if (NameIsToast(Str(e, "CustomName"))) return "toast";
+    static const char* k[] = { "brown", "white", "black", "white_splotched", "gold", "salt" };
+    std::string vs = Str(e, "variant");
+    if (vs.empty()) vs = Str(e, "Variant");
+    if (!vs.empty()) {
+        std::string v = SplitId(vs).second;
+        if (v.rfind("rabbit_", 0) == 0) v = v.substr(7);
+        if (v.size() > 5 && v.compare(v.size() - 5, 5, "_baby") == 0) v = v.substr(0, v.size() - 5);
+        if (v == "evil") v = "caerbannog";
+        if (!v.empty()) return v;
+    }
+    int t = static_cast<int>(NumOr(e, "RabbitType", 0));
+    if (t == 99) return "caerbannog";
+    if (t < 0 || t > 5) t = 0;
+    return k[t];
+}
+
+void RenderRabbit(Ctx& ctx, const NbtTagPtr& e) {
+    const std::string fam = ctx.modern ? "modern" : "legacy";
+    const bool baby = IsBaby(e);
+    const bool modernBaby = ctx.modern && baby && EntityModel::Exists(fam, "minecraft:rabbit_baby#main");
+    EntityModel model(fam, modernBaby ? "minecraft:rabbit_baby#main" : "minecraft:rabbit#main");
+    if (!model.Valid()) return;
+    Placement pl = ReadPlacement(e);
+    const float pitch = HeadPitch(pl);
+    TopPre pre;
+    if (!ctx.modern) {
+        // jumpRotation 0: haunches -21 deg (bake is -20), front legs -11 deg (bake is -10), ears yRot ∓ pi/12.
+        const float d = static_cast<float>(kPi / 180.0);
+        model.SetRot("nose", pitch, 0.0f, 0.0f);
+        model.SetRot("head", pitch, 0.0f, 0.0f);
+        model.SetRot("right_ear", pitch, static_cast<float>(-kPi / 12.0), 0.0f);
+        model.SetRot("left_ear", pitch, static_cast<float>(kPi / 12.0), 0.0f);
+        model.SetRot("left_haunch", -21.0f * d, 0.0f, 0.0f);
+        model.SetRot("right_haunch", -21.0f * d, 0.0f, 0.0f);
+        model.SetRot("left_hind_foot", 0.0f, 0.0f, 0.0f);
+        model.SetRot("right_hind_foot", 0.0f, 0.0f, 0.0f);
+        model.SetRot("left_front_leg", -11.0f * d, 0.0f, 0.0f);
+        model.SetRot("right_front_leg", -11.0f * d, 0.0f, 0.0f);
+        pre = RabbitPre(baby);
+    } else if (pitch != 0.0f) {
+        // 26.x setupAnim writes head.xRot = pitch absolutely, which would wipe the baked counter-rotation
+        // that keeps the head level against body.xRot -0.3927. Add the pitch on top of that bind pose instead.
+        model.AddRot("head", pitch, 0.0f, 0.0f);
+    }
+    EntityAffine base = LivingBase(pl, 0.3 * (baby ? 0.5 : 1.0), 1.0);
+    const std::string name = RabbitTextureName(e);
+    std::string texPath = ctx.modern
+        ? "entity/rabbit/rabbit_" + name + (modernBaby ? "_baby" : "")
+        : "entity/rabbit/" + name;
+    if (!TextureExists("minecraft", texPath))
+        texPath = ctx.modern ? "entity/rabbit/" + name : "entity/rabbit/rabbit_" + name;
+    OutObject& obj = ctx.NewObject("minecraft:rabbit");
+    EmitTextured(ctx, obj, model, base, pre, "minecraft:" + texPath, ctx.Texture("minecraft", texPath));
+}
+
+void RenderTurtle(Ctx& ctx, const NbtTagPtr& e) {
+    using A = EntityAffine;
+    const std::string fam = ctx.modern ? "modern" : "legacy";
+    const bool baby = IsBaby(e);
+    const bool modernBaby = ctx.modern && baby && EntityModel::Exists(fam, "minecraft:turtle_baby#main");
+    EntityModel model(fam, modernBaby ? "minecraft:turtle_baby#main" : "minecraft:turtle#main");
+    if (!model.Valid()) return;
+    Placement pl = ReadPlacement(e);
+    ApplyHeadLook(model, pl);
+    const bool egg = !baby && NbtFlag(e, "HasEgg", false);
+    model.SetVisible("egg_belly", egg);
+    EntityAffine base = LivingBase(pl, 0.28 * (baby ? 0.5 : 1.0), 1.0);
+    if (egg && !ctx.modern) base = base * A::T(0.0, -0.08, 0.0);          // 1.21 renderToBuffer
+    if (egg && ctx.modern) {                                                // AdultTurtleModel: root.y--
+        int root = model.Find("root");
+        if (root >= 0) model.Pose(root)[1] -= 1.0f;
+    }
+    TopPre pre = (!ctx.modern && baby) ? LegacyAgeablePre(kAgeTurtle) : nullptr;
+    std::string texPath = !ctx.modern ? "entity/turtle/big_sea_turtle"
+                                      : (modernBaby ? "entity/turtle/turtle_baby" : "entity/turtle/turtle");
+    OutObject& obj = ctx.NewObject("minecraft:turtle");
+    EmitTextured(ctx, obj, model, base, pre, "minecraft:" + texPath, ctx.Texture("minecraft", texPath));
+}
+
+// 1.21 prepare+setupAnim writes absolute rotations (bake is identity rot). 26.x bakes the standing
+// prepare pose and setupAnim only adds wing zRot ±0.0873. Sitting offsets differ by family.
+void PoseParrot(EntityModel& model, bool sitting, bool modern, float pitch) {
+    const float pi = static_cast<float>(kPi);
+    model.SetRot("feather", -0.2214f, 0.0f, 0.0f);
+    model.SetRot("body", 0.4937f, 0.0f, 0.0f);
+    model.SetRot("tail", 1.015f, 0.0f, 0.0f);
+    model.SetRot("left_wing", -0.6981f, -pi, -0.0873f);
+    model.SetRot("right_wing", -0.6981f, -pi, 0.0873f);
+    model.SetRot("left_leg", -0.0299f, 0.0f, 0.0f);
+    model.SetRot("right_leg", -0.0299f, 0.0f, 0.0f);
+    model.SetRot("head", pitch, 0.0f, 0.0f);
+    if (!sitting) return;
+    if (!modern) {
+        int h = model.Find("head"); if (h >= 0) model.Pose(h)[1] = 17.59f;
+        model.SetRot("tail", 1.5388988f, 0.0f, 0.0f);
+        int t = model.Find("tail"); if (t >= 0) model.Pose(t)[1] = 22.97f;
+        int b = model.Find("body"); if (b >= 0) model.Pose(b)[1] = 18.4f;
+        int lw = model.Find("left_wing"); if (lw >= 0) model.Pose(lw)[1] = 18.84f;
+        int rw = model.Find("right_wing"); if (rw >= 0) model.Pose(rw)[1] = 18.84f;
+        int ll = model.Find("left_leg");
+        int rl = model.Find("right_leg");
+        if (ll >= 0) { model.Pose(ll)[1] = 23.0f; model.Pose(ll)[3] = -0.0299f + 1.0f; }
+        if (rl >= 0) { model.Pose(rl)[1] = 23.0f; model.Pose(rl)[3] = -0.0299f + 1.0f; }
+        return;
+    }
+    // 26.x prepare(SITTING) is +1 on the baked standing pose (the local 1.9 is unused). Wing zRot is set, not added.
+    for (const char* p : { "head", "tail", "body", "left_wing", "right_wing", "left_leg", "right_leg" })
+        AddPos(model, p, 0.0f, 1.0f, 0.0f);
+    model.AddRot("tail", pi / 6.0f, 0.0f, 0.0f);
+    model.AddRot("left_leg", 1.0f, 0.0f, 0.0f);
+    model.AddRot("right_leg", 1.0f, 0.0f, 0.0f);
+}
+
+void RenderParrot(Ctx& ctx, const NbtTagPtr& e) {
+    const std::string fam = ctx.modern ? "modern" : "legacy";
+    EntityModel model(fam, "minecraft:parrot#main");
+    if (!model.Valid()) return;
+    Placement pl = ReadPlacement(e);
+    PoseParrot(model, IsSitting(e), ctx.modern, HeadPitch(pl));
+    // Party and flying poses are skipped.
+    EntityAffine base = LivingBase(pl, 0.54, 1.0);
+    static const char* k[] = { "red_blue", "blue", "green", "yellow_blue", "grey" };
+    std::string name;
+    std::string vs = Str(e, "variant");
+    if (vs.empty()) vs = Str(e, "Variant");
+    if (!vs.empty()) {
+        name = SplitId(vs).second;
+        if (name.rfind("parrot_", 0) == 0) name = name.substr(7);
+    } else {
+        int v = static_cast<int>(NumOr(e, "Variant", 0));
+        if (v < 0 || v > 4) v = 0;
+        name = k[v];
+    }
+    if (name == "gray") name = "grey";
+    if (name.empty()) name = "red_blue";
+    const std::string texPath = "entity/parrot/parrot_" + name;
+    OutObject& obj = ctx.NewObject("minecraft:parrot");
+    EmitTextured(ctx, obj, model, base, nullptr, "minecraft:" + texPath, ctx.Texture("minecraft", texPath));
+}
+
+void RenderSlime(Ctx& ctx, const NbtTagPtr& e) {
+    using A = EntityAffine;
+    const std::string fam = ctx.modern ? "modern" : "legacy";
+    EntityModel model(fam, "minecraft:slime#main");
+    if (!model.Valid()) return;
+    Placement pl = ReadPlacement(e);
+    // Saved Size is getSize()-1. A missing tag is a size-1 slime (setSize(0+1) on read).
+    int size = 1;
+    if (getChildByName(e, "Size")) {
+        int n = static_cast<int>(NumOr(e, "Size", 0));
+        if (n < 0) n = 0;
+        size = n + 1;
+    }
+    // scale(): S(0.999) * T(0, 0.001, 0) * S(size) at squish 0, before translate(0, -1.501, 0).
+    EntityAffine base = LivingBase(pl, 0.625 * size, 0.999);
+    base = base * A::T(0.0, 1.501, 0.0) * A::T(0.0, 0.001, 0.0) * A::S(static_cast<double>(size)) * A::T(0.0, -1.501, 0.0);
+    const std::string texPath = "entity/slime/slime";
+    std::string tex = ctx.Texture("minecraft", texPath);
+    OutObject& obj = ctx.NewObject("minecraft:slime");
+    EmitTextured(ctx, obj, model, base, nullptr, "minecraft:" + texPath, tex);
+    EntityModel outer(fam, "minecraft:slime#outer");
+    if (outer.Valid()) {
+        // Same texture, translucent in vanilla. The OBJ material is opaque; the shell is still emitted.
+        EmitTextured(ctx, obj, outer, base, nullptr, "minecraft:" + texPath + "#outer", tex);
+    }
 }
 
 
@@ -1236,6 +1922,22 @@ size_t Export(const std::string& name) {
         else if (id == "minecraft:wolf") RenderWolf(ctx, e);
         else if (id == "minecraft:cat") RenderCat(ctx, e);
         else if (id == "minecraft:horse") RenderHorse(ctx, e);
+        else if (id == "minecraft:spider") RenderSpider(ctx, e, false);
+        else if (id == "minecraft:cave_spider") RenderSpider(ctx, e, true);
+        else if (id == "minecraft:enderman") RenderEnderman(ctx, e);
+        else if (id == "minecraft:iron_golem") RenderIronGolem(ctx, e);
+        else if (id == "minecraft:snow_golem") RenderSnowGolem(ctx, e);
+        else if (id == "minecraft:llama") RenderLlama(ctx, e, false);
+        else if (id == "minecraft:trader_llama") RenderLlama(ctx, e, true);
+        else if (id == "minecraft:fox") RenderFox(ctx, e);
+        else if (id == "minecraft:bee") RenderBee(ctx, e);
+        else if (id == "minecraft:goat") RenderGoat(ctx, e);
+        else if (id == "minecraft:polar_bear") RenderPolarBear(ctx, e);
+        else if (id == "minecraft:panda") RenderPanda(ctx, e);
+        else if (id == "minecraft:rabbit") RenderRabbit(ctx, e);
+        else if (id == "minecraft:turtle") RenderTurtle(ctx, e);
+        else if (id == "minecraft:parrot") RenderParrot(ctx, e);
+        else if (id == "minecraft:slime") RenderSlime(ctx, e);
     });
     if (ctx.objects.empty()) {
         std::cout << "[EntityModels] no supported entities (" << chunks << " entity chunks)" << std::endl;
