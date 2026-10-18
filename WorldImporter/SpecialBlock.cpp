@@ -779,6 +779,59 @@ namespace {
         return result;
     }
 
+    // gantry_carriage: blockstate casing + KineticBlockEntityRenderer shaft along the rotation
+    // axis + GantryCarriageRenderer GANTRY_COGS (gantry_carriage/wheels) meshing with the shaft.
+    ModelData GenerateCreateGantryCarriage(const string& blockName,
+        const unordered_map<string, string>& states, int x, int y, int z) {
+        auto rotateMc = [](ModelData& model, char axis, float degrees) {
+            if (model.vertices.empty() || fmodf(degrees, 360.0f) == 0.0f) return;
+            const float rad = degrees * (float)M_PI / 180.0f;
+            const float c = roundf(cosf(rad) * 1e6f) / 1e6f, s = roundf(sinf(rad) * 1e6f) / 1e6f;
+            for (size_t i = 0; i + 2 < model.vertices.size(); i += 3) {
+                float vx = model.vertices[i] - 0.5f, vy = model.vertices[i + 1] - 0.5f, vz = model.vertices[i + 2] - 0.5f;
+                float nx = vx, ny = vy, nz = vz;
+                if (axis == 'x') { ny = vy * c - vz * s; nz = vy * s + vz * c; }
+                else if (axis == 'y') { nx = vx * c + vz * s; nz = -vx * s + vz * c; }
+                model.vertices[i] = nx + 0.5f; model.vertices[i + 1] = ny + 0.5f; model.vertices[i + 2] = nz + 0.5f;
+            }
+        };
+        const string facing = states.contains("facing") ? states.at("facing") : "up";
+        const bool alongFirst = states.contains("axis_along_first") && states.at("axis_along_first") == "true";
+        const char facingAxis = facing == "east" || facing == "west" ? 'x' : facing == "up" || facing == "down" ? 'y' : 'z';
+        // DirectionalAxisKineticBlock.getRotationAxis
+        char rotationAxis = facingAxis == 'x' ? (alongFirst ? 'y' : 'z') :
+            facingAxis == 'y' ? (alongFirst ? 'x' : 'z') : (alongFirst ? 'x' : 'y');
+        char gantryAxis = 'x';
+        for (char a : { 'x', 'y', 'z' }) if (a != rotationAxis && a != facingAxis) gantryAxis = a;
+
+        ModelData result = LoadBlockstateModel(blockName);
+        Append(result, GenerateCreateKinetic("shaft", { {"axis", string(1, rotationAxis)} }, x, y, z));
+
+        // Rest angle: KineticBlockEntityVisual.rotationOffset at the visual position.
+        const bool positive = facing == "east" || facing == "up" || facing == "south";
+        int vx = x, vy = y, vz = z;
+        if (!positive) { if (facingAxis == 'x') vx++; else if (facingAxis == 'y') vy++; else vz++; }
+        int sum = (rotationAxis == 'x' ? 0 : vx) + (rotationAxis == 'y' ? 0 : vy) + (rotationAxis == 'z' ? 0 : vz);
+        float angle = sum % 2 == 0 ? 22.5f : 0.0f;
+        if (gantryAxis == 'x' && facing == "up") angle = -angle;
+        if (gantryAxis == 'y' && (facing == "north" || facing == "east")) angle = -angle;
+
+        ModelData cogs = LoadCreateModel("block/gantry_carriage/wheels", 270);
+        auto shiftY = [&](float dy) { for (size_t i = 1; i < cogs.vertices.size(); i += 3) cogs.vertices[i] += dy; };
+        // center, rotY(h), rotX(v), rotY(a), translate(0,-9/16,0), rotX(-angle), translate(0,9/16,0), uncenter
+        shiftY(0.5625f);
+        rotateMc(cogs, 'x', -angle);
+        shiftY(-0.5625f);
+        rotateMc(cogs, 'y', (alongFirst ^ (facingAxis == 'x')) ? 0.0f : 90.0f);
+        rotateMc(cogs, 'x', facing == "up" ? 0.0f : facing == "down" ? 180.0f : 90.0f);
+        float horizontal = facing == "west" ? -90.0f : facing == "north" ? 180.0f : facing == "east" ? -270.0f : 0.0f;
+        rotateMc(cogs, 'y', horizontal);
+        DisableCulling(cogs);
+        Append(result, std::move(cogs));
+        return result;
+    }
+
+
     // hand_crank: short axis stub (blockstate) + handle facing opposite, rest angle 0.
     ModelData GenerateCreateHandCrank(const string& blockName,
         const unordered_map<string, string>& states) {
@@ -876,6 +929,10 @@ bool SpecialBlock::TryGenerateCreateBlockModel(const string& blockName,
     }
     if (baseName == "create:mechanical_arm") {
         outModel = GenerateCreateMechanicalArm(blockName, ParseBlockStates(blockName));
+        return !outModel.vertices.empty();
+    }
+    if (baseName == "create:gantry_carriage") {
+        outModel = GenerateCreateGantryCarriage(blockName, ParseBlockStates(blockName), x, y, z);
         return !outModel.vertices.empty();
     }
     if (baseName == "create:hand_crank") {
