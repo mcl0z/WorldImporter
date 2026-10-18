@@ -387,6 +387,17 @@ BiomeColors Biome::ParseBiomeColors(const nlohmann::json& biomeJson) {
         }
 
         colors.grass = ParseColorWithFallback("grass_color", "grass");
+
+        // grass_color_modifier (vanilla GrassColorModifier): swamp 用固定色(取噪声高值一侧),
+        // dark_forest 与 0x28340A 取平均。没有 grass_color 覆盖时才生效。
+        if (effects.contains("grass_color_modifier") && effects["grass_color_modifier"].is_string()) {
+            const std::string mod = effects["grass_color_modifier"].get<std::string>();
+            if (mod == "swamp") {
+                colors.grass = 0x6A7039;
+            } else if (mod == "dark_forest") {
+                colors.grass = ((colors.grass & 0xFEFEFE) + 0x28340A) >> 1;
+            }
+        }
     }
 
     return colors;
