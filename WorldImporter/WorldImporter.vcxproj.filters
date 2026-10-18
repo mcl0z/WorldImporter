@@ -98,6 +98,9 @@
     <ClCompile Include="fileutils.cpp">
       <Filter>源文件\Utils</Filter>
     </ClCompile>
+    <ClCompile Include="EndPortalModel.cpp">
+      <Filter>源文件\Blocks</Filter>
+    </ClCompile>
     <ClCompile Include="nbtutils.cpp">
       <Filter>源文件\Utils</Filter>
     </ClCompile>

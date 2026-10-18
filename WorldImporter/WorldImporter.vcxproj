@@ -173,6 +173,7 @@
     <ClCompile Include="SpecialBlock.cpp" />
     <ClCompile Include="CopperGolemStatue.cpp" />
     <ClCompile Include="fileutils.cpp" />
+    <ClCompile Include="EndPortalModel.cpp" />
     <ClCompile Include="Fluid.cpp" />
     <ClCompile Include="GlobalCache.cpp" />
     <ClCompile Include="CreateSlidingDoor.cpp" />
@@ -225,6 +226,7 @@
     <ClInclude Include="SpecialBlock.h" />
     <ClInclude Include="CopperGolemStatue.h" />
     <ClInclude Include="fileutils.h" />
+    <ClInclude Include="EndPortalModel.h" />
     <ClInclude Include="GlobalCache.h" />
     <ClInclude Include="CreateSlidingDoor.h" />
     <ClInclude Include="JarReader.h" />
