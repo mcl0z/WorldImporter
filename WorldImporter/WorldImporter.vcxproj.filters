@@ -200,10 +200,10 @@
     <ClInclude Include="BbsModelSupport.h">
       <Filter>头文件\Blocks</Filter>
     </ClInclude>
-    <ClInclude Include="SpecialBlock.h">
+    <ClInclude Include="PlayerSkin.h">
       <Filter>头文件\Blocks</Filter>
     </ClInclude>
-    <ClInclude Include="PlayerSkin.h">
+    <ClInclude Include="SpecialBlock.h">
       <Filter>头文件\Blocks</Filter>
     </ClInclude>
     <ClInclude Include="EntityBlock.h">

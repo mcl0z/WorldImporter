@@ -81,7 +81,6 @@ Config LoadConfig(const std::string& configFile) {
         config.variantSeedMode = VariantSeedMode::First;
     }
     config.importEntities = j.value("importEntities", config.importEntities);
-    config.downloadPlayerSkins = j.value("downloadPlayerSkins", config.downloadPlayerSkins);
     
     // 读取LOD1级别使用原始模型的方块列表
     /*格式：
@@ -99,6 +98,7 @@ Config LoadConfig(const std::string& configFile) {
     }
 
     config.exportFullModel = j.value("exportFullModel", config.exportFullModel);
+    config.downloadPlayerSkins = j.value("downloadPlayerSkins", config.downloadPlayerSkins);
     // 对旧配置和手写配置做安全兜底；Python 自动模式仍写入同一批字段。
     config.partitionSize = std::clamp(j.value("partitionSize", config.partitionSize), 1, 64);
 

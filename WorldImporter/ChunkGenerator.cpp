@@ -28,11 +28,11 @@
 #include "ChunkGroupAllocator.h"
 #include <utility>
 #include "hashutils.h"
+#include "PlayerSkin.h"
 #include "ChunkLoader.h"
 #include "SpecialBlock.h"
 #include "CableMesher.h"
 #include "BbsModelSupport.h"
-#include "PlayerSkin.h"
 using namespace std;
 using namespace std::chrono;
 
@@ -424,20 +424,6 @@ void ChunkGenerator::ProcessBlockForModel(ModelData& chunkModel, int x, int y, i
         blockModel = GetRandomModelFromCache(ns, blockName, BlockPosSeed(x, y, z));
     }
 
-    // Copycats / Create copycat: material camo may rebuild empty air placeholders.
-    if (blockEntityNbt && (ns == "copycats" ||
-        (ns == "create" && blockName.rfind("copycat_", 0) == 0))) {
-        ApplyCopycatCamoToBlockModel(blockModel, blockEntityNbt, ns, blockName, x, y, z);
-    }
-
-    if (blockModel.vertices.empty()) return;
-
-    // FramedBlocks: retexture frame materials from BE camo (shape stays).
-    // Double/fluid camo + position camo alias for Mek CT connect groups.
-    if (ns == "framedblocks" && blockEntityNbt) {
-        ApplyFramedCamoToBlockModel(blockModel, blockEntityNbt, blockName, x, y, z);
-    }
-
     // Player heads: swap the shared Steve material for the profile skin before
     // position offset. All faces of the skull model use that one material.
     if (ns == "minecraft" && blockEntityNbt) {
@@ -473,6 +459,20 @@ void ChunkGenerator::ProcessBlockForModel(ModelData& chunkModel, int x, int y, i
                 }
             }
         }
+    }
+
+    // Copycats / Create copycat: material camo may rebuild empty air placeholders.
+    if (blockEntityNbt && (ns == "copycats" ||
+        (ns == "create" && blockName.rfind("copycat_", 0) == 0))) {
+        ApplyCopycatCamoToBlockModel(blockModel, blockEntityNbt, ns, blockName, x, y, z);
+    }
+
+    if (blockModel.vertices.empty()) return;
+
+    // FramedBlocks: retexture frame materials from BE camo (shape stays).
+    // Double/fluid camo + position camo alias for Mek CT connect groups.
+    if (ns == "framedblocks" && blockEntityNbt) {
+        ApplyFramedCamoToBlockModel(blockModel, blockEntityNbt, blockName, x, y, z);
     }
 
     // Preserve Yuushya's block-state geometry for partial blocks, while full
