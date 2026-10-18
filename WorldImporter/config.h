@@ -57,6 +57,8 @@ struct Config {
     float doubleSidedFaceOffset; //几何双面里反面沿法线的外移量(米): 0=严格共面只换索引, 需大于该坐标处 float 精度
     float overlayLayerStep; //共面外移步长(米): 叠加层逐层外移 + 薄片贴边沿法线外推, 避免 Blender 下 z-fighting
     bool ctmPrefixMatchTiles; //matchTiles 以 '_' 结尾时是否再做前缀族匹配(默认开=保持既有行为; 关掉只保留剥掉下划线后的精确匹配)
+    std::string mcmetaCtm; //ConnectedTexturesMod 的 .png.mcmeta: "auto"|"on"|"off"(默认 auto=仅 mods 里有 ctm 模组时启用; 资源包不算)
+    bool mcmetaCtmEnabled; //mcmetaCtm 解析后的实际开关(枚举 jar 后写入; 关掉则跳过 ctm mcmeta)
     bool mergeModTextures; //模组方块是否复用同一张贴图已有的材质(原版方块之间始终不合并; 默认开)
     bool activeLOD; //使用LOD
     bool isLODAutoCenter; //是否自动计算LOD中心坐标
@@ -107,6 +109,8 @@ struct Config {
         allowDoubleFace(false),
         overlayLayerStep(0.0005f),
         ctmPrefixMatchTiles(true),
+        mcmetaCtm("auto"),
+        mcmetaCtmEnabled(false),
         mergeModTextures(true),
         doubleSidedGeometry(true),
         doubleSidedFaceOffset(0.0005f),
