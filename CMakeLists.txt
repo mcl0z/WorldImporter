@@ -66,6 +66,14 @@ if (BUILD_TESTING AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/WorldImporter/tests/bi
     set_tests_properties(biome_colors PROPERTIES TIMEOUT 30 RESOURCE_LOCK biome_texture_output)
 endif()
 
+if (BUILD_TESTING AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/WorldImporter/tests/plant_offset_tests.cpp")
+    add_executable(plant_offset_tests WorldImporter/tests/plant_offset_tests.cpp)
+    target_link_libraries(plant_offset_tests PRIVATE WorldImporterCore)
+    wi_apply_defaults(plant_offset_tests)
+    add_test(NAME plant_offset COMMAND plant_offset_tests)
+    set_tests_properties(plant_offset PROPERTIES TIMEOUT 30)
+endif()
+
 # tests/ 是可选目录：删掉它（例如只发布主程序源码）时必须仍能正常编译主程序。
 set(WI_TESTS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/tests")
 if (BUILD_TESTING AND NOT EXISTS "${WI_TESTS_DIR}")

@@ -32,6 +32,7 @@
 #include "SpecialBlock.h"
 #include "CableMesher.h"
 #include "BbsModelSupport.h"
+#include "plantoffset.h"
 using namespace std;
 using namespace std::chrono;
 
@@ -386,6 +387,8 @@ void ChunkGenerator::ProcessBlockForModel(ModelData& chunkModel, int x, int y, i
         AssignFluidMaterials(liquidModel, fluidName);
 
         ModelData waterloggedBlockModel = GetRandomModelFromCache(ns, blockName, BlockPosSeed(x, y, z));
+        // 原版 OffsetType 只平移方块模型。流体在合并之前保持格子中心。
+        ApplyVanillaPlantOffset(waterloggedBlockModel, ns, blockName, x, z);
         if (waterloggedBlockModel.vertices.empty()) {
             blockModel = liquidModel;
         }
@@ -421,6 +424,7 @@ void ChunkGenerator::ProcessBlockForModel(ModelData& chunkModel, int x, int y, i
     {
         // 处理其他方块
         blockModel = GetRandomModelFromCache(ns, blockName, BlockPosSeed(x, y, z));
+        ApplyVanillaPlantOffset(blockModel, ns, blockName, x, z);
     }
 
     // Copycats / Create copycat: material camo may rebuild empty air placeholders.
