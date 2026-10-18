@@ -174,6 +174,7 @@
     <ClCompile Include="model.cpp" />
     <ClCompile Include="ModelDeduplicator.cpp" />
     <ClCompile Include="nbtutils.cpp" />
+    <ClCompile Include="CreateDepotItems.cpp" />
     <ClCompile Include="ObjExporter.cpp" />
     <ClCompile Include="RegionModelExporter.cpp" />
     <ClCompile Include="TaskMonitor.cpp" />
@@ -213,6 +214,7 @@
     <ClInclude Include="model.h" />
     <ClInclude Include="ModelDeduplicator.h" />
     <ClInclude Include="nbtutils.h" />
+    <ClInclude Include="CreateDepotItems.h" />
     <ClInclude Include="ObjExporter.h" />
     <ClInclude Include="RegionModelExporter.h" />
     <ClInclude Include="TaskMonitor.h" />
