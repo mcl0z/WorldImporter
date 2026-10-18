@@ -1,4 +1,5 @@
 #include "SpecialBlock.h"
+#include "CopperGolemStatue.h"
 #include <vector>
 #include <algorithm>
 #include <sstream>
@@ -918,6 +919,12 @@ ModelData SpecialBlock::GenerateSpecialBlockModel(const string& blockName) {
             blockID.compare(blockID.size() - 4, 4, "_bed") == 0) {
             return GenerateBedModel(blockName);
         }
+    }
+
+    // 铜傀儡雕像(方块实体渲染)
+    {
+        ModelData statue = GenerateCopperGolemStatueModel(blockName);
+        if (!statue.faces.empty()) return statue;
     }
 
     // 其他类型方块的生成逻辑
