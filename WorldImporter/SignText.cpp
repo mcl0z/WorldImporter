@@ -14,13 +14,17 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cctype>
 #include <cinttypes>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <iterator>
 #include <mutex>
 #include <numbers>
 #include <unordered_map>
@@ -31,8 +35,9 @@
 // Vanilla sign text. Per-component colours and styles are ignored; the sign dye
 // colour and the glowing flag paint the whole side. translate/score/selector
 // components are not resolved — a "translate" key is copied literally when the
-// component has no "text". unihex, ttf and legacy_unicode providers are skipped,
-// so glyphs that exist only there are omitted.
+// component has no "text". Bitmap and space providers are loaded first. unihex
+// (1.20+) and legacy_unicode (1.18/1.19) supply the remaining codepoints. The
+// first provider that has a codepoint wins. ttf is not loaded.
 //
 // Hanging signs use the block entity's line height of 9 (standing and wall signs
 // use 10). The bake hash includes that line height and the max line width so a
@@ -61,6 +66,15 @@ struct Glyph {
     float scale = 1.0f;
     int advance = 0;
     int ascent = 7;
+    // 1 for bitmap. 2 for unihex and legacy_unicode (16 px = 8 font units).
+    float oversample = 1.0f;
+    // Legacy unicode page index, or -1. Pixels live in gLegacyPages[page].
+    int page = -1;
+    // Unihex rows, already shifted the way UnihexProvider.LineData.line() does.
+    bool useBits = false;
+    int bitLeft = 0;
+    int bitRight = 0;
+    std::array<uint32_t, 16> bits{};
 };
 
 struct FontLib {
@@ -88,6 +102,38 @@ bool gDataVersionKnown = false;
 std::once_flag gDataVersionOnce;
 std::mutex gBakeMutex;
 std::unordered_set<uint64_t> gBaked;
+
+struct SizeOverride {
+    uint32_t from = 0;
+    uint32_t to = 0;
+    int left = 0;
+    int right = 0;
+};
+
+struct PendingProvider {
+    enum class Kind { Unihex, Legacy };
+    Kind kind = Kind::Unihex;
+    std::string id;
+    std::string templ;
+    std::vector<SizeOverride> overrides;
+};
+
+struct HexLine {
+    int bitWidth = 0;
+    std::array<uint32_t, 16> rows{};
+};
+
+std::vector<PendingProvider> gPending;
+std::unordered_map<uint32_t, Glyph> gFallback;
+std::once_flag gFallbackOnce;
+std::array<FontImage, 256> gLegacyPages;
+std::array<std::once_flag, 256> gLegacyOnce;
+std::string gLegacyTemplate;
+std::mutex gLegacyMutex;
+
+std::once_flag gAssetOnce;
+std::string gAssetDir;
+std::unordered_map<std::string, std::string> gAssetHash;
 
 std::string ToLower(std::string s) {
     for (char& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
@@ -315,11 +361,345 @@ std::string ProviderType(const nlohmann::json& provider) {
     return type;
 }
 
+// Default font options are empty, so a filter value of true (uniform, jp, ...) excludes the provider.
 bool IncludeInDefaultFont(const nlohmann::json& provider) {
     if (!provider.contains("filter") || !provider["filter"].is_object()) return true;
     const auto& filter = provider["filter"];
-    if (filter.contains("uniform") && filter["uniform"].is_boolean() && filter["uniform"].get<bool>()) return false;
+    for (auto it = filter.begin(); it != filter.end(); ++it) {
+        if (it.value().is_boolean() && it.value().get<bool>()) return false;
+    }
     return true;
+}
+
+std::string LexicalParent(std::string path) {
+    while (path.size() > 1 && (path.back() == '/' || path.back() == '\\')) path.pop_back();
+    const size_t pos = path.find_last_of("/\\");
+    if (pos == std::string::npos) return {};
+    if (pos == 0) return path.substr(0, 1);
+    return path.substr(0, pos);
+}
+
+std::string ReadFileBytes(const std::string& path) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in) return {};
+    return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+}
+
+// Gson lenient accepts the trailing comma in 1.21.1's unifont.json. nlohmann does not.
+std::string StripTrailingCommas(const std::string& text) {
+    std::string out;
+    out.reserve(text.size());
+    bool inString = false;
+    bool escape = false;
+    for (size_t i = 0; i < text.size(); ++i) {
+        const char c = text[i];
+        if (inString) {
+            out.push_back(c);
+            if (escape) escape = false;
+            else if (c == '\\') escape = true;
+            else if (c == '"') inString = false;
+            continue;
+        }
+        if (c == '"') {
+            inString = true;
+            out.push_back(c);
+            continue;
+        }
+        if (c == ',') {
+            size_t j = i + 1;
+            while (j < text.size() && std::isspace(static_cast<unsigned char>(text[j]))) ++j;
+            if (j < text.size() && (text[j] == '}' || text[j] == ']')) continue;
+        }
+        out.push_back(c);
+    }
+    return out;
+}
+
+bool ParseLenient(const std::string& text, nlohmann::json& out) {
+    try {
+        out = nlohmann::json::parse(text);
+        return true;
+    } catch (const std::exception&) {
+    }
+    try {
+        out = nlohmann::json::parse(StripTrailingCommas(text));
+        return true;
+    } catch (const std::exception&) {
+        return false;
+    }
+}
+
+std::string ReadAssetIndexId() {
+    if (config.versionJsonPath.empty()) return {};
+    const std::string text = ReadFileBytes(config.versionJsonPath);
+    if (text.empty()) return {};
+    nlohmann::json root;
+    if (!ParseLenient(text, root)) return {};
+    if (!root.contains("assetIndex") || !root["assetIndex"].is_object()) return {};
+    const auto& index = root["assetIndex"];
+    if (!index.contains("id") || !index["id"].is_string()) return {};
+    return index["id"].get<std::string>();
+}
+
+std::vector<std::string> AssetDirs() {
+    std::vector<std::string> dirs;
+    auto add = [&dirs](const std::string& dir) {
+        if (dir.empty()) return;
+        if (std::find(dirs.begin(), dirs.end(), dir) == dirs.end()) dirs.push_back(dir);
+    };
+    auto addRoot = [&add](const std::string& file) {
+        if (file.empty()) return;
+        const std::string root = LexicalParent(LexicalParent(LexicalParent(file)));
+        if (root.empty()) return;
+        add(JoinPath(root, "assets"));
+        const std::string up = LexicalParent(root);
+        if (!up.empty()) add(JoinPath(up, "assets"));
+    };
+    addRoot(config.jarPath);
+    addRoot(config.versionJsonPath);
+    return dirs;
+}
+
+void EnsureAssetIndex() {
+    std::call_once(gAssetOnce, [] {
+        const std::string id = ReadAssetIndexId();
+        for (const std::string& dir : AssetDirs()) {
+            std::string indexPath;
+            std::error_code ec;
+            if (!id.empty()) {
+                const std::string candidate = JoinPath(dir, "indexes", id + ".json");
+                if (std::filesystem::is_regular_file(candidate, ec)) indexPath = candidate;
+            }
+            if (indexPath.empty()) {
+                const std::string indexes = JoinPath(dir, "indexes");
+                if (!std::filesystem::is_directory(indexes, ec)) continue;
+                std::vector<std::string> names;
+                for (const auto& entry : std::filesystem::directory_iterator(indexes, ec)) {
+                    if (ec) break;
+                    if (!entry.is_regular_file()) continue;
+                    const std::string name = entry.path().filename().string();
+                    if (name.size() >= 5 && name.compare(name.size() - 5, 5, ".json") == 0) names.push_back(name);
+                }
+                std::sort(names.begin(), names.end());
+                for (const std::string& name : names) {
+                    const std::string candidate = JoinPath(indexes, name);
+                    const std::string text = ReadFileBytes(candidate);
+                    if (text.find("\"minecraft/font/unifont.zip\"") == std::string::npos) continue;
+                    indexPath = candidate;
+                    break;
+                }
+            }
+            if (indexPath.empty()) continue;
+            nlohmann::json root;
+            if (!ParseLenient(ReadFileBytes(indexPath), root)) continue;
+            if (!root.contains("objects") || !root["objects"].is_object()) continue;
+            gAssetDir = dir;
+            gAssetHash.clear();
+            for (auto it = root["objects"].begin(); it != root["objects"].end(); ++it) {
+                if (!it.value().is_object() || !it.value().contains("hash") || !it.value()["hash"].is_string()) continue;
+                gAssetHash.emplace(it.key(), it.value()["hash"].get<std::string>());
+            }
+            return;
+        }
+    });
+}
+
+std::string AssetFileForKey(const std::string& key) {
+    EnsureAssetIndex();
+    const auto it = gAssetHash.find(key);
+    if (it == gAssetHash.end() || it->second.size() < 2 || gAssetDir.empty()) return {};
+    const std::string path = JoinPath(gAssetDir, "objects", it->second.substr(0, 2), it->second);
+    std::error_code ec;
+    if (!std::filesystem::is_regular_file(path, ec)) return {};
+    return path;
+}
+
+std::string JarPathKey(const std::string& jarPath) {
+    const std::string prefix = "assets/";
+    if (jarPath.rfind(prefix, 0) == 0) return jarPath.substr(prefix.size());
+    return jarPath;
+}
+
+std::string ResourceAssetKey(const std::string& id) {
+    std::string ns = "minecraft";
+    std::string path = id;
+    const size_t colon = id.find(':');
+    if (colon != std::string::npos) {
+        ns = id.substr(0, colon);
+        path = id.substr(colon + 1);
+    }
+    return ns + "/" + path;
+}
+
+std::string ResourceJarPath(const std::string& id, bool textures) {
+    std::string ns = "minecraft";
+    std::string path = id;
+    const size_t colon = id.find(':');
+    if (colon != std::string::npos) {
+        ns = id.substr(0, colon);
+        path = id.substr(colon + 1);
+    }
+    if (textures && path.rfind("textures/", 0) != 0) path = "textures/" + path;
+    return "assets/" + ns + "/" + path;
+}
+
+std::string ReadMaybeAssetText(JarReader& jar, const std::string& jarPath) {
+    const std::string asset = AssetFileForKey(JarPathKey(jarPath));
+    if (!asset.empty()) {
+        const std::string text = ReadFileBytes(asset);
+        if (!text.empty()) return text;
+    }
+    return jar.getFileContent(jarPath);
+}
+
+std::vector<unsigned char> ReadResourceBinary(JarReader* jar, const std::string& jarPath) {
+    const std::string asset = AssetFileForKey(JarPathKey(jarPath));
+    if (!asset.empty()) {
+        const std::string text = ReadFileBytes(asset);
+        if (!text.empty()) return std::vector<unsigned char>(text.begin(), text.end());
+    }
+    if (jar) return jar->getBinaryFileContent(jarPath);
+    return {};
+}
+
+bool OneCodepoint(const nlohmann::json& value, uint32_t& cp) {
+    if (!value.is_string()) return false;
+    const std::vector<uint32_t> cps = Codepoints(value.get<std::string>());
+    if (cps.size() != 1) return false;
+    cp = cps[0];
+    return true;
+}
+
+bool IsMainUnifont(const std::string& id) {
+    const std::string suffix = "unifont.zip";
+    if (id.size() < suffix.size() || id.compare(id.size() - suffix.size(), suffix.size(), suffix) != 0) return false;
+    if (id.size() == suffix.size()) return true;
+    const char prev = id[id.size() - suffix.size() - 1];
+    return prev == ':' || prev == '/';
+}
+
+void LogUnifont(const std::string& path) {
+    static std::once_flag once;
+    std::call_once(once, [&path] {
+        std::cerr << "[SignText] unifont: " << (path.empty() ? "not found" : path) << "\n";
+    });
+}
+
+int DecodeHexDigit(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+bool ReadHexLine(const std::string& digits, HexLine& line) {
+    const size_t n = digits.size();
+    int perRow = 0;
+    int shift = 0;
+    if (n == 32) {
+        perRow = 2;
+        shift = 24;
+        line.bitWidth = 8;
+    } else if (n == 64) {
+        perRow = 4;
+        shift = 16;
+        line.bitWidth = 16;
+    } else if (n == 96) {
+        perRow = 6;
+        shift = 8;
+        line.bitWidth = 24;
+    } else if (n == 128) {
+        perRow = 8;
+        shift = 0;
+        line.bitWidth = 32;
+    } else {
+        return false;
+    }
+    size_t cursor = 0;
+    for (int row = 0; row < 16; ++row) {
+        uint32_t value = 0;
+        for (int d = 0; d < perRow; ++d) {
+            const int digit = DecodeHexDigit(digits[cursor++]);
+            if (digit < 0) return false;
+            value = (value << 4) | static_cast<uint32_t>(digit);
+        }
+        line.rows[row] = value << shift;
+    }
+    return true;
+}
+
+bool ParseHex(const std::string& data, std::unordered_map<uint32_t, HexLine>& out) {
+    size_t i = 0;
+    const size_t n = data.size();
+    int lineNo = 0;
+    auto nextByte = [&]() -> int {
+        if (i >= n) return -1;
+        return static_cast<unsigned char>(data[i++]);
+    };
+    while (true) {
+        std::string code;
+        bool colon = false;
+        while (true) {
+            const int c = nextByte();
+            if (c < 0) break;
+            if (c == ':') {
+                colon = true;
+                break;
+            }
+            code.push_back(static_cast<char>(c));
+        }
+        if (code.empty() && !colon) return true;
+        if (!colon || (code.size() != 4 && code.size() != 5 && code.size() != 6)) return false;
+        uint32_t cp = 0;
+        for (char ch : code) {
+            const int digit = DecodeHexDigit(ch);
+            if (digit < 0) return false;
+            cp = (cp << 4) | static_cast<uint32_t>(digit);
+        }
+        std::string bits;
+        while (true) {
+            const int c = nextByte();
+            if (c < 0 || c == '\n') break;
+            bits.push_back(static_cast<char>(c));
+        }
+        HexLine line;
+        if (!ReadHexLine(bits, line)) return false;
+        out[cp] = line;
+        ++lineNo;
+        (void)lineNo;
+    }
+}
+
+void AddPendingUnihex(const nlohmann::json& provider) {
+    if (!provider.contains("hex_file") || !provider["hex_file"].is_string()) return;
+    if (!provider.contains("size_overrides") || !provider["size_overrides"].is_array()) return;
+    PendingProvider pending;
+    pending.kind = PendingProvider::Kind::Unihex;
+    pending.id = provider["hex_file"].get<std::string>();
+    for (const auto& range : provider["size_overrides"]) {
+        if (!range.is_object()) return;
+        if (!range.contains("left") || !range["left"].is_number_integer()) return;
+        if (!range.contains("right") || !range["right"].is_number_integer()) return;
+        SizeOverride over;
+        if (!OneCodepoint(range.contains("from") ? range["from"] : nlohmann::json(), over.from)) return;
+        if (!OneCodepoint(range.contains("to") ? range["to"] : nlohmann::json(), over.to)) return;
+        if (over.from >= over.to) return;
+        over.left = range["left"].get<int>();
+        over.right = range["right"].get<int>();
+        pending.overrides.push_back(over);
+    }
+    gPending.push_back(std::move(pending));
+}
+
+void AddPendingLegacy(const nlohmann::json& provider) {
+    if (!provider.contains("sizes") || !provider["sizes"].is_string()) return;
+    if (!provider.contains("template") || !provider["template"].is_string()) return;
+    const std::string templ = provider["template"].get<std::string>();
+    if (templ.find("%s") == std::string::npos) return;
+    PendingProvider pending;
+    pending.kind = PendingProvider::Kind::Legacy;
+    pending.id = provider["sizes"].get<std::string>();
+    pending.templ = templ;
+    gPending.push_back(std::move(pending));
 }
 
 void SplitResource(const std::string& id, std::string& ns, std::string& path) {
@@ -460,14 +840,10 @@ void LoadFontProviders(FontLib& font, JarReader& jar, const nlohmann::json& root
 
 void LoadFontFile(FontLib& font, JarReader& jar, const std::string& jarPath, std::unordered_set<std::string>& seen, int depth) {
     if (depth > 8 || !seen.insert(jarPath).second) return;
-    const std::string content = jar.getFileContent(jarPath);
+    const std::string content = ReadMaybeAssetText(jar, jarPath);
     if (content.empty()) return;
     nlohmann::json root;
-    try {
-        root = nlohmann::json::parse(content);
-    } catch (const std::exception&) {
-        return;
-    }
+    if (!ParseLenient(content, root)) return;
     LoadFontProviders(font, jar, root, seen, depth);
 }
 
@@ -483,6 +859,10 @@ void LoadFontProviders(FontLib& font, JarReader& jar, const nlohmann::json& root
                 AddBitmapProvider(font, jar, provider);
             } else if (type == "space") {
                 AddSpaceProvider(font, provider);
+            } else if (type == "unihex") {
+                AddPendingUnihex(provider);
+            } else if (type == "legacy_unicode") {
+                AddPendingLegacy(provider);
             }
         }
         return;
@@ -492,6 +872,8 @@ void LoadFontProviders(FontLib& font, JarReader& jar, const nlohmann::json& root
         const std::string type = ProviderType(root);
         if (type == "bitmap") AddBitmapProvider(font, jar, root);
         else if (type == "space") AddSpaceProvider(font, root);
+        else if (type == "unihex") AddPendingUnihex(root);
+        else if (type == "legacy_unicode") AddPendingLegacy(root);
         else if (type == "reference" && root.contains("id") && root["id"].is_string())
             LoadFontFile(font, jar, FontJsonPath(root["id"].get<std::string>()), seen, depth + 1);
         return;
@@ -549,15 +931,173 @@ std::string Hex64(uint64_t value) {
     return buffer;
 }
 
+std::string LegacyPageJarPath(const std::string& templ, int page) {
+    const size_t pos = templ.find("%s");
+    if (pos == std::string::npos) return {};
+    char hex[8];
+    std::snprintf(hex, sizeof(hex), "%02x", page & 255);
+    const std::string id = templ.substr(0, pos) + hex + templ.substr(pos + 2);
+    std::string ns = "minecraft";
+    std::string path = id;
+    const size_t colon = id.find(':');
+    if (colon != std::string::npos) {
+        ns = id.substr(0, colon);
+        path = id.substr(colon + 1);
+    }
+    return "assets/" + ns + "/textures/" + path;
+}
+
+void LoadLegacyPage(int page) {
+    if (gLegacyTemplate.empty() || page < 0 || page >= 256) return;
+    const std::string jarPath = LegacyPageJarPath(gLegacyTemplate, page);
+    if (jarPath.empty() || config.jarPath.empty()) return;
+    std::lock_guard<std::mutex> lock(gLegacyMutex);
+    JarReader jar(string_to_wstring(config.jarPath));
+    if (!jar.open()) return;
+    const std::vector<unsigned char> file = ReadResourceBinary(&jar, jarPath);
+    if (file.empty()) return;
+    int width = 0;
+    int height = 0;
+    int channels = 0;
+    unsigned char* decoded = stbi_load_from_memory(file.data(), static_cast<int>(file.size()), &width, &height, &channels, 4);
+    if (!decoded) return;
+    if (width == 256 && height == 256) {
+        FontImage image;
+        image.width = width;
+        image.height = height;
+        image.pixels.assign(decoded, decoded + static_cast<size_t>(width) * static_cast<size_t>(height) * 4);
+        gLegacyPages[page] = std::move(image);
+    }
+    stbi_image_free(decoded);
+}
+
+bool EnsureLegacyPage(int page) {
+    if (page < 0 || page >= 256) return false;
+    std::call_once(gLegacyOnce[page], [page] { LoadLegacyPage(page); });
+    const FontImage& image = gLegacyPages[page];
+    return image.width == 256 && image.height == 256;
+}
+
+void RememberGlyph(uint32_t cp, Glyph glyph) {
+    if (gFont.glyphs.find(cp) != gFont.glyphs.end()) return;
+    if (gFallback.find(cp) != gFallback.end()) return;
+    gFallback.emplace(cp, std::move(glyph));
+}
+
+void LoadUnihexProvider(const PendingProvider& pending) {
+    const std::string path = AssetFileForKey(ResourceAssetKey(pending.id));
+    if (IsMainUnifont(pending.id)) LogUnifont(path);
+    if (path.empty()) return;
+    JarReader zip(string_to_wstring(path));
+    if (!zip.open()) return;
+    std::unordered_map<uint32_t, HexLine> lines;
+    lines.reserve(131072);
+    const std::vector<std::string> names = zip.getFilesInSubDirectory("");
+    for (const std::string& name : names) {
+        if (name.size() < 4 || name.compare(name.size() - 4, 4, ".hex") != 0) continue;
+        const std::string text = zip.getFileContent(name);
+        if (text.empty()) continue;
+        if (!ParseHex(text, lines)) return;
+    }
+    for (const auto& entry : lines) {
+        const uint32_t cp = entry.first;
+        const HexLine& line = entry.second;
+        if (gFont.glyphs.find(cp) != gFont.glyphs.end() || gFallback.find(cp) != gFallback.end()) continue;
+        int left = 0;
+        int right = 0;
+        bool replaced = false;
+        for (const SizeOverride& over : pending.overrides) {
+            if (cp < over.from || cp > over.to) continue;
+            left = over.left;
+            right = over.right;
+            replaced = true;
+            break;
+        }
+        if (!replaced) {
+            uint32_t mask = 0;
+            for (uint32_t row : line.rows) mask |= row;
+            if (mask == 0) {
+                left = 0;
+                right = static_cast<int>(static_cast<int8_t>(line.bitWidth));
+            } else {
+                const int lead = std::countl_zero(mask);
+                const int trail = std::countr_zero(mask);
+                left = static_cast<int>(static_cast<int8_t>(lead));
+                right = static_cast<int>(static_cast<int8_t>(32 - trail - 1));
+            }
+        }
+        const int width = right - left + 1;
+        if (width <= 0) continue;
+        Glyph glyph;
+        glyph.useBits = true;
+        glyph.bitLeft = left;
+        glyph.bitRight = right;
+        glyph.bits = line.rows;
+        glyph.cellW = width;
+        glyph.cellH = 16;
+        glyph.scale = 0.5f;
+        glyph.oversample = 2.0f;
+        glyph.advance = width / 2 + 1;
+        glyph.ascent = 7;
+        RememberGlyph(cp, std::move(glyph));
+    }
+}
+
+void LoadLegacyProvider(JarReader& jar, const PendingProvider& pending) {
+    const std::vector<unsigned char> file = ReadResourceBinary(&jar, ResourceJarPath(pending.id, false));
+    if (file.empty()) return;
+    std::array<unsigned char, 65536> sizes{};
+    std::memcpy(sizes.data(), file.data(), std::min<size_t>(file.size(), sizes.size()));
+    if (gLegacyTemplate.empty()) gLegacyTemplate = pending.templ;
+    for (int cp = 0; cp < 65536; ++cp) {
+        const unsigned char s = sizes[cp];
+        if (s == 0) continue;
+        const int start = (s >> 4) & 15;
+        const int end = (s & 15) + 1;
+        if (start > end) continue;
+        const int width = end - start;
+        Glyph glyph;
+        glyph.page = cp >> 8;
+        glyph.srcX = (cp & 15) * 16 + start;
+        glyph.srcY = ((cp >> 4) & 15) * 16;
+        glyph.cellW = width;
+        glyph.cellH = 16;
+        glyph.scale = 0.5f;
+        glyph.oversample = 2.0f;
+        glyph.advance = width / 2 + 1;
+        glyph.ascent = 7;
+        RememberGlyph(static_cast<uint32_t>(cp), std::move(glyph));
+    }
+}
+
+void BuildFallback() {
+    JarReader jar(string_to_wstring(config.jarPath));
+    const bool jarOpen = !config.jarPath.empty() && jar.open();
+    for (const PendingProvider& pending : gPending) {
+        if (pending.kind == PendingProvider::Kind::Unihex) LoadUnihexProvider(pending);
+        else if (jarOpen) LoadLegacyProvider(jar, pending);
+    }
+}
+
+const Glyph* FindGlyph(const FontLib& font, uint32_t cp) {
+    const auto it = font.glyphs.find(cp);
+    if (it != font.glyphs.end()) return &it->second;
+    std::call_once(gFallbackOnce, BuildFallback);
+    const auto fallback = gFallback.find(cp);
+    if (fallback == gFallback.end()) return nullptr;
+    if (fallback->second.page >= 0 && !EnsureLegacyPage(fallback->second.page)) return nullptr;
+    return &fallback->second;
+}
+
 std::vector<PlacedGlyph> LayoutLine(const std::string& text, float lineY, int maxWidth, const FontLib& font) {
     std::vector<const Glyph*> glyphs;
     float used = 0.0f;
     for (uint32_t cp : Codepoints(text)) {
-        const auto it = font.glyphs.find(cp);
-        if (it == font.glyphs.end()) continue;
-        const float next = used + static_cast<float>(it->second.advance);
+        const Glyph* glyph = FindGlyph(font, cp);
+        if (!glyph) continue;
+        const float next = used + static_cast<float>(glyph->advance);
         if (!glyphs.empty() && next > static_cast<float>(maxWidth)) break;
-        glyphs.push_back(&it->second);
+        glyphs.push_back(glyph);
         used = next;
     }
     const int width = static_cast<int>(std::ceil(static_cast<double>(used)));
@@ -626,6 +1166,191 @@ void BlitGlyph(std::vector<unsigned char>& canvas, int canvasW, int originX, int
     }
 }
 
+bool GlyphDrawn(const Glyph& glyph) {
+    if (glyph.cellW <= 0 || glyph.cellH <= 0) return false;
+    if (glyph.useBits || glyph.page >= 0) return true;
+    return glyph.image >= 0;
+}
+
+void BlitGlyphHi(std::vector<unsigned char>& canvas, int canvasW, int originX, int originY,
+    const PlacedGlyph& placed, int dx, int dy, int rgb, const FontLib& font) {
+    const Glyph& glyph = *placed.glyph;
+    const float gw = static_cast<float>(glyph.cellW) * glyph.scale;
+    const float gh = static_cast<float>(glyph.cellH) * glyph.scale;
+    if (gw <= 0.0f || gh <= 0.0f) return;
+    const float ox = placed.penX + static_cast<float>(dx);
+    const float oy = placed.lineY + static_cast<float>(7 - glyph.ascent) + static_cast<float>(dy);
+    const int canvasH = canvas.empty() || canvasW <= 0 ? 0 : static_cast<int>(canvas.size() / (static_cast<size_t>(canvasW) * 4));
+
+    // Oversample-2 glyphs are already 2 texels per font unit. Copy them 1:1.
+    if (glyph.oversample >= 1.5f && (glyph.useBits || glyph.page >= 0)) {
+        const int baseX = static_cast<int>(std::lround((ox - static_cast<float>(originX)) * 2.0f));
+        const int baseY = static_cast<int>(std::lround((oy - static_cast<float>(originY)) * 2.0f));
+        const FontImage* image = nullptr;
+        if (glyph.page >= 0) {
+            if (!EnsureLegacyPage(glyph.page)) return;
+            image = &gLegacyPages[glyph.page];
+        }
+        for (int sy = 0; sy < glyph.cellH; ++sy) {
+            for (int sx = 0; sx < glyph.cellW; ++sx) {
+                int pr = 255;
+                int pg = 255;
+                int pb = 255;
+                int pa = 0;
+                if (glyph.useBits) {
+                    const int bit = 32 - glyph.bitLeft - 1 - sx;
+                    const uint32_t row = (sy >= 0 && sy < 16) ? glyph.bits[static_cast<size_t>(sy)] : 0u;
+                    if (bit >= 0 && bit < 32 && ((row >> static_cast<unsigned>(bit)) & 1u) != 0) pa = 255;
+                } else if (image) {
+                    const int px = glyph.srcX + sx;
+                    const int py = glyph.srcY + sy;
+                    if (px < 0 || py < 0 || px >= image->width || py >= image->height) continue;
+                    const size_t index = (static_cast<size_t>(py) * image->width + px) * 4;
+                    pr = image->pixels[index];
+                    pg = image->pixels[index + 1];
+                    pb = image->pixels[index + 2];
+                    pa = image->pixels[index + 3];
+                }
+                if (pa == 0) continue;
+                Plot(canvas, canvasW, canvasH, baseX + sx, baseY + sy, pr, pg, pb, pa, rgb);
+            }
+        }
+        return;
+    }
+
+    // Bitmap glyphs on a 2x side: nearest-neighbour double of the 1x sample.
+    if (glyph.image < 0 || glyph.image >= static_cast<int>(font.images.size())) return;
+    const FontImage& image = font.images[glyph.image];
+    const int x0 = static_cast<int>(std::floor(ox));
+    const int y0 = static_cast<int>(std::floor(oy));
+    const int x1 = static_cast<int>(std::ceil(ox + gw));
+    const int y1 = static_cast<int>(std::ceil(oy + gh));
+    for (int fy = y0; fy < y1; ++fy) {
+        for (int fx = x0; fx < x1; ++fx) {
+            const float u = ((static_cast<float>(fx) + 0.5f) - ox) / gw;
+            const float v = ((static_cast<float>(fy) + 0.5f) - oy) / gh;
+            if (u < 0.0f || v < 0.0f || u >= 1.0f || v >= 1.0f) continue;
+            const int sx = std::min(glyph.cellW - 1, static_cast<int>(u * static_cast<float>(glyph.cellW)));
+            const int sy = std::min(glyph.cellH - 1, static_cast<int>(v * static_cast<float>(glyph.cellH)));
+            const int px = glyph.srcX + sx;
+            const int py = glyph.srcY + sy;
+            if (px < 0 || py < 0 || px >= image.width || py >= image.height) continue;
+            const size_t index = (static_cast<size_t>(py) * image.width + px) * 4;
+            const int a = image.pixels[index + 3];
+            if (a == 0) continue;
+            const int cx = (fx - originX) * 2;
+            const int cy = (fy - originY) * 2;
+            for (int oy2 = 0; oy2 < 2; ++oy2) {
+                for (int ox2 = 0; ox2 < 2; ++ox2) {
+                    Plot(canvas, canvasW, canvasH, cx + ox2, cy + oy2,
+                        image.pixels[index], image.pixels[index + 1], image.pixels[index + 2], a, rgb);
+                }
+            }
+        }
+    }
+}
+
+bool BakeSideHi(const std::array<std::string, 4>& lines, const std::vector<PlacedGlyph>& placed, int textRgb, bool glowing,
+    int lineHeight, int maxWidth, std::string& hexOut, float& xMin, float& yMin, float& xMax, float& yMax, const FontLib& font) {
+    const int margin = glowing ? 1 : 0;
+    int minX = 0;
+    int minY = 0;
+    int maxX = 0;
+    int maxY = 0;
+    bool any = false;
+    for (const auto& stamp : placed) {
+        if (!GlyphDrawn(*stamp.glyph)) continue;
+        const float gw = static_cast<float>(stamp.glyph->cellW) * stamp.glyph->scale;
+        const float gh = static_cast<float>(stamp.glyph->cellH) * stamp.glyph->scale;
+        const float top = stamp.lineY + static_cast<float>(7 - stamp.glyph->ascent);
+        const int x0 = static_cast<int>(std::floor(stamp.penX)) - margin;
+        const int y0 = static_cast<int>(std::floor(top)) - margin;
+        const int x1 = static_cast<int>(std::ceil(stamp.penX + gw)) + margin;
+        const int y1 = static_cast<int>(std::ceil(top + gh)) + margin;
+        if (!any) {
+            minX = x0;
+            minY = y0;
+            maxX = x1;
+            maxY = y1;
+            any = true;
+        } else {
+            minX = std::min(minX, x0);
+            minY = std::min(minY, y0);
+            maxX = std::max(maxX, x1);
+            maxY = std::max(maxY, y1);
+        }
+    }
+    if (!any || maxX <= minX || maxY <= minY) return false;
+    if (maxX - minX > 4096 || maxY - minY > 4096) return false;
+
+    const int canvasW = (maxX - minX) * 2;
+    const int canvasH = (maxY - minY) * 2;
+    std::vector<unsigned char> canvas(static_cast<size_t>(canvasW) * canvasH * 4, 0);
+    const int fill = glowing ? textRgb : DarkColor(textRgb, false);
+    const int outline = DarkColor(textRgb, true);
+    if (glowing) {
+        for (int dy = -1; dy <= 1; ++dy) {
+            for (int dx = -1; dx <= 1; ++dx) {
+                if (dx == 0 && dy == 0) continue;
+                for (const auto& stamp : placed) BlitGlyphHi(canvas, canvasW, minX, minY, stamp, dx, dy, outline, font);
+            }
+        }
+    }
+    for (const auto& stamp : placed) BlitGlyphHi(canvas, canvasW, minX, minY, stamp, 0, 0, fill, font);
+
+    int cropX0 = canvasW;
+    int cropY0 = canvasH;
+    int cropX1 = 0;
+    int cropY1 = 0;
+    for (int y = 0; y < canvasH; ++y) {
+        for (int x = 0; x < canvasW; ++x) {
+            if (canvas[(static_cast<size_t>(y) * canvasW + x) * 4 + 3] == 0) continue;
+            cropX0 = std::min(cropX0, x);
+            cropY0 = std::min(cropY0, y);
+            cropX1 = std::max(cropX1, x + 1);
+            cropY1 = std::max(cropY1, y + 1);
+        }
+    }
+    if (cropX1 <= cropX0 || cropY1 <= cropY0) return false;
+
+    int outW = cropX1 - cropX0;
+    int outH = cropY1 - cropY0;
+    if (outH > outW) outW = outH;
+    std::vector<unsigned char> cropped(static_cast<size_t>(outW) * outH * 4, 0);
+    for (int y = 0; y < cropY1 - cropY0; ++y) {
+        const unsigned char* src = canvas.data() + (static_cast<size_t>(cropY0 + y) * canvasW + cropX0) * 4;
+        unsigned char* dst = cropped.data() + static_cast<size_t>(y) * outW * 4;
+        std::memcpy(dst, src, static_cast<size_t>(cropX1 - cropX0) * 4);
+    }
+
+    const uint64_t hash = HashText(lines, textRgb, glowing, lineHeight, maxWidth);
+    const std::string hex = Hex64(hash);
+    const std::string exe = ExeDir();
+    if (exe.empty()) return false;
+    const std::string relative = "textures/minecraft/sign_text/" + hex + ".png";
+    const std::string full = JoinPath({exe, "textures", "minecraft", "sign_text", hex + ".png"});
+    {
+        std::lock_guard<std::mutex> lock(gBakeMutex);
+        if (!gBaked.count(hash)) {
+            try {
+                std::filesystem::create_directories(std::filesystem::path(full).parent_path());
+            } catch (const std::exception&) {
+                return false;
+            }
+            if (stbi_write_png(full.c_str(), outW, outH, 4, cropped.data(), outW * 4) == 0) return false;
+            RegisterTexture("minecraft", "sign_text/" + hex, relative);
+            gBaked.insert(hash);
+        }
+    }
+
+    hexOut = hex;
+    xMin = static_cast<float>(minX) + static_cast<float>(cropX0) / 2.0f;
+    yMin = static_cast<float>(minY) + static_cast<float>(cropY0) / 2.0f;
+    xMax = xMin + static_cast<float>(outW) / 2.0f;
+    yMax = yMin + static_cast<float>(outH) / 2.0f;
+    return true;
+}
+
 bool BakeSide(const std::array<std::string, 4>& lines, int textRgb, bool glowing, int lineHeight, int maxWidth,
     std::string& hexOut, float& xMin, float& yMin, float& xMax, float& yMax) {
     const FontLib& font = Font();
@@ -637,6 +1362,12 @@ bool BakeSide(const std::array<std::string, 4>& lines, int textRgb, bool glowing
         auto line = LayoutLine(lines[i], lineY, maxWidth, font);
         placed.insert(placed.end(), line.begin(), line.end());
     }
+
+    bool hiRes = false;
+    for (const auto& stamp : placed) {
+        if (stamp.glyph->oversample >= 1.5f && (stamp.glyph->useBits || stamp.glyph->page >= 0)) hiRes = true;
+    }
+    if (hiRes) return BakeSideHi(lines, placed, textRgb, glowing, lineHeight, maxWidth, hexOut, xMin, yMin, xMax, yMax, font);
 
     const int margin = glowing ? 1 : 0;
     int minX = 0;
