@@ -37,6 +37,7 @@
 #include "CreateBogey.h"
 #include <atomic>
 #include "ModelDeduplicator.h"
+#include "CreateDepotItems.h"
 #include "ChunkGroupAllocator.h"
 #include <utility>
 #include "hashutils.h"
@@ -454,6 +455,10 @@ void ChunkGenerator::ProcessBlockForModel(ModelData& chunkModel, int x, int y, i
         }
         ApplyVanillaPlantOffset(blockModel, ns, blockName, x, z);
     }
+
+    // Create depot / ejector: held and output items (DepotRenderer) appended to the block model.
+    if (ns == "create" && blockEntityNbt)
+        AppendCreateDepotItems("create:" + blockName, blockEntityNbt, blockModel);
 
     // Copycats / Create copycat: material camo may rebuild empty air placeholders.
     if (blockEntityNbt && (ns == "copycats" ||
