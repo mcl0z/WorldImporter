@@ -532,6 +532,52 @@ namespace {
             id == "create:hose_pulley"; // listed so callers can special-case
     }
 
+    // steam_engine: housing (blockstate) + SteamEngineRenderer piston / linkage / shaft
+    // connector, only when a powered_shaft sits 2 blocks along the facing (getShaft()).
+    // Static: shaft angle 0 -> piston = -sqrt(.875^2 - .375^2), linkage tilt acos(-piston/.875).
+    ModelData GenerateCreateSteamEngine(const string& blockName,
+        const unordered_map<string, string>& states, int x, int y, int z) {
+        ModelData result = LoadBlockstateModel(blockName);
+        string face = states.contains("face") ? states.at("face") : "floor";
+        string facing = face == "floor" ? "up" : face == "ceiling" ? "down" :
+            (states.contains("facing") ? states.at("facing") : "north");
+        int dx = facing == "east" ? 1 : facing == "west" ? -1 : 0;
+        int dy = facing == "up" ? 1 : facing == "down" ? -1 : 0;
+        int dz = facing == "south" ? 1 : facing == "north" ? -1 : 0;
+        Block shaftBlock = GetBlockById(GetBlockId(x + 2 * dx, y + 2 * dy, z + 2 * dz));
+        if (BaseBlockName(shaftBlock.name) != "create:powered_shaft") return result;
+        auto shaftStates = ParseBlockStates(shaftBlock.name);
+        string axis = shaftStates.contains("axis") ? shaftStates.at("axis") : "y";
+        bool vertical = dy != 0;
+        string facingAxis = vertical ? "y" : dx != 0 ? "x" : "z";
+        if (axis == facingAxis) return result;
+        bool roll90 = (!vertical && axis == "y") || (vertical && axis == "z");
+        // AngleHelper horizontalAngle / verticalAngle(+90) / roll, applied about the centre.
+        const float yaw = vertical ? 0.0f : -FacingY(facing);
+        const float pitch = facing == "up" ? 0.0f : facing == "down" ? 180.0f : 90.0f;
+        auto place = [&](ModelData& part) {
+            if (roll90) Rotate(part, 0.0f, -90.0f, 0.0f);
+            Rotate(part, pitch, 0.0f, 0.0f);
+            Rotate(part, 0.0f, yaw, 0.0f);
+            Append(result, std::move(part));
+        };
+        const float piston = -sqrtf(0.875f * 0.875f - 0.375f * 0.375f);
+        const float linkAngle = acosf(-piston / 0.875f) * 180.0f / (float)M_PI;
+        ModelData pistonPart = LoadCreateModel("block/steam_engine/piston", 270);
+        TranslateModel(pistonPart, 0.0f, piston + 1.25f, 0.0f);
+        place(pistonPart);
+        ModelData linkage = LoadCreateModel("block/steam_engine/linkage", 271);
+        TranslateModel(linkage, 0.0f, -0.25f, -0.5f);
+        RotateModelOrigin(linkage, linkAngle, 0.0f, 0.0f);
+        TranslateModel(linkage, 0.0f, 0.25f + piston + 2.25f, 0.5f);
+        place(linkage);
+        ModelData connector = LoadCreateModel("block/steam_engine/shaft_connector", 272);
+        Rotate(connector, -90.0f, 0.0f, 0.0f);
+        TranslateModel(connector, 0.0f, 2.0f, 0.0f);
+        place(connector);
+        return result;
+    }
+
     // FluidPipe: multipart body is in the blockstate; rims/connectors come from
     // PipeAttachmentModel (BE AttachmentTypes). Approximate from open faces + neighbors.
     // DRAIN vs RIM: fluid-capable neighbor (not hose_pulley) → drain; pipe-like → connection;
@@ -851,6 +897,10 @@ bool SpecialBlock::TryGenerateCreateBlockModel(const string& blockName,
         baseName == "create:blaze_burner") {
         outModel = GenerateCreateObjKinetic(baseName.substr(7), blockName,
             ParseBlockStates(blockName));
+        return !outModel.vertices.empty();
+    }
+    if (baseName == "create:steam_engine") {
+        outModel = GenerateCreateSteamEngine(blockName, ParseBlockStates(blockName), x, y, z);
         return !outModel.vertices.empty();
     }
     if (baseName == "create:fluid_pipe" || baseName == "create:glass_fluid_pipe" ||
