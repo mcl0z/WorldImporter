@@ -147,6 +147,24 @@ bool TextureExists(const std::string& ns, const std::string& path) {
     std::shared_lock<std::shared_mutex> lock(GlobalCache::cacheMutex);
     return GlobalCache::textureIndex.count("textures:" + ns + ":" + path) > 0;
 }
+// Overlay sheets are sampled with the body mesh UVs, so the source pngs must be the same size.
+// Read IHDR from the jar bytes (not the exported path) so the check does not depend on cwd.
+bool CachedPngSize(const std::string& ns, const std::string& path, int& w, int& h) {
+    std::vector<unsigned char> png;
+    {
+        std::shared_lock<std::shared_mutex> lock(GlobalCache::cacheMutex);
+        auto idx = GlobalCache::textureIndex.find("textures:" + ns + ":" + path);
+        if (idx == GlobalCache::textureIndex.end()) return false;
+        auto it = GlobalCache::textures.find(idx->second);
+        if (it == GlobalCache::textures.end()) return false;
+        png = it->second;
+    }
+    return GetPNGDimensions(png, w, h) && w > 0 && h > 0;
+}
+bool SameCachedPngSize(const std::string& nsA, const std::string& pathA, const std::string& nsB, const std::string& pathB) {
+    int aw = 0, ah = 0, bw = 0, bh = 0;
+    return CachedPngSize(nsA, pathA, aw, ah) && CachedPngSize(nsB, pathB, bw, bh) && aw == bw && ah == bh;
+}
 
 // 村民贴图 .png.mcmeta 的 {"villager": {"hat": "none|partial|full"}}
 enum class Hat { None, Partial, Full };
@@ -345,6 +363,50 @@ int CollaredMaterial(Ctx& ctx, const std::string& baseMatName, const std::string
         RegisterOverlaySequence(name, { info });
     }
     return mat;
+}
+
+// equipment/.../<type>/saddle -> <type>; any other path -> its file stem.
+std::string OverlayStem(const std::string& path) {
+    const size_t slash = path.rfind('/');
+    std::string stem = slash == std::string::npos ? path : path.substr(slash + 1);
+    if (stem == "saddle" && slash != std::string::npos && slash > 0) {
+        const size_t prev = path.rfind('/', slash - 1);
+        const size_t begin = prev == std::string::npos ? 0 : prev + 1;
+        stem = path.substr(begin, slash - begin);
+    }
+    return stem;
+}
+// Coplanar decor (same triangles and UVs as the body). A second mesh of that geometry draws as a
+// black silhouette, so the sheet is an overlay on the body material. The material name is
+// base~stem so it does not collide with the unsaddled body. Layers whose png size differs from
+// the body texture are skipped: an overlay is sampled with the body UVs.
+std::string BodyWithOverlays(Ctx& ctx, std::string baseMat, const std::string& bodyNs, const std::string& bodyPath,
+                             const std::string& baseTex, const std::vector<ArmorTexLayer>& layers) {
+    if (baseTex.empty() || layers.empty()) return baseMat;
+    std::vector<OverlayLayerInfo> overs;
+    std::string suffix;
+    for (const auto& l : layers) {
+        if (!SameCachedPngSize(bodyNs, bodyPath, l.texNs, l.texPath)) continue;
+        const std::string tex = ctx.Texture(l.texNs, l.texPath);
+        if (tex.empty()) continue;
+        OverlayLayerInfo info;
+        if (l.color >= 0) {
+            TintResult tint;
+            tint.kind = TintKind::Fixed;
+            tint.color = static_cast<uint32_t>(l.color) & 0xFFFFFFu;
+            info.texturePath = ctx.TintedTexture(tex, tint.color);
+            info.name = l.texNs + ":" + l.texPath + TintSuffix(tint);
+        } else {
+            info.texturePath = tex;
+            info.name = l.texNs + ":" + l.texPath;
+        }
+        overs.push_back(std::move(info));
+        suffix += "~" + OverlayStem(l.texPath);
+    }
+    if (overs.empty()) return baseMat;
+    baseMat += suffix;
+    RegisterOverlaySequence(baseMat, overs);
+    return baseMat;
 }
 
 // HumanoidArmorLayer: kind = "minecraft:zombie_villager" 等; parent = 已摆好姿态的主模型
@@ -872,17 +934,51 @@ void RenderCreeper(Ctx& ctx, const NbtTagPtr& e) {
                  ctx.Texture("minecraft", "entity/creeper/creeper"));
 }
 
+// 1.21.5+ climate variant. Missing or unknown -> temperate (the 1.21.1 default body).
+std::string ClimateVariant(const NbtTagPtr& e) {
+    std::string v = Str(e, "variant");
+    if (v.empty()) v = Str(e, "Variant");
+    if (v.empty()) return "temperate";
+    v = SplitId(v).second;
+    const size_t slash = v.rfind('/');
+    if (slash != std::string::npos) v = v.substr(slash + 1);
+    if (v.size() > 5 && v.compare(v.size() - 5, 5, "_baby") == 0) v = v.substr(0, v.size() - 5);
+    for (const char* p : { "pig_", "cow_", "chicken_" }) {
+        const size_t n = std::char_traits<char>::length(p);
+        if (v.size() > n && v.compare(0, n, p) == 0) { v = v.substr(n); break; }
+    }
+    if (v == "warm" || v == "cold" || v == "temperate") return v;
+    return "temperate";
+}
+// entity/<dir>/<base>_<variant>[_baby] when that png exists, else the 1.21.1 name
+// (entity/pig/pig, entity/cow/cow, entity/chicken). Baby sheets are not swapped onto the adult mesh.
+std::string FarmTexture(const std::string& dir, const std::string& base, const std::string& variant,
+                        bool baby, const std::string& legacy) {
+    const std::string adult = "entity/" + dir + "/" + base + "_" + variant;
+    if (baby) {
+        const std::string b = adult + "_baby";
+        if (TextureExists("minecraft", b)) return b;
+        return legacy;
+    }
+    if (TextureExists("minecraft", adult)) return adult;
+    return legacy;
+}
+// 26.x: cold_pig / cold_chicken (adult only; babies reuse pig_baby / chicken_baby),
+// warm_cow / cold_cow and their baby layers. Legacy is always the single adult layer.
+std::string FarmLayer(const Ctx& ctx, const std::string& kind, const std::string& variant, bool baby) {
+    if (ctx.modern && variant != "temperate") {
+        const std::string spec = "minecraft:" + variant + "_" + kind + (baby ? "_baby" : "") + "#main";
+        if (EntityModel::Exists("modern", spec)) return spec;
+    }
+    return MobLayer(ctx, kind, baby);
+}
+
 void RenderQuadruped(Ctx& ctx, const NbtTagPtr& e, const std::string& id, const std::string& layerId,
                      const std::string& texPath, double eye, const AgeableParams& age, double rendererScale = 1.0) {
     const std::string fam = ctx.modern ? "modern" : "legacy";
     bool baby = IsBaby(e);
-    std::string lid = layerId;
-    if (ctx.modern && baby) {
-        // pig_baby / cow_baby / sheep_baby / chicken_baby
-        size_t hash = lid.find('#');
-        if (hash != std::string::npos) lid = lid.substr(0, hash) + "_baby" + lid.substr(hash);
-    }
-    EntityModel model(fam, lid);
+    // layerId is already the baby layer when this family has one.
+    EntityModel model(fam, layerId);
     if (!model.Valid()) return;
     Placement pl = ReadPlacement(e);
     ApplyHeadLook(model, pl);
@@ -892,6 +988,37 @@ void RenderQuadruped(Ctx& ctx, const NbtTagPtr& e, const std::string& id, const 
     if (!ctx.modern && baby) pre = LegacyAgeablePre(age);
     OutObject& obj = ctx.NewObject(id);
     EmitTextured(ctx, obj, model, base, pre, "minecraft:" + texPath, ctx.Texture("minecraft", texPath));
+}
+
+void RenderClimateAnimal(Ctx& ctx, const NbtTagPtr& e, const std::string& id, const std::string& kind,
+                         const std::string& legacyTex, double eye, const AgeableParams& age) {
+    const bool baby = IsBaby(e);
+    const std::string variant = ClimateVariant(e);
+    const std::string layer = FarmLayer(ctx, kind, variant, baby);
+    const std::string tex = FarmTexture(kind, kind, variant, ctx.modern && baby, legacyTex);
+    RenderQuadruped(ctx, e, id, layer, tex, eye, age);
+}
+void RenderClimateCow(Ctx& ctx, const NbtTagPtr& e) {
+    RenderClimateAnimal(ctx, e, "minecraft:cow", "cow", "entity/cow/cow", 1.4, kAgeCow);
+}
+void RenderClimateChicken(Ctx& ctx, const NbtTagPtr& e) {
+    // 1.21.1 texture is textures/entity/chicken.png, not entity/chicken/chicken.png.
+    RenderClimateAnimal(ctx, e, "minecraft:chicken", "chicken", "entity/chicken", 0.7, kAgeChicken);
+}
+// MushroomCowRenderer: temperate cow mesh (MOOSHROOM / MOOSHROOM_BABY == cow / BabyCowModel).
+// 26.x textures entity/cow/mooshroom_<red|brown>[_baby]. 1.21.1 and 26.x both store Type "red"/"brown";
+// older worlds fall back to entity/cow/red_mooshroom and brown_mooshroom.
+void RenderMooshroom(Ctx& ctx, const NbtTagPtr& e) {
+    const bool baby = IsBaby(e);
+    std::string color = SplitId(Str(e, "Type")).second;
+    if (color.empty()) color = SplitId(Str(e, "type")).second;
+    if (color != "red" && color != "brown") color = "red";
+    std::string tex = "entity/cow/" + color + "_mooshroom";
+    const std::string modern = "entity/cow/mooshroom_" + color;
+    if (ctx.modern && baby && TextureExists("minecraft", modern + "_baby")) tex = modern + "_baby";
+    else if (TextureExists("minecraft", modern)) tex = modern;
+    const std::string layer = FarmLayer(ctx, "cow", "temperate", baby);
+    RenderQuadruped(ctx, e, "minecraft:mooshroom", layer, tex, 1.4, kAgeCow);
 }
 
 void RenderSheep(Ctx& ctx, const NbtTagPtr& e) {
@@ -1002,47 +1129,382 @@ void RenderCat(Ctx& ctx, const NbtTagPtr& e) {
     }
 }
 
-void RenderHorse(Ctx& ctx, const NbtTagPtr& e) {
-    const std::string fam = ctx.modern ? "modern" : "legacy";
-    bool baby = IsBaby(e);
-    std::string lid = std::string("minecraft:horse") + (ctx.modern && baby ? "_baby" : "") + "#main";
-    EntityModel model(fam, lid);
-    if (!model.Valid()) return;
-    Placement pl = ReadPlacement(e);
-    // head look on head_parts
-    model.SetRot("head_parts", static_cast<float>(pl.pitch * kPi / 180.0), 0.0f, 0.0f);
-    bool saddled = false;
-    if (auto eq = getChildByName(e, "equipment"))
-        saddled = !ItemRender::ParseItemStack(getChildByName(eq, "saddle")).empty();
-    if (!saddled) saddled = !ItemRender::ParseItemStack(getChildByName(e, "SaddleItem")).empty();
-    if (!saddled) saddled = NumOr(e, "Saddle", 0) != 0;
-    for (const char* p : { "saddle", "left_saddle_mouth", "right_saddle_mouth", "left_saddle_line",
-                           "right_saddle_line", "head_saddle", "mouth_saddle_wrap" })
+// equipment.saddle (1.21.5+), SaddleItem compound (horse 1.20.5-1.21.4), or Saddle:1b (pig/strider steering, older horses).
+ItemStackInfo SaddleStack(const NbtTagPtr& e) {
+    if (auto eq = getChildByName(e, "equipment")) {
+        ItemStackInfo s = ItemRender::ParseItemStack(getChildByName(eq, "saddle"));
+        if (!s.empty()) return s;
+    }
+    ItemStackInfo s = ItemRender::ParseItemStack(getChildByName(e, "SaddleItem"));
+    if (!s.empty()) return s;
+    if (NbtFlag(e, "Saddle", false)) {
+        ItemStackInfo syn;
+        syn.id = "minecraft:saddle";
+        syn.count = 1;
+        return syn;
+    }
+    return {};
+}
+// equipment.body (1.21.5+), body_armor_item (1.20.5-1.21.4), ArmorItem (older).
+ItemStackInfo BodyArmorStack(const NbtTagPtr& e) {
+    if (auto eq = getChildByName(e, "equipment")) {
+        ItemStackInfo s = ItemRender::ParseItemStack(getChildByName(eq, "body"));
+        if (!s.empty()) return s;
+    }
+    ItemStackInfo s = ItemRender::ParseItemStack(getChildByName(e, "body_armor_item"));
+    if (!s.empty()) return s;
+    return ItemRender::ParseItemStack(getChildByName(e, "ArmorItem"));
+}
+bool HasPassengers(const NbtTagPtr& e) {
+    for (const char* key : { "Passengers", "passengers" }) {
+        auto p = getChildByName(e, key);
+        if (p && p->type == TagType::LIST && !p->children.empty()) return true;
+    }
+    return false;
+}
+// 26.x equipment/<asset>.json layers[type] -> entity/equipment/<type>/<texture>. Empty if the JSON has no such type.
+std::vector<ArmorTexLayer> EquipmentTexLayers(const ItemStackInfo& item, const std::string& assetId, const std::string& type) {
+    std::vector<ArmorTexLayer> layers;
+    auto [ns, path] = SplitId(assetId);
+    nlohmann::json def = ItemRender::AssetJson(ns, "equipment/" + path + ".json");
+    if (!def.is_object() || !def.contains("layers") || !def["layers"].is_object() || !def["layers"].contains(type) ||
+        !def["layers"][type].is_array())
+        return layers;
+    for (const auto& l : def["layers"][type]) {
+        if (!l.contains("texture") || !l["texture"].is_string()) continue;
+        auto [tns, tpath] = SplitId(l["texture"].get<std::string>());
+        int color = -1;
+        if (l.contains("dyeable") && l["dyeable"].is_object()) {
+            if (item.dyeColor >= 0) color = item.dyeColor;
+            else if (l["dyeable"].contains("color_when_undyed") && l["dyeable"]["color_when_undyed"].is_number())
+                color = static_cast<int>(l["dyeable"]["color_when_undyed"].get<int64_t>() & 0xFFFFFF);
+            else continue;
+        }
+        layers.push_back({ tns, "entity/equipment/" + type + "/" + tpath, color });
+    }
+    return layers;
+}
+// iron_horse_armor -> iron, golden_horse_armor -> gold. Empty if this is not a known horse-armor item.
+std::string HorseArmorMaterial(const ItemStackInfo& item) {
+    const std::string p = SplitId(item.id).second;
+    const std::string suf = "_horse_armor";
+    if (p.size() <= suf.size() || p.compare(p.size() - suf.size(), suf.size(), suf) != 0) return {};
+    std::string mat = p.substr(0, p.size() - suf.size());
+    if (mat == "golden") mat = "gold";
+    static const char* kKnown[] = { "iron", "gold", "diamond", "leather", "copper", "netherite" };
+    for (const char* k : kKnown)
+        if (mat == k) return mat;
+    return {};
+}
+bool IsEquineSaddlePart(const std::string& name) {
+    return name == "saddle" || name == "left_saddle_mouth" || name == "right_saddle_mouth" || name == "left_saddle_line" ||
+           name == "right_saddle_line" || name == "head_saddle" || name == "mouth_saddle_wrap";
+}
+void SetPartZ(EntityModel& model, const char* part, float z) {
+    int i = model.Find(part);
+    if (i >= 0) model.Pose(i)[2] = z;
+}
+
+// HorseModel.prepareMobModel + setupAnim at rest (limbSwing 0, ageInTicks 0, stand/eat 0).
+// Legacy bake stores front-leg z=-12; prepareMobModel moves them to -10. setupAnim then forces body.y=11
+// (already baked, including over the baby 10.8). head_parts.xRot = pi/6 + pitch.
+// 26.x adult meshes already bake z=-10 and pi/6. BabyHorseModel bakes 0.6109 and tail -0.7418, then
+// setupAnim overwrites head to pi/6+pitch and tail to -pi/2+pi/6. BabyDonkeyModel forces state.xRot=-30
+// after super, so the rest head is 0 (entity pitch is ignored) and the empty tail parent is pi/6.
+void PoseEquine(EntityModel& model, float pitch, bool legacy, bool baby, bool babyDonkey) {
+    const float pi6 = static_cast<float>(kPi / 6.0);
+    if (babyDonkey) {
+        SetXRot(model, "tail", pi6);
+        return;
+    }
+    model.SetRot("head_parts", pi6 + pitch, 0.0f, 0.0f);
+    if (!legacy && baby) SetXRot(model, "tail", static_cast<float>(-kPi / 2.0) + pi6);
+    if (legacy) {
+        for (const char* p : { "left_front_leg", "right_front_leg", "left_front_baby_leg", "right_front_baby_leg" })
+            SetPartZ(model, p, -10.0f);
+    }
+}
+// Saddle parts (and reins) follow HorseModel.setupAnim. Baby legs exist only on the legacy mesh.
+// Chests follow hasChest with no baby check (DonkeyRenderer). Modern baby chest parts are empty cubes.
+void ApplyEquineVis(EntityModel& model, bool legacy, bool baby, bool saddled, bool ridden, bool chest) {
+    for (const char* p : { "saddle", "left_saddle_mouth", "right_saddle_mouth", "head_saddle", "mouth_saddle_wrap" })
         model.SetVisible(p, saddled);
-    // hide baby-only / adult-only legs
+    const bool lines = saddled && ridden;
+    model.SetVisible("left_saddle_line", lines);
+    model.SetVisible("right_saddle_line", lines);
+    const bool babyLegs = legacy && baby;
     for (const char* p : { "left_hind_baby_leg", "right_hind_baby_leg", "left_front_baby_leg", "right_front_baby_leg" })
-        model.SetVisible(p, baby && !ctx.modern);  // modern baby model already correct
-    if (!ctx.modern && baby) {
+        model.SetVisible(p, babyLegs);
+    if (babyLegs) {
         for (const char* p : { "left_hind_leg", "right_hind_leg", "left_front_leg", "right_front_leg" })
             model.SetVisible(p, false);
     }
-    // HorseRenderer scale: 1.1 adult (modern baked); legacy AgeableListModel baby
-    // HorseRenderer scale 1.1 (旧版, 幼体同样; 26.x 烘焙进 root); 旧版幼体缩放来自 HorseModel AgeableListModel 参数
-    double rs = ctx.modern ? 1.0 : 1.1;
+    model.SetVisible("left_chest", chest);
+    model.SetVisible("right_chest", chest);
+}
+
+// HorseMarkingLayer. Markings.byId wraps with positiveModulo over the 5 ids.
+// NONE draws nothing. 1.21.1 and 26.3 Horse.addAdditionalSaveData both write one
+// packed int: Variant = color | markings<<8 (bits 8..15). A separate markings/Markings
+// tag, if a world has one, wins: an int id, or a name
+// (none / white / white_field|whitefield / white_dots|whitedots / black_dots|blackdots).
+int HorseMarkingId(const NbtTagPtr& e) {
+    auto separate = getChildByName(e, "markings");
+    if (!separate) separate = getChildByName(e, "Markings");
+    if (separate) {
+        if (separate->type == TagType::STRING) {
+            std::string s = SplitId(getStringTag(separate)).second;
+            for (char& c : s)
+                if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+            if (s == "none") return 0;
+            if (s == "white") return 1;
+            if (s == "white_field" || s == "whitefield") return 2;
+            if (s == "white_dots" || s == "whitedots") return 3;
+            if (s == "black_dots" || s == "blackdots") return 4;
+        } else {
+            double v;
+            if (Num(separate, v)) return static_cast<int>(v);
+        }
+    }
+    auto packed = getChildByName(e, "Variant");
+    if (!packed) packed = getChildByName(e, "variant");
+    double v;
+    if (packed && Num(packed, v)) {
+        const auto bits = static_cast<unsigned>(static_cast<int>(v));
+        return static_cast<int>((bits & 0xFF00u) >> 8);
+    }
+    return 0;
+}
+// Texture stem for a marking id. Empty string is NONE (or a wrapped NONE).
+const char* HorseMarkingStem(int id) {
+    int m = id % 5;
+    if (m < 0) m += 5;
+    static const char* k[] = { "", "white", "whitefield", "whitedots", "blackdots" };
+    return k[m];
+}
+
+enum class EquineKind { Horse, Donkey, Mule, Skeleton, Zombie };
+
+void RenderEquine(Ctx& ctx, const NbtTagPtr& e, EquineKind kind) {
+    struct Info {
+        const char* id;
+        double legacyScale;
+        bool chest;
+        bool undead;             // 1.21 UndeadHorseRenderer has no armor layer; 26.x uses undead_horse_armor
+        const char* armorLayer;  // modern model id without #main; legacy horse armor is always horse_armor
+        const char* saddleType;  // 26.x equipment layer type
+        const char* tex;         // empty = horse variant texture
+    };
+    static const Info kInfo[] = {
+        { "horse", 1.1, false, false, "horse_armor", "horse_saddle", "" },
+        { "donkey", 0.87, true, false, "", "donkey_saddle", "entity/horse/donkey" },
+        { "mule", 0.92, true, false, "", "mule_saddle", "entity/horse/mule" },
+        { "skeleton_horse", 1.0, false, true, "undead_horse_armor", "skeleton_horse_saddle", "entity/horse/horse_skeleton" },
+        { "zombie_horse", 1.0, false, true, "undead_horse_armor", "zombie_horse_saddle", "entity/horse/horse_zombie" },
+    };
+    const Info& info = kInfo[static_cast<int>(kind)];
+    const std::string fam = ctx.modern ? "modern" : "legacy";
+    const bool baby = IsBaby(e);
+    const bool babyDonkey = ctx.modern && baby && info.chest;
+    EntityModel model(fam, MobLayer(ctx, info.id, baby));
+    if (!model.Valid()) return;
+    Placement pl = ReadPlacement(e);
+    const float pitch = HeadPitch(pl);
+    const ItemStackInfo saddleItem = SaddleStack(e);
+    const bool saddled = !saddleItem.empty();
+    const bool ridden = HasPassengers(e);
+    const bool chest = info.chest && (NbtFlag(e, "ChestedHorse", false) || NbtFlag(e, "Chested", false));
+    PoseEquine(model, pitch, !ctx.modern, baby, babyDonkey);
+    ApplyEquineVis(model, !ctx.modern, baby, saddled, ridden, chest);
+    // Legacy renderer scales (AbstractHorseRenderer 1.1, donkey 0.87, mule 0.92, undead 1). 26.x bakes them into the adult root.
+    const double rs = ctx.modern ? 1.0 : info.legacyScale;
     EntityAffine base = LivingBase(pl, 2.3 * (baby ? 0.5 : 1.0), rs);
     TopPre pre = (!ctx.modern && baby) ? LegacyAgeablePre(kAgeHorse) : nullptr;
-    OutObject& obj = ctx.NewObject("minecraft:horse");
-    static const char* kVar[] = { "white", "creamy", "chestnut", "brown", "black", "gray", "darkbrown" };
-    int variant = static_cast<int>(NumOr(e, "Variant", 0));
-    std::string vStr = Str(e, "variant");
+    OutObject& obj = ctx.NewObject(std::string("minecraft:") + info.id);
     std::string texPath;
-    if (!vStr.empty()) {
-        auto [ns, v] = SplitId(vStr);
-        texPath = (v.find('/') != std::string::npos) ? v : ("entity/horse/horse_" + v);
+    if (info.tex[0] == '\0') {
+        static const char* kVar[] = { "white", "creamy", "chestnut", "brown", "black", "gray", "darkbrown" };
+        std::string vStr = Str(e, "variant");
+        if (!vStr.empty()) {
+            std::string v = SplitId(vStr).second;
+            if (v.size() > 5 && v.compare(v.size() - 5, 5, "_baby") == 0) v = v.substr(0, v.size() - 5);
+            if (v.rfind("horse_", 0) == 0) v = v.substr(6);
+            texPath = (v.find('/') != std::string::npos) ? v : ("entity/horse/horse_" + v);
+        } else {
+            int variant = static_cast<int>(NumOr(e, "Variant", 0));
+            texPath = std::string("entity/horse/horse_") + kVar[std::clamp(variant & 0xFF, 0, 6)];
+        }
     } else {
-        texPath = std::string("entity/horse/horse_") + kVar[std::clamp(variant & 0xFF, 0, 6)];
+        texPath = info.tex;
     }
+    if (ctx.modern && baby) {
+        const std::string babyTex = texPath + "_baby";
+        if (TextureExists("minecraft", babyTex)) texPath = babyTex;
+    }
+    // HorseMarkingLayer: same mesh UVs, translucent marking sheet. A second full-mesh
+    // emit of that mostly-transparent sheet draws as a black silhouette, so the sheet
+    // is an overlay on the body material (same path as the wolf collar). Only the horse
+    // has this layer. 26.x babies use horse_markings_<stem>_baby when that png exists.
+    std::string bodyMat = "minecraft:" + texPath;
+    const std::string baseTex = ctx.Texture("minecraft", texPath);
+    if (kind == EquineKind::Horse && !baseTex.empty()) {
+        const char* stem = HorseMarkingStem(HorseMarkingId(e));
+        if (stem[0] != '\0') {
+            std::string markPath = std::string("entity/horse/horse_markings_") + stem;
+            if (ctx.modern && baby) {
+                const std::string babyMark = markPath + "_baby";
+                if (TextureExists("minecraft", babyMark)) markPath = babyMark;
+            }
+            const std::string markTex = ctx.Texture("minecraft", markPath);
+            if (!markTex.empty()) {
+                bodyMat += "~" + markPath.substr(markPath.rfind('/') + 1);
+                OverlayLayerInfo info;
+                info.name = "minecraft:" + markPath;
+                info.texturePath = markTex;
+                RegisterOverlaySequence(bodyMat, { info });
+            }
+        }
+    }
+    EmitTextured(ctx, obj, model, base, pre, bodyMat, baseTex);
+
+    // Body armor. Legacy: HorseArmorLayer, only the plain horse, inflated horse_armor mesh (babies included).
+    // 26.x: SimpleEquipmentLayer HORSE_BODY. babyModel is null, so babies wear nothing. Undead horses use the unscaled armor mesh.
+    const ItemStackInfo armorItem = BodyArmorStack(e);
+    const bool armorOk = !armorItem.empty() && !(info.undead && !ctx.modern) && !(ctx.modern && baby) && info.armorLayer[0] != '\0';
+    if (armorOk) {
+        const std::string matName = HorseArmorMaterial(armorItem);
+        const std::string asset = !armorItem.equipAsset.empty() ? armorItem.equipAsset
+                                  : (matName.empty() ? std::string() : "minecraft:" + matName);
+        if (!asset.empty() && (ctx.modern || !matName.empty())) {
+            std::vector<ArmorTexLayer> layers;
+            if (!ctx.modern) {
+                int color = -1;
+                if (matName == "leather") color = armorItem.dyeColor >= 0 ? armorItem.dyeColor : 0xA06540;
+                layers.push_back({ "minecraft", "entity/horse/armor/horse_armor_" + matName, color });
+            } else {
+                layers = EquipmentTexLayers(armorItem, asset, "horse_body");
+                if (layers.empty()) {
+                    const std::string texName = SplitId(asset).second;
+                    if (texName == "leather" || matName == "leather") {
+                        int color = armorItem.dyeColor >= 0 ? armorItem.dyeColor : 0xA06540;
+                        layers.push_back({ "minecraft", "entity/equipment/horse_body/leather", color });
+                        layers.push_back({ "minecraft", "entity/equipment/horse_body/leather_overlay", -1 });
+                    } else if (!texName.empty()) {
+                        layers.push_back({ "minecraft", "entity/equipment/horse_body/" + texName, -1 });
+                    }
+                }
+            }
+            const std::string armorId = ctx.modern ? (std::string("minecraft:") + info.armorLayer + "#main")
+                                                   : "minecraft:horse_armor#main";
+            EntityModel armor(fam, armorId);
+            if (armor.Valid()) {
+                PoseEquine(armor, pitch, !ctx.modern, baby, false);
+                ApplyEquineVis(armor, !ctx.modern, baby, saddled, ridden, false);
+                int mat = ArmorMaterial(ctx, layers);
+                if (mat >= 0) armor.Emit(obj.mesh, base, [mat](int) { return mat; }, pre);
+            }
+        }
+    }
+
+    // 26.x saddle is a separate equipment layer (full body mesh + saddle parts, scale baked in).
+    // Non-saddle polys are skipped: the saddle texture is mostly transparent and would redraw the horse black.
+    // Legacy saddle parts live on the body model and are toggled above. No baby saddle layer exists.
+    if (saddled && ctx.modern && !baby) {
+        const std::string asset = saddleItem.equipAsset.empty() ? "minecraft:saddle" : saddleItem.equipAsset;
+        std::vector<ArmorTexLayer> layers = EquipmentTexLayers(saddleItem, asset, info.saddleType);
+        if (layers.empty())
+            layers.push_back({ "minecraft", std::string("entity/equipment/") + info.saddleType + "/saddle", -1 });
+        EntityModel saddle(fam, std::string("minecraft:") + info.id + "#saddle");
+        if (saddle.Valid()) {
+            PoseEquine(saddle, pitch, false, false, false);
+            ApplyEquineVis(saddle, false, false, true, ridden, chest);
+            int mat = ArmorMaterial(ctx, layers);
+            if (mat >= 0) {
+                saddle.Emit(obj.mesh, base, [&](int part) { return IsEquineSaddlePart(saddle.Name(part)) ? mat : -1; }, nullptr);
+            }
+        }
+    }
+}
+
+void RenderPig(Ctx& ctx, const NbtTagPtr& e) {
+    const std::string fam = ctx.modern ? "modern" : "legacy";
+    const bool baby = IsBaby(e);
+    const std::string variant = ClimateVariant(e);
+    // Cold adults use ColdPigModel. Warm uses the temperate mesh. Babies of every climate use pig_baby
+    // (PigRenderer's cold baby model is PIG_BABY). 1.21.1 has only pig#main.
+    const std::string lid = FarmLayer(ctx, "pig", variant, baby);
+    EntityModel model(fam, lid);
+    if (!model.Valid()) return;
+    Placement pl = ReadPlacement(e);
+    ApplyHeadLook(model, pl);
+    EntityAffine base = LivingBase(pl, 0.9 * (baby ? 0.5 : 1.0), 1.0);
+    TopPre pre = (!ctx.modern && baby) ? LegacyAgeablePre(kAgePig) : nullptr;
+    OutObject& obj = ctx.NewObject("minecraft:pig");
+    const std::string texPath = FarmTexture("pig", "pig", variant, ctx.modern && baby, "entity/pig/pig");
     EmitTextured(ctx, obj, model, base, pre, "minecraft:" + texPath, ctx.Texture("minecraft", texPath));
+    // SaddleLayer / PIG_SADDLE is PigModel with CubeDeformation(0.5) in both 1.21.1 and 26.x, so the
+    // saddle sits off the body and stays a mesh. (Strider's saddle layer is a copy of the body and is
+    // an overlay instead.) 26.x babyModel is null. The saddle mesh stays the temperate pig even on a
+    // cold body, matching PigRenderer. Saddle pngs match the saddle model's UV size (64x32, 64x64).
+    const ItemStackInfo saddleItem = SaddleStack(e);
+    if (saddleItem.empty() || (ctx.modern && baby)) return;
+    EntityModel saddle(fam, "minecraft:pig#saddle");
+    if (!saddle.Valid()) return;
+    saddle.CopyPoseFrom(model, { "head", "body", "right_hind_leg", "left_hind_leg", "right_front_leg", "left_front_leg" }, true);
+    std::vector<ArmorTexLayer> layers;
+    if (!ctx.modern) {
+        layers.push_back({ "minecraft", "entity/pig/pig_saddle", -1 });
+    } else {
+        const std::string asset = saddleItem.equipAsset.empty() ? "minecraft:saddle" : saddleItem.equipAsset;
+        layers = EquipmentTexLayers(saddleItem, asset, "pig_saddle");
+        if (layers.empty()) layers.push_back({ "minecraft", "entity/equipment/pig_saddle/saddle", -1 });
+    }
+    int mat = ArmorMaterial(ctx, layers);
+    if (mat >= 0) saddle.Emit(obj.mesh, base, [mat](int) { return mat; }, pre);
+}
+
+// StriderModel.setupAnim at rest. Cold/suffocating is not written by addAdditionalSaveData, so the normal texture is used.
+// Legacy babies are the adult mesh with renderer scale 0.5 (getAgeScale). 26.x swaps in strider_baby and sets body.y=17.25.
+void PoseStrider(EntityModel& model, float pitch, bool ridden, bool modernBaby) {
+    int body = model.Find("body");
+    if (body >= 0) model.Pose(body)[1] = modernBaby ? 17.25f : 2.0f;
+    if (!ridden) model.SetRot("body", pitch, 0.0f, 0.0f);
+    else model.SetRot("body", 0.0f, 0.0f, 0.0f);
+}
+
+void RenderStrider(Ctx& ctx, const NbtTagPtr& e) {
+    const std::string fam = ctx.modern ? "modern" : "legacy";
+    const bool baby = IsBaby(e);
+    EntityModel model(fam, MobLayer(ctx, "strider", baby));
+    if (!model.Valid()) return;
+    Placement pl = ReadPlacement(e);
+    const bool ridden = HasPassengers(e);
+    PoseStrider(model, HeadPitch(pl), ridden, ctx.modern && baby);
+    const double rs = (!ctx.modern && baby) ? 0.5 : 1.0;
+    EntityAffine base = LivingBase(pl, 1.7 * (baby ? 0.5 : 1.0), rs);
+    OutObject& obj = ctx.NewObject("minecraft:strider");
+    std::string texPath = "entity/strider/strider";
+    if (ctx.modern && baby && TextureExists("minecraft", "entity/strider/strider_baby"))
+        texPath = "entity/strider/strider_baby";
+    // STRIDER_SADDLE is the same LayerDefinition as STRIDER (both versions), so a second mesh is
+    // exactly coplanar and renders as a black silhouette. The saddle sheet uses the body UVs
+    // (1.21.1 strider_saddle.png and 26.x equipment/strider_saddle/saddle.png are both 64x128,
+    // matching strider.png). 26.x SimpleEquipmentLayer babyModel is null.
+    std::string bodyMat = "minecraft:" + texPath;
+    const std::string baseTex = ctx.Texture("minecraft", texPath);
+    const ItemStackInfo saddleItem = SaddleStack(e);
+    if (!saddleItem.empty() && !(ctx.modern && baby)) {
+        std::vector<ArmorTexLayer> layers;
+        if (!ctx.modern) {
+            layers.push_back({ "minecraft", "entity/strider/strider_saddle", -1 });
+        } else {
+            const std::string asset = saddleItem.equipAsset.empty() ? "minecraft:saddle" : saddleItem.equipAsset;
+            layers = EquipmentTexLayers(saddleItem, asset, "strider_saddle");
+            if (layers.empty()) layers.push_back({ "minecraft", "entity/equipment/strider_saddle/saddle", -1 });
+        }
+        bodyMat = BodyWithOverlays(ctx, bodyMat, "minecraft", texPath, baseTex, layers);
+    }
+    EmitTextured(ctx, obj, model, base, nullptr, bodyMat, baseTex);
 }
 
 // ---------- spider / cave spider ----------
@@ -1083,13 +1545,27 @@ void RenderSpider(Ctx& ctx, const NbtTagPtr& e, bool cave) {
 }
 
 // ---------- enderman ----------
-bool EndermanCarrying(const NbtTagPtr& e) {
+// 1.21.1: carriedBlockState compound {Name, Properties}. 26.x: a string, optionally "id[prop=value,...]".
+// Properties are not applied; the block is drawn as its item model.
+std::string EndermanCarriedBlock(const NbtTagPtr& e) {
     auto c = getChildByName(e, "carriedBlockState");
     if (!c) c = getChildByName(e, "CarriedBlockState");
-    if (!c || c->type != TagType::COMPOUND) return false;
-    std::string name = Str(c, "Name");
-    if (name.empty()) name = Str(c, "name");
-    return !name.empty() && name != "minecraft:air" && name != "air";
+    if (!c) return {};
+    std::string raw;
+    if (c->type == TagType::STRING) raw = getStringTag(c);
+    else if (c->type == TagType::COMPOUND) {
+        raw = Str(c, "Name");
+        if (raw.empty()) raw = Str(c, "name");
+    } else {
+        return {};
+    }
+    const size_t br = raw.find('[');
+    if (br != std::string::npos) raw = raw.substr(0, br);
+    while (!raw.empty() && (raw.back() == ' ' || raw.back() == '"')) raw.pop_back();
+    while (!raw.empty() && (raw.front() == ' ' || raw.front() == '"')) raw.erase(raw.begin());
+    if (raw.empty() || raw == "air" || raw == "minecraft:air") return {};
+    if (raw.find(':') == std::string::npos) raw = "minecraft:" + raw;
+    return raw;
 }
 
 void RenderEnderman(Ctx& ctx, const NbtTagPtr& e) {
@@ -1100,7 +1576,8 @@ void RenderEnderman(Ctx& ctx, const NbtTagPtr& e) {
     // HumanoidModel idle at ageInTicks 0: arm zRot ±0.1, leg yRot/zRot ±0.005. EndermanModel then
     // halves xRot (still 0) and, while carrying, overwrites the arms. Creepy head dip is runtime; skipped.
     // Baked positions (head/hat y=-13, body y=-14, arms, legs) already match setupAnim's restores.
-    const bool carrying = EndermanCarrying(e);
+    const std::string carried = EndermanCarriedBlock(e);
+    const bool carrying = !carried.empty();
     model.SetRot("head", HeadPitch(pl), 0.0f, 0.0f);
     if (carrying) {
         model.SetRot("right_arm", -0.5f, 0.0f, 0.05f);
@@ -1121,8 +1598,19 @@ void RenderEnderman(Ctx& ctx, const NbtTagPtr& e) {
     EmitTextured(ctx, obj, model, base, nullptr, "minecraft:" + texPath, ctx.Texture("minecraft", texPath));
     const std::string eyes = "entity/enderman/enderman_eyes";
     EmitTextured(ctx, obj, model, base, nullptr, "minecraft:" + eyes, ctx.Texture("minecraft", eyes));
-    // TODO: carriedBlockState is not drawn. Rendering an arbitrary block state (properties, multipart) is
-    // more than a single item model, so the carrying arm pose is applied and the block itself is skipped.
+    // CarriedBlockLayer, on the entity pose stack (not the arm):
+    // T(0, 0.6875, -0.75) * RX(20) * RY(45) * T(0.25, 0.1875, 0.25) * S(-0.5, -0.5, 0.5) * RY(90).
+    // renderSingleBlock uses the block corner as origin. ItemDisplay::None still translates -0.5, so T(+0.5) cancels it.
+    if (carrying) {
+        using A = EntityAffine;
+        ItemStackInfo block;
+        block.id = carried;
+        block.count = 1;
+        const double d = kPi / 180.0;
+        A m = base * A::T(0.0, 0.6875, -0.75) * A::RX(20.0 * d) * A::RY(45.0 * d) * A::T(0.25, 0.1875, 0.25) *
+              A::S(-0.5, -0.5, 0.5) * A::RY(90.0 * d) * A::T(0.5, 0.5, 0.5);
+        AppendItem(ctx, obj, block, ItemDisplay::None, false, m);
+    }
 }
 
 // ---------- iron golem / snow golem ----------
@@ -1913,15 +2401,19 @@ size_t Export(const std::string& name) {
         else if (id == "minecraft:wither_skeleton")
             RenderHumanoidMob(ctx, e, "wither_skeleton", "entity/skeleton/wither_skeleton", 2.1, false, 1.2);
         else if (id == "minecraft:creeper") RenderCreeper(ctx, e);
-        else if (id == "minecraft:pig") RenderQuadruped(ctx, e, id, "minecraft:pig#main", "entity/pig/pig", 0.9, kAgePig);
-        else if (id == "minecraft:cow" || id == "minecraft:mooshroom")
-            RenderQuadruped(ctx, e, id, "minecraft:cow#main",
-                            id == "minecraft:mooshroom" ? "entity/cow/red_mooshroom" : "entity/cow/cow", 1.4, kAgeCow);
+        else if (id == "minecraft:pig") RenderPig(ctx, e);
+        else if (id == "minecraft:cow") RenderClimateCow(ctx, e);
+        else if (id == "minecraft:mooshroom") RenderMooshroom(ctx, e);
         else if (id == "minecraft:sheep") RenderSheep(ctx, e);
-        else if (id == "minecraft:chicken") RenderQuadruped(ctx, e, id, "minecraft:chicken#main", "entity/chicken", 0.7, kAgeChicken);
+        else if (id == "minecraft:chicken") RenderClimateChicken(ctx, e);
         else if (id == "minecraft:wolf") RenderWolf(ctx, e);
         else if (id == "minecraft:cat") RenderCat(ctx, e);
-        else if (id == "minecraft:horse") RenderHorse(ctx, e);
+        else if (id == "minecraft:horse") RenderEquine(ctx, e, EquineKind::Horse);
+        else if (id == "minecraft:donkey") RenderEquine(ctx, e, EquineKind::Donkey);
+        else if (id == "minecraft:mule") RenderEquine(ctx, e, EquineKind::Mule);
+        else if (id == "minecraft:skeleton_horse") RenderEquine(ctx, e, EquineKind::Skeleton);
+        else if (id == "minecraft:zombie_horse") RenderEquine(ctx, e, EquineKind::Zombie);
+        else if (id == "minecraft:strider") RenderStrider(ctx, e);
         else if (id == "minecraft:spider") RenderSpider(ctx, e, false);
         else if (id == "minecraft:cave_spider") RenderSpider(ctx, e, true);
         else if (id == "minecraft:enderman") RenderEnderman(ctx, e);
