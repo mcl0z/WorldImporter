@@ -173,6 +173,7 @@
     <ClCompile Include="fileutils.cpp" />
     <ClCompile Include="Fluid.cpp" />
     <ClCompile Include="GlobalCache.cpp" />
+    <ClCompile Include="CreateSlidingDoor.cpp" />
     <ClCompile Include="JarReader.cpp" />
     <ClCompile Include="LODManager.cpp" />
     <ClCompile Include="CreateFrogportPsi.cpp" />
@@ -221,6 +222,7 @@
     <ClInclude Include="CopperGolemStatue.h" />
     <ClInclude Include="fileutils.h" />
     <ClInclude Include="GlobalCache.h" />
+    <ClInclude Include="CreateSlidingDoor.h" />
     <ClInclude Include="JarReader.h" />
     <ClInclude Include="LODManager.h" />
     <ClInclude Include="CreateFrogportPsi.h" />
