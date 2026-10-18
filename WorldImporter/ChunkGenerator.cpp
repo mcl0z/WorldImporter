@@ -393,7 +393,7 @@ void ChunkGenerator::ProcessBlockForModel(ModelData& chunkModel, int x, int y, i
         }
     }
 
-    // Create depot / ejector: held and output items (DepotRenderer) appended to the block model.
+    // Create depot / ejector / belt: held and transported items appended to the block model.
     if (ns == "create" && blockEntityNbt)
         AppendCreateDepotItems("create:" + blockName, blockEntityNbt, blockModel);
 
