@@ -14,6 +14,7 @@
 #include "ModCT.h"
 #include "texture.h"
 #include "Occlusion.h"
+#include "BannerModel.h"
 #include <iomanip>
 #include <cmath>
 #include <sstream>
@@ -268,6 +269,11 @@ void ChunkGenerator::ProcessBlockForModel(ModelData& chunkModel, int x, int y, i
     }
     if (!specialHandled) {
         specialHandled = TryGenerateCableModel(blockModel, ns, blockName, x, y, z, blockEntityNbt);
+    }
+    if (!specialHandled && ns == "minecraft") {
+        // 旗帜: 实体渲染方块, 图案存放在方块实体里
+        specialHandled = TryGenerateBannerModel(
+            prepared ? prepared->full : currentBlock.GetModifiedNameWithNamespace(), blockEntityNbt, blockModel);
     }
     if (specialHandled) {
         for (auto& face : blockModel.faces) face.faceDirection = FaceType::DO_NOT_CULL;
