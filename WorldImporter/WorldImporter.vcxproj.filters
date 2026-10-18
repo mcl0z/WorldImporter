@@ -173,6 +173,9 @@
     <ClCompile Include="Fluid.cpp">
       <Filter>源文件\Blocks</Filter>
     </ClCompile>
+    <ClCompile Include="CreateFlaps.cpp">
+      <Filter>源文件\Blocks</Filter>
+    </ClCompile>
     <ClCompile Include="LODManager.cpp">
       <Filter>源文件\Blocks</Filter>
     </ClCompile>
@@ -247,6 +250,9 @@
       <Filter>头文件\Blocks</Filter>
     </ClInclude>
     <ClInclude Include="EntityBlock.h">
+      <Filter>头文件\Blocks</Filter>
+    </ClInclude>
+    <ClInclude Include="CreateFlaps.h">
       <Filter>头文件\Blocks</Filter>
     </ClInclude>
     <ClInclude Include="texture.h">
