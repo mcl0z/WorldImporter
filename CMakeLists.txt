@@ -46,6 +46,14 @@ if (BUILD_TESTING AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/WorldImporter/tests/ca
     set_tests_properties(cache_init PROPERTIES TIMEOUT 30)
 endif()
 
+if (BUILD_TESTING AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/WorldImporter/tests/palette_format_tests.cpp")
+    add_executable(palette_format_tests WorldImporter/tests/palette_format_tests.cpp)
+    target_link_libraries(palette_format_tests PRIVATE WorldImporterCore)
+    wi_apply_defaults(palette_format_tests)
+    add_test(NAME palette_format COMMAND palette_format_tests)
+    set_tests_properties(palette_format PROPERTIES TIMEOUT 30)
+endif()
+
 # This harness ships with the importer; tests/ below is an optional external suite.
 if (BUILD_TESTING AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/WorldImporter/tests/biome_colors_tests.cpp")
     add_executable(biome_colors_tests WorldImporter/tests/biome_colors_tests.cpp)

@@ -26,6 +26,18 @@ uint32_t ReadBE32(const char* p) {
 fs::path GetEntitiesDirectory() {
     fs::path world(config.worldPath);
     const std::string& dim = config.selectedDimension;
+    // 26.1+: vanilla dimensions also live in dimensions/minecraft/<name>/entities
+    {
+        size_t colon = dim.find(':');
+        std::string ns = colon == std::string::npos ? "minecraft" : dim.substr(0, colon);
+        std::string name = colon == std::string::npos ? dim : dim.substr(colon + 1);
+        if (dim.empty()) name = "overworld";
+        if (name == "DIM-1") name = "the_nether";
+        if (name == "DIM1") name = "the_end";
+        fs::path modern = world / "dimensions" / ns / name / "entities";
+        std::error_code ec;
+        if (fs::is_directory(modern, ec)) return modern;
+    }
     if (dim == "minecraft:the_nether" || dim == "the_nether" || dim == "DIM-1")
         return world / "DIM-1" / "entities";
     if (dim == "minecraft:the_end" || dim == "the_end" || dim == "DIM1")

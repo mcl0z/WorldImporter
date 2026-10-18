@@ -758,6 +758,87 @@ NbtTagPtr getBlockStates(const NbtTagPtr& sectionTag) {
 
 
 
+// 26.3+ 的默认方块状态表(由 tools/gen_default_block_states.py 从官方 blocks.json 报告生成)
+static const std::unordered_map<std::string, std::string>& DefaultBlockStates() {
+    static const std::unordered_map<std::string, std::string> table = {
+#include "default_block_states.inc"
+    };
+    return table;
+}
+
+static std::string TagString(const NbtTagPtr& tag) {
+    return std::string(tag->payload.begin(), tag->payload.end());
+}
+
+// 把 26.3+ 简写/新字段的方块状态补全为 "ns:id[k:v,...]":
+// 缺省的属性用该方块的默认值填充(26.3 对默认状态只存裸 id)。
+static std::string WithDefaultProperties(const std::string& id, std::string props) {
+    auto& table = DefaultBlockStates();
+    auto it = table.find(id.find(':') == std::string::npos ? "minecraft:" + id : id);
+    if (it != table.end()) {
+        size_t pos = 0;
+        const std::string& defs = it->second;
+        while (pos < defs.size()) {
+            size_t comma = defs.find(',', pos);
+            if (comma == std::string::npos) comma = defs.size();
+            std::string kv = defs.substr(pos, comma - pos);
+            std::string key = kv.substr(0, kv.find(':'));
+            bool present = false;
+            size_t p = 0;
+            while (p < props.size()) {
+                size_t c = props.find(',', p);
+                if (c == std::string::npos) c = props.size();
+                if (props.compare(p, key.size() + 1, key + ":") == 0) { present = true; break; }
+                p = c + 1;
+            }
+            if (!present) props += (props.empty() ? "" : ",") + kv;
+            pos = comma + 1;
+        }
+    }
+    return props.empty() ? id : id + "[" + props + "]";
+}
+
+// 解析单个方块状态标签。支持:
+//  - 旧格式 {Name, Properties}
+//  - 26.3+ 格式 {id, properties}
+//  - 26.3+ 默认状态简写: 裸 STRING,或混合列表中的 {"": STRING}
+std::string ParseBlockStateTag(const NbtTagPtr& blockTag) {
+    if (!blockTag) return {};
+    if (blockTag->type == TagType::STRING) {
+        return WithDefaultProperties(TagString(blockTag), {});
+    }
+    if (blockTag->type != TagType::COMPOUND) return {};
+
+    auto readProps = [](const NbtTagPtr& propertiesTag) {
+        std::string propertiesStr;
+        if (propertiesTag && propertiesTag->type == TagType::COMPOUND) {
+            for (const auto& property : propertiesTag->children) {
+                if (property->type == TagType::STRING) {
+                    if (!propertiesStr.empty()) propertiesStr += ",";
+                    propertiesStr += property->name + ":" + TagString(property);
+                }
+            }
+        }
+        return propertiesStr;
+    };
+
+    auto nameTag = getChildByName(blockTag, "Name");
+    if (nameTag && nameTag->type == TagType::STRING) {
+        std::string blockName = TagString(nameTag);
+        std::string props = readProps(getChildByName(blockTag, "Properties"));
+        return props.empty() ? blockName : blockName + "[" + props + "]";
+    }
+    auto idTag = getChildByName(blockTag, "id");
+    if (idTag && idTag->type == TagType::STRING) {
+        return WithDefaultProperties(TagString(idTag), readProps(getChildByName(blockTag, "properties")));
+    }
+    auto shortTag = getChildByName(blockTag, "");
+    if (shortTag && shortTag->type == TagType::STRING) {
+        return WithDefaultProperties(TagString(shortTag), {});
+    }
+    return {};
+}
+
 // 读取 block_states 的 palette 数据
 std::vector<std::string> getBlockPalette(const NbtTagPtr& blockStatesTag) {
     std::vector<std::string> blockPalette;
@@ -766,31 +847,8 @@ std::vector<std::string> getBlockPalette(const NbtTagPtr& blockStatesTag) {
     auto paletteTag = getChildByName(blockStatesTag, "palette");
     if (paletteTag && paletteTag->type == TagType::LIST) {
         for (const auto& blockTag : paletteTag->children) {
-            if (blockTag->type == TagType::COMPOUND) {
-                // 解析每个 TAG_Compound
-                std::string blockName;
-                auto nameTag = getChildByName(blockTag, "Name");
-                if (nameTag && nameTag->type == TagType::STRING) {
-                    blockName = std::string(nameTag->payload.begin(), nameTag->payload.end());
-                }
-
-                // 检查是否有 Properties,拼接后缀
-                auto propertiesTag = getChildByName(blockTag, "Properties");
-                if (propertiesTag && propertiesTag->type == TagType::COMPOUND) {
-                    std::string propertiesStr;
-                    for (const auto& property : propertiesTag->children) {
-                        if (property->type == TagType::STRING) {
-                            propertiesStr += property->name + ":" + std::string(property->payload.begin(), property->payload.end()) + ",";
-                        }
-                    }
-                    if (!propertiesStr.empty()) {
-                        propertiesStr.pop_back();  // 移除最后一个逗号
-                        blockName += "[" + propertiesStr + "]";
-                    }
-                }
-
-                blockPalette.push_back(blockName);
-            }
+            // 必须逐项占位,否则 data 索引会错位
+            blockPalette.push_back(ParseBlockStateTag(blockTag));
         }
     }
     return blockPalette;
