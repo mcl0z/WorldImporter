@@ -171,6 +171,13 @@ if (BUILD_TESTING AND EXISTS "${WI_TESTS_DIR}")
     endif()
 endif()
 
+if (BUILD_TESTING AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/WorldImporter/tests/ctm_mod_grid_tests.cpp")
+    add_executable(ctm_mod_grid_tests WorldImporter/tests/ctm_mod_grid_tests.cpp)
+    target_link_libraries(ctm_mod_grid_tests PRIVATE WorldImporterCore)
+    wi_apply_defaults(ctm_mod_grid_tests)
+    add_test(NAME ctm_mod_grid COMMAND ctm_mod_grid_tests)
+    set_tests_properties(ctm_mod_grid PROPERTIES TIMEOUT 30)
+endif()
 
 # Mek CTM-mod + ModCT connect_to harness (optional; needs tests/modct_mek_test.cpp).
 option(WI_BUILD_MODCT_MEK_TEST "Build Mek industrial CT adapter harness" OFF)
