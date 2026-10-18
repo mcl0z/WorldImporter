@@ -166,6 +166,7 @@
     <ClCompile Include="Fluid.cpp" />
     <ClCompile Include="GlobalCache.cpp" />
     <ClCompile Include="JarReader.cpp" />
+    <ClCompile Include="CreateCurvedTrack.cpp" />
     <ClCompile Include="LODManager.cpp" />
     <ClCompile Include="main.cpp" />
     <ClCompile Include="model.cpp" />
@@ -203,6 +204,7 @@
     <ClInclude Include="fileutils.h" />
     <ClInclude Include="GlobalCache.h" />
     <ClInclude Include="JarReader.h" />
+    <ClInclude Include="CreateCurvedTrack.h" />
     <ClInclude Include="LODManager.h" />
     <ClInclude Include="model.h" />
     <ClInclude Include="ModelDeduplicator.h" />
