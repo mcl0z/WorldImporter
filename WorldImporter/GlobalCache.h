@@ -32,6 +32,9 @@ namespace GlobalCache {
 	// 生物群系缓存 [modId:namespace:biome_id -> JSON]
 	extern std::unordered_map<std::string, nlohmann::json> biomes;
 
+	// 画变体缓存 [modId:namespace:variant_id -> JSON] (data/<ns>/painting_variant)
+	extern std::unordered_map<std::string, nlohmann::json> paintingVariants;
+
 	// 色图缓存 [modId:namespace:colormap_name -> PNG数据]
 	extern std::unordered_map<std::string, std::vector<unsigned char>> colormaps;
 
@@ -49,6 +52,7 @@ namespace GlobalCache {
 	extern std::unordered_map<std::string, std::string> textureIndex;
 	extern std::unordered_map<std::string, std::string> mcmetaIndex;
 	extern std::unordered_map<std::string, std::string> biomeIndex;
+	extern std::unordered_map<std::string, std::string> paintingVariantIndex;
 	extern std::unordered_map<std::string, std::string> colormapIndex;
 
 	// CTM 快速查找索引

@@ -54,6 +54,7 @@ namespace GlobalCache {
     std::unordered_map<std::string, nlohmann::json> models;                  // 模型缓存
     std::unordered_map<std::string, std::string> modelAssets;                // OBJ/MTL模型资源
     std::unordered_map<std::string, nlohmann::json> biomes;                  // 生物群系缓存
+    std::unordered_map<std::string, nlohmann::json> paintingVariants;        // 画变体缓存
     std::unordered_map<std::string, std::vector<unsigned char>> colormaps;   // 颜色映射缓存
 
     // CTM 资源缓存
@@ -70,6 +71,7 @@ namespace GlobalCache {
     std::unordered_map<std::string, std::string> textureIndex;
     std::unordered_map<std::string, std::string> mcmetaIndex;
     std::unordered_map<std::string, std::string> biomeIndex;
+    std::unordered_map<std::string, std::string> paintingVariantIndex;
     std::unordered_map<std::string, std::string> colormapIndex;
 
     // CTM 快速查找索引
@@ -98,6 +100,7 @@ struct TaskResult {
     std::unordered_map<std::string, std::string> localModelAssets;                // OBJ/MTL模型资源
     std::unordered_map<std::string, nlohmann::json> localMcmetas;                 // 本地材质元数据
     std::unordered_map<std::string, nlohmann::json> localBiomes;                  // 本地生物群系
+    std::unordered_map<std::string, nlohmann::json> localPaintingVariants;        // 本地画变体
     std::unordered_map<std::string, std::vector<unsigned char>> localColormaps;   // 本地颜色映射
     std::unordered_map<std::string, std::string> localCtmProperties;              // 本地 CTM properties
     std::unordered_map<std::string, std::vector<unsigned char>> localCtmTextures; // 本地 CTM 贴图
@@ -306,6 +309,7 @@ void InitializeAllCaches() {
                         taskResults[idx].localCtmProperties,
                         taskResults[idx].localCtmTextures,
                         taskResults[idx].localAtlases,
+                        taskResults[idx].localPaintingVariants,
                         task.rangeIndex, task.rangeCount
                     );
                 } catch (const std::exception& e) {
@@ -395,6 +399,16 @@ void InitializeAllCaches() {
                         GlobalCache::biomeIndex.emplace(indexKey, cacheKey);
                     }
                 }
+                // 合并画变体 (data/<ns>/painting_variant)
+                for (auto& pair : result.localPaintingVariants) {
+                    std::string cacheKey = currentModId + ":" + pair.first;
+                    GlobalCache::paintingVariants.try_emplace(cacheKey, std::move(pair.second));
+                    size_t firstColon = pair.first.find(':');
+                    if (firstColon != std::string::npos) {
+                        std::string indexKey = std::string("painting_variants:") + pair.first;
+                        GlobalCache::paintingVariantIndex.emplace(indexKey, cacheKey);
+                    }
+                }
                 // 合并颜色映射
                 for (auto& pair : result.localColormaps) {
                     std::string cacheKey = currentModId + ":" + pair.first;
@@ -452,6 +466,7 @@ void InitializeAllCaches() {
             << " - Blockstates: " << GlobalCache::blockstates.size() << "\n"
             << " - Models: " << GlobalCache::models.size() << "\n"
             << " - Biomes: " << GlobalCache::biomes.size() << "\n"
+            << " - Painting variants: " << GlobalCache::paintingVariants.size() << "\n"
             << " - Colormaps: " << GlobalCache::colormaps.size() << "\n"
             << " - CTM properties: " << GlobalCache::ctmProperties.size() << "\n"
             << " - CTM textures: " << GlobalCache::ctmTextures.size() << "\n"

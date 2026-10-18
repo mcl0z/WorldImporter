@@ -4,6 +4,7 @@
 #include "block.h"         // 包含 block.h 以访问缓存及其互斥锁的 extern 声明
 #include "TaskMonitor.h"   // 包含任务监控器头文件
 #include "EntityExporter.h"
+#include "PaintingExporter.h"
 
 Config config;  // 定义全局变量
 
@@ -34,6 +35,7 @@ int main() {
         if (config.importEntities) {
             EntityExporter::Export("entities.json");
         }
+        PaintingExporter::Export();
         auto end_time = high_resolution_clock::now();
         auto duration = duration_cast<milliseconds>(end_time - start_time);
         cout << "Total time: " << duration.count() << " milliseconds" << endl;

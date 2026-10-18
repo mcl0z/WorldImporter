@@ -16,7 +16,7 @@ using Json = nlohmann::json;
 using Text = std::string;
 #define RESOURCE_MAPS(X) \
     X(textures, Bytes) X(blockstates, Json) X(models, Json) X(modelAssets, Text) \
-    X(mcmetaCache, Json) X(biomes, Json) X(colormaps, Bytes) \
+    X(mcmetaCache, Json) X(biomes, Json) X(paintingVariants, Json) X(colormaps, Bytes) \
     X(ctmProperties, Text) X(ctmTextures, Bytes) X(atlases, Json)
 
 void require(bool condition, const std::string& message) {
@@ -33,7 +33,8 @@ Resources scan(const std::filesystem::path& path, size_t range = 0, size_t count
     Resources result;
     reader.cacheAllResources(result.textures, result.blockstates, result.models,
         result.modelAssets, result.mcmetaCache, result.biomes, result.colormaps,
-        result.ctmProperties, result.ctmTextures, result.atlases, range, count);
+        result.ctmProperties, result.ctmTextures, result.atlases, result.paintingVariants,
+        range, count);
     return result;
 }
 void merge(Resources& into, const Resources& from, const std::string& prefix = "") {
@@ -74,6 +75,7 @@ void makeArchive(const std::filesystem::path& path, int marker) {
         entries.emplace_back(root + "assets/test/optifine/ctm/sample/0.png", text);
         entries.emplace_back(root + "assets/test/optifine/ctm/sample/0.png.mcmeta", text);
         entries.emplace_back(root + "data/test/worldgen/biome/nested/sample.json", text);
+        entries.emplace_back(root + "data/test/painting_variant/nested/sample.json", text);
     };
     addResources("", value);
     // Stored padding triggers the large-jar scheduler without asset assumptions.
@@ -114,7 +116,8 @@ void run(const std::filesystem::path& root) {
         serial.ctmTextures.size() == 1 && serial.mcmetaCache.size() == 3 &&
         serial.modelAssets.size() == 4 && serial.biomes.size() == 1 &&
         serial.colormaps.size() == 1 && serial.blockstates.size() == 1 &&
-        serial.ctmProperties.size() == 1 && serial.atlases.size() == 1, "fixture resource coverage");
+        serial.ctmProperties.size() == 1 && serial.atlases.size() == 1 &&
+        serial.paintingVariants.size() == 1, "fixture resource coverage");
     require(serial.models.at("test:block/sample").at("marker") == 1, "first logical entry wins");
     for (const size_t count : {2, 4, 7, 64}) {
         std::vector<Resources> parts(count);
@@ -149,6 +152,7 @@ void run(const std::filesystem::path& root) {
     checkIndex(GlobalCache::modelAssetIndex, serial.modelAssets, "modelassets", "pack");
     checkIndex(GlobalCache::mcmetaIndex, serial.mcmetaCache, "mcmetas", "pack");
     checkIndex(GlobalCache::biomeIndex, serial.biomes, "biomes", "pack");
+    checkIndex(GlobalCache::paintingVariantIndex, serial.paintingVariants, "painting_variants", "pack");
     checkIndex(GlobalCache::colormapIndex, serial.colormaps, "colormaps", "pack");
     checkIndex(GlobalCache::ctmPropertiesIndex, serial.ctmProperties, "ctmproperties", "pack");
     checkIndex(GlobalCache::ctmTexturesIndex, serial.ctmTextures, "ctmtextures", "pack");

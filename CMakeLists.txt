@@ -72,7 +72,16 @@ if (BUILD_TESTING AND NOT EXISTS "${WI_TESTS_DIR}")
     message(STATUS "tests/ 不存在: 跳过测试目标（要跑测试请恢复 tests/，或显式传 -DBUILD_TESTING=OFF）")
 endif()
 
-if (BUILD_TESTING AND EXISTS "${WI_TESTS_DIR}")
+if (BUILD_TESTING AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/painting_tests.cpp")
+    add_executable(painting_tests tests/painting_tests.cpp)
+    target_link_libraries(painting_tests PRIVATE WorldImporterCore)
+    wi_apply_defaults(painting_tests)
+    add_test(NAME painting COMMAND painting_tests WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+    set_tests_properties(painting PROPERTIES TIMEOUT 30)
+endif()
+
+# 下面这组用例随可选的 tests/ 套件一起发布。只放了 painting_tests.cpp 时不要把整组拉进来。
+if (BUILD_TESTING AND EXISTS "${WI_TESTS_DIR}/chunk_io_tests.cpp")
     # 跑法（构建目录内）：
     #   ctest                        全部用例
     #   ctest -L ctm                 只跑 CTM 烘焙回归

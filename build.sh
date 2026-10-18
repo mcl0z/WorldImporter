@@ -41,6 +41,7 @@ SOURCES=(
     ModelDeduplicator.cpp
     nbtutils.cpp
     ObjExporter.cpp
+    PaintingExporter.cpp
     RegionCache.cpp
     RegionModelExporter.cpp
     SpecialBlock.cpp

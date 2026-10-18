@@ -31,6 +31,7 @@ public:
 		std::unordered_map<std::string, std::string>& ctmPropertiesCache,
 		std::unordered_map<std::string, std::vector<unsigned char>>& ctmTexturesCache,
 		std::unordered_map<std::string, nlohmann::json>& atlasCache,
+		std::unordered_map<std::string, nlohmann::json>& paintingVariantCache,
         size_t rangeIndex = 0, size_t rangeCount = 1);
 
     // 构造函数,接受 .jar 文件路径
