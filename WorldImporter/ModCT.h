@@ -67,4 +67,9 @@ bool ApplyCopycatCamoToBlockModel(ModelData& model, const NbtTagPtr& beNbt,
                                   const std::string& blockLocalName,
                                   int x, int y, int z);
 
+// Create copycat material warm-up: queue BE "Material" ids while chunks load,
+// then ProcessBlockstate them single-threaded before blockstate caches freeze.
+void ModCT_QueueCopycatWarm(const NbtTagPtr& beNbt);
+void ModCT_FlushCopycatWarm();
+
 #endif // MODCT_H

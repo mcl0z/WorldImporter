@@ -1,3 +1,4 @@
+#include "ModCT.h"
 #include "RegionModelExporter.h"
 #include "locutil.h"
 #include "objExporter.h"
@@ -218,6 +219,7 @@ void RegionModelExporter::ExportModels(const string& outputName) {
         { CrafterLog::StageTimer timer("批次数据加载");
         ChunkLoader::LoadChunks(bExpXStart, bExpXEnd, bExpZStart, bExpZEnd,
                                 sectionYStart, sectionYEnd);
+        ModCT_FlushCopycatWarm();
         }
         globalPaletteFrozen.store(true, std::memory_order_release);
         blockstateCachesFrozen.store(true, std::memory_order_release);

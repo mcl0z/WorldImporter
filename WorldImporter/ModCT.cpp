@@ -22,6 +22,7 @@
 #include <cstring>
 #include <cstdlib>
 #include <algorithm>
+#include <cmath>
 
 namespace {
 
@@ -836,10 +837,281 @@ static CamoAppearance ResolveCreateMaterialTag(const NbtTagPtr& beNbt) {
     return out;
 }
 
+// ---- Create copycat_step / copycat_panel: CopycatStepModel / CopycatPanelModel port ----
+// The material's block model is cropped to boxes and moved (BakedModelHelper.cropAndMove).
+namespace {
+struct CopyVert { float p[3]; float uv[2]; };
+struct CopyPiece { float mn[3], mx[3], off[3]; int skip[2]; }; // skip: light dirs (0..5) or -1
+
+// light dirs: 0=down 1=up 2=north 3=south 4=west 5=east
+const int kDirVec[6][3] = {{0,-1,0},{0,1,0},{0,0,-1},{0,0,1},{-1,0,0},{1,0,0}};
+const FaceType kDirFace[6] = {FaceType::DOWN, FaceType::UP, FaceType::NORTH,
+                              FaceType::SOUTH, FaceType::WEST, FaceType::EAST};
+
+int DirIndex(const std::string& d) {
+    static const char* names[6] = {"down","up","north","south","west","east"};
+    for (int i = 0; i < 6; ++i) if (d == names[i]) return i;
+    return -1;
+}
+
+std::vector<CopyVert> ClipAxis(const std::vector<CopyVert>& in, int axis, float bound, bool keepAbove) {
+    std::vector<CopyVert> out;
+    const float eps = 1e-5f;
+    auto inside = [&](const CopyVert& v) {
+        return keepAbove ? v.p[axis] >= bound - eps : v.p[axis] <= bound + eps;
+    };
+    for (size_t i = 0; i < in.size(); ++i) {
+        const CopyVert& a = in[i];
+        const CopyVert& b = in[(i + 1) % in.size()];
+        bool ia = inside(a), ib = inside(b);
+        if (ia) out.push_back(a);
+        if (ia != ib) {
+            float t = (bound - a.p[axis]) / (b.p[axis] - a.p[axis]);
+            CopyVert c;
+            for (int k = 0; k < 3; ++k) c.p[k] = a.p[k] + (b.p[k] - a.p[k]) * t;
+            for (int k = 0; k < 2; ++k) c.uv[k] = a.uv[k] + (b.uv[k] - a.uv[k]) * t;
+            c.p[axis] = bound;
+            out.push_back(c);
+        }
+    }
+    return out;
+}
+
+int LightDir(const std::vector<CopyVert>& poly) {
+    float n[3] = {0, 0, 0};
+    for (size_t i = 0; i < poly.size(); ++i) {
+        const float* a = poly[i].p;
+        const float* b = poly[(i + 1) % poly.size()].p;
+        n[0] += (a[1] - b[1]) * (a[2] + b[2]);
+        n[1] += (a[2] - b[2]) * (a[0] + b[0]);
+        n[2] += (a[0] - b[0]) * (a[1] + b[1]);
+    }
+    int axis = 0;
+    for (int k = 1; k < 3; ++k) if (std::fabs(n[k]) > std::fabs(n[axis])) axis = k;
+    if (std::fabs(n[axis]) < 1e-9f) return -1;
+    if (axis == 1) return n[1] > 0 ? 1 : 0;
+    if (axis == 2) return n[2] > 0 ? 3 : 2;
+    return n[0] > 0 ? 5 : 4;
+}
+
+ModelData CropAndMovePieces(const ModelData& src, const std::vector<CopyPiece>& pieces) {
+    ModelData out;
+    out.materials = src.materials;
+    for (const auto& face : src.faces) {
+        std::vector<CopyVert> poly;
+        for (int i = 0; i < 4; ++i) {
+            int vi = face.vertexIndices[i], ti = face.uvIndices[i];
+            if (vi < 0 || (size_t)(vi * 3 + 2) >= src.vertices.size()) continue;
+            CopyVert v{};
+            for (int k = 0; k < 3; ++k) v.p[k] = src.vertices[vi * 3 + k];
+            if (ti >= 0 && (size_t)(ti * 2 + 1) < src.uvCoordinates.size()) {
+                v.uv[0] = src.uvCoordinates[ti * 2];
+                v.uv[1] = src.uvCoordinates[ti * 2 + 1];
+            }
+            if (!poly.empty() && std::memcmp(poly.back().p, v.p, sizeof(v.p)) == 0) continue;
+            poly.push_back(v);
+        }
+        if (poly.size() > 1 && std::memcmp(poly.front().p, poly.back().p, sizeof(float) * 3) == 0) poly.pop_back();
+        if (poly.size() < 3) continue;
+        int dir = LightDir(poly);
+        for (const auto& piece : pieces) {
+            if (dir >= 0 && (dir == piece.skip[0] || dir == piece.skip[1])) continue;
+            std::vector<CopyVert> c = poly;
+            for (int axis = 0; axis < 3 && c.size() >= 3; ++axis) {
+                c = ClipAxis(c, axis, piece.mn[axis], true);
+                if (c.size() >= 3) c = ClipAxis(c, axis, piece.mx[axis], false);
+            }
+            if (c.size() < 3) continue;
+            // Drop zero-area slivers (face lying on a clip plane edge-on).
+            float area = 0;
+            for (size_t i = 1; i + 1 < c.size(); ++i) {
+                float u[3], w[3], x[3];
+                for (int k = 0; k < 3; ++k) { u[k] = c[i].p[k] - c[0].p[k]; w[k] = c[i + 1].p[k] - c[0].p[k]; }
+                x[0] = u[1] * w[2] - u[2] * w[1]; x[1] = u[2] * w[0] - u[0] * w[2]; x[2] = u[0] * w[1] - u[1] * w[0];
+                area += std::sqrt(x[0] * x[0] + x[1] * x[1] + x[2] * x[2]);
+            }
+            if (area < 1e-7f) continue;
+            for (auto& v : c) for (int k = 0; k < 3; ++k) v.p[k] += piece.off[k];
+            // Cull only faces that still sit on the block boundary they face.
+            FaceType cull = FaceType::DO_NOT_CULL;
+            if (dir >= 0) {
+                int axis = kDirVec[dir][0] ? 0 : kDirVec[dir][1] ? 1 : 2;
+                float edge = (kDirVec[dir][axis] > 0) ? 1.0f : 0.0f;
+                bool onEdge = true;
+                for (const auto& v : c) if (std::fabs(v.p[axis] - edge) > 1e-4f) { onEdge = false; break; }
+                if (onEdge) cull = kDirFace[dir];
+            }
+            int base = (int)(out.vertices.size() / 3);
+            int baseUv = (int)(out.uvCoordinates.size() / 2);
+            for (const auto& v : c) {
+                out.vertices.insert(out.vertices.end(), v.p, v.p + 3);
+                out.uvCoordinates.insert(out.uvCoordinates.end(), v.uv, v.uv + 2);
+            }
+            for (size_t i = 1; i + 1 < c.size(); i += 2) {
+                Face f = face;
+                f.faceDirection = cull;
+                size_t i2 = std::min(i + 2, c.size() - 1);
+                int idx[4] = {0, (int)i, (int)i + 1, (int)i2};
+                for (int k = 0; k < 4; ++k) {
+                    f.vertexIndices[k] = base + idx[k];
+                    f.uvIndices[k] = baseUv + idx[k];
+                }
+                out.faces.push_back(f);
+            }
+        }
+    }
+    return out;
+}
+
+// AABB.contract semantics: positive shrinks max, negative raises min.
+void Contract(CopyPiece& p, const float v[3]) {
+    for (int k = 0; k < 3; ++k) {
+        if (v[k] > 0) p.mx[k] -= v[k];
+        else if (v[k] < 0) p.mn[k] -= v[k];
+    }
+}
+
+std::vector<CopyPiece> CopycatPanelPieces(int facing) {
+    std::vector<CopyPiece> pieces;
+    const int* n = kDirVec[facing];
+    int opposite = facing ^ 1;
+    for (bool front : {true, false}) {
+        CopyPiece p{{0,0,0},{1,1,1},{0,0,0},{-1,-1}};
+        float contract = (16.0f - (front ? 1.0f : 2.0f)) / 16.0f;
+        float c[3] = {n[0] * contract, n[1] * contract, n[2] * contract};
+        Contract(p, c);
+        if (!front) for (int k = 0; k < 3; ++k) { p.mn[k] += n[k] * 14.0f / 16.0f; p.mx[k] += n[k] * 14.0f / 16.0f; }
+        for (int k = 0; k < 3; ++k) p.off[k] = front ? 0.0f : n[k] * -13.0f / 16.0f;
+        p.skip[0] = front ? facing : opposite;
+        pieces.push_back(p);
+    }
+    return pieces;
+}
+
+std::vector<CopyPiece> CopycatStepPieces(int facing, bool upperHalf) {
+    std::vector<CopyPiece> pieces;
+    const int* n = kDirVec[facing];
+    int opposite = facing ^ 1;
+    for (bool top : {true, false}) {
+        for (bool front : {true, false}) {
+            CopyPiece p{{0,0,0},{1,1,1},{0,0,0},{-1,-1}};
+            float c[3] = {-n[0] * 0.75f, 0.75f, -n[2] * 0.75f};
+            Contract(p, c);
+            float mv[3] = {0, 0, 0};
+            if (front) for (int k = 0; k < 3; ++k) mv[k] += n[k] * -0.75f;
+            if (top) mv[1] += 0.75f;
+            for (int k = 0; k < 3; ++k) { p.mn[k] += mv[k]; p.mx[k] += mv[k]; }
+            if (front) for (int k = 0; k < 3; ++k) p.off[k] += n[k] * 0.5f;
+            if (top != upperHalf) p.off[1] += upperHalf ? 0.5f : -0.5f;
+            p.skip[0] = front ? facing : opposite;
+            p.skip[1] = top ? 0 : 1; // top piece drops DOWN quads, bottom drops UP
+            pieces.push_back(p);
+        }
+    }
+    return pieces;
+}
+
+std::string StateValue(const std::string& blockName, const std::string& key) {
+    size_t b = blockName.find('[');
+    if (b == std::string::npos) return "";
+    std::string s = blockName.substr(b + 1);
+    size_t pos = 0;
+    while (pos < s.size()) {
+        size_t end = s.find_first_of(",]", pos);
+        if (end == std::string::npos) end = s.size();
+        std::string kv = s.substr(pos, end - pos);
+        size_t eq = kv.find_first_of("=:");
+        if (eq != std::string::npos && kv.substr(0, eq) == key) return kv.substr(eq + 1);
+        pos = end + 1;
+    }
+    return "";
+}
+
+// Material block id (with state) from BE "Material"; empty copycats use copycat_base.
+void CopycatMaterialId(const NbtTagPtr& beNbt, std::string& ns, std::string& localFull, std::string& local) {
+    ns = "create"; local = localFull = "copycat_base";
+    auto matTag = beNbt ? getChildByName(beNbt, "Material") : nullptr;
+    auto nameTag = (matTag && matTag->type == TagType::COMPOUND) ? getChildByName(matTag, "Name") : nullptr;
+    if (!nameTag || nameTag->type != TagType::STRING) return;
+    std::string full(nameTag->payload.begin(), nameTag->payload.end());
+    if (full.empty() || full == "minecraft:air") return;
+    size_t colon = full.find(':');
+    ns = colon == std::string::npos ? "minecraft" : full.substr(0, colon);
+    local = colon == std::string::npos ? full : full.substr(colon + 1);
+    localFull = local;
+    auto propsTag = getChildByName(matTag, "Properties");
+    if (propsTag && propsTag->type == TagType::COMPOUND && !propsTag->children.empty()) {
+        std::string props;
+        for (const auto& p : propsTag->children) {
+            if (!props.empty()) props += ",";
+            props += p->name + "=" + std::string(p->payload.begin(), p->payload.end());
+        }
+        localFull += "[" + props + "]";
+    }
+}
+} // namespace
+
+static std::mutex g_copycatWarmMu;
+static std::unordered_set<std::string> g_copycatWarm; // "ns:local"
+
+void ModCT_QueueCopycatWarm(const NbtTagPtr& beNbt) {
+    std::string ns, localFull, local;
+    CopycatMaterialId(beNbt, ns, localFull, local);
+    std::lock_guard<std::mutex> lk(g_copycatWarmMu);
+    g_copycatWarm.insert(ns + ":" + local);
+    g_copycatWarm.insert("create:copycat_base");
+}
+
+void ModCT_FlushCopycatWarm() {
+    std::unordered_set<std::string> pending;
+    {
+        std::lock_guard<std::mutex> lk(g_copycatWarmMu);
+        pending.swap(g_copycatWarm);
+    }
+    for (const auto& id : pending) {
+        size_t colon = id.find(':');
+        ProcessBlockstate(id.substr(0, colon), { id.substr(colon + 1) });
+    }
+}
+
+static bool ApplyCreateCopycatShape(ModelData& model, const NbtTagPtr& beNbt,
+                                    const std::string& blockName, int x, int y, int z) {
+    std::string base = blockName.substr(0, blockName.find('['));
+    bool isStep = base == "copycat_step", isPanel = base == "copycat_panel";
+    if (!isStep && !isPanel) return false;
+
+    std::string ns, localFull, local;
+    CopycatMaterialId(beNbt, ns, localFull, local);
+    ModelData material = GetRandomModelFromCache(ns, localFull);
+    if (material.faces.empty()) material = GetRandomModelFromCache(ns, local);
+    if (material.faces.empty()) {
+        CamoAppearance app = ResolveCreateMaterialTag(beNbt);
+        if (!app.ok) return false;
+        material = MakeCamoCuboid(0, 0, 0, 1, 1, 1, app, "@copycat~");
+    }
+    if (ns + ":" + local != "create:copycat_base") ModCT_SetPositionCamo(x, y, z, ns + ":" + local);
+
+    std::vector<CopyPiece> pieces;
+    if (isPanel) {
+        int facing = DirIndex(StateValue(blockName, "facing"));
+        pieces = CopycatPanelPieces(facing < 0 ? 1 : facing);
+    } else {
+        int facing = DirIndex(StateValue(blockName, "facing"));
+        if (facing < 2) facing = 3;
+        pieces = CopycatStepPieces(facing, StateValue(blockName, "half") == "top");
+    }
+    ModelData shaped = CropAndMovePieces(material, pieces);
+    if (shaped.faces.empty()) return false;
+    model = std::move(shaped);
+    return true;
+}
+
 bool ApplyCopycatCamoToBlockModel(ModelData& model, const NbtTagPtr& beNbt,
                                   const std::string& ns,
                                   const std::string& blockLocalName,
                                   int x, int y, int z) {
+    if (ns == "create" && ApplyCreateCopycatShape(model, beNbt, blockLocalName, x, y, z))
+        return true;
     CamoAppearance app = ResolveCreateMaterialTag(beNbt);
     if (!app.ok) return false;
 
