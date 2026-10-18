@@ -143,6 +143,9 @@
     <ClCompile Include="SpecialBlock.cpp">
       <Filter>源文件\Blocks</Filter>
     </ClCompile>
+    <ClCompile Include="CopperGolemStatue.cpp">
+      <Filter>源文件\Blocks</Filter>
+    </ClCompile>
     <ClCompile Include="Fluid.cpp">
       <Filter>源文件\Blocks</Filter>
     </ClCompile>
@@ -195,6 +198,9 @@
       <Filter>头文件\Blocks</Filter>
     </ClInclude>
     <ClInclude Include="SpecialBlock.h">
+      <Filter>头文件\Blocks</Filter>
+    </ClInclude>
+    <ClInclude Include="CopperGolemStatue.h">
       <Filter>头文件\Blocks</Filter>
     </ClInclude>
     <ClInclude Include="EntityBlock.h">

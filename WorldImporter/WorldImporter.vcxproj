@@ -162,6 +162,7 @@
     <ClCompile Include="MemoryMonitor.cpp" />
     <ClCompile Include="RegionCache.cpp" />
     <ClCompile Include="SpecialBlock.cpp" />
+    <ClCompile Include="CopperGolemStatue.cpp" />
     <ClCompile Include="fileutils.cpp" />
     <ClCompile Include="Fluid.cpp" />
     <ClCompile Include="GlobalCache.cpp" />
@@ -200,6 +201,7 @@
     <ClInclude Include="MemoryMonitor.h" />
     <ClInclude Include="RegionCache.h" />
     <ClInclude Include="SpecialBlock.h" />
+    <ClInclude Include="CopperGolemStatue.h" />
     <ClInclude Include="fileutils.h" />
     <ClInclude Include="GlobalCache.h" />
     <ClInclude Include="JarReader.h" />

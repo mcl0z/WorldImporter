@@ -1,4 +1,5 @@
 #include "SpecialBlock.h"
+#include "CopperGolemStatue.h"
 #include <vector>
 #include <algorithm>
 #include <sstream>
@@ -970,6 +971,10 @@ ModelData SpecialBlock::GenerateSpecialBlockModel(const string& blockName) {
     {
         ModelData sign = GenerateSignModel(blockName);
         if (!sign.faces.empty()) return sign;
+    // 铜傀儡雕像(方块实体渲染)
+    {
+        ModelData statue = GenerateCopperGolemStatueModel(blockName);
+        if (!statue.faces.empty()) return statue;
     }
 
     // 其他类型方块的生成逻辑
