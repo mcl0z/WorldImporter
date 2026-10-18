@@ -173,6 +173,7 @@
     <ClCompile Include="EntityModelExporter.cpp" />
     <ClCompile Include="ItemRender.cpp" />
     <ClCompile Include="MemoryMonitor.cpp" />
+    <ClCompile Include="CreatePostboxControls.cpp" />
     <ClCompile Include="RegionCache.cpp" />
     <ClCompile Include="SkullModel.cpp" />
     <ClCompile Include="SpecialBlock.cpp" />
@@ -234,6 +235,7 @@
     <ClInclude Include="EntityModelExporter.h" />
     <ClInclude Include="hashutils.h" />
     <ClInclude Include="MemoryMonitor.h" />
+    <ClInclude Include="CreatePostboxControls.h" />
     <ClInclude Include="RegionCache.h" />
     <ClInclude Include="EntityCube.h" />
     <ClInclude Include="SkullModel.h" />
