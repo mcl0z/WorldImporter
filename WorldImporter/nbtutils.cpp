@@ -770,8 +770,8 @@ static std::string TagString(const NbtTagPtr& tag) {
     return std::string(tag->payload.begin(), tag->payload.end());
 }
 
-// 把 26.3+ 简写/新字段的方块状态补全为 "ns:id[k:v,...]":
-// 缺省的属性用该方块的默认值填充(26.3 对默认状态只存裸 id)。
+// 把方块状态补全为 "ns:id[k:v,...]":
+// 缺省的属性用该方块的默认值填充(26.3 对默认状态只存裸 id;旧格式也可能省略)。
 static std::string WithDefaultProperties(const std::string& id, std::string props) {
     auto& table = DefaultBlockStates();
     auto it = table.find(id.find(':') == std::string::npos ? "minecraft:" + id : id);
@@ -825,8 +825,9 @@ std::string ParseBlockStateTag(const NbtTagPtr& blockTag) {
     auto nameTag = getChildByName(blockTag, "Name");
     if (nameTag && nameTag->type == TagType::STRING) {
         std::string blockName = TagString(nameTag);
-        std::string props = readProps(getChildByName(blockTag, "Properties"));
-        return props.empty() ? blockName : blockName + "[" + props + "]";
+        // 旧格式同样可能省略默认属性(如 Arnis 写裸 grass_block / snow),
+        // 游戏读取时会用默认值补全,这里保持一致。
+        return WithDefaultProperties(blockName, readProps(getChildByName(blockTag, "Properties")));
     }
     auto idTag = getChildByName(blockTag, "id");
     if (idTag && idTag->type == TagType::STRING) {

@@ -37,10 +37,15 @@ int main() {
             compound("properties", {str("level", "1")})})), "minecraft:water[level:1]");
         expect(ParseBlockStateTag(compound("", {str("id", "minecraft:grass_block"),
             compound("properties", {})})), "minecraft:grass_block[snowy:false]");
-        // legacy untouched
+        // legacy full state untouched
         expect(ParseBlockStateTag(compound("", {str("Name", "minecraft:oak_log"),
             compound("Properties", {str("axis", "x")})})), "minecraft:oak_log[axis:x]");
         expect(ParseBlockStateTag(compound("", {str("Name", "minecraft:stone")})), "minecraft:stone");
+        // legacy with omitted default props (Arnis): filled like the game does
+        expect(ParseBlockStateTag(compound("", {str("Name", "minecraft:grass_block")})), "minecraft:grass_block[snowy:false]");
+        expect(ParseBlockStateTag(compound("", {str("Name", "minecraft:grass_block"),
+            compound("Properties", {str("snowy", "true")})})), "minecraft:grass_block[snowy:true]");
+        expect(ParseBlockStateTag(compound("", {str("Name", "minecraft:snow")})), "minecraft:snow[layers:1]");
         // unknown modded id stays bare
         expect(ParseBlockStateTag(str("", "mymod:thing")), "mymod:thing");
 
