@@ -841,6 +841,28 @@ bool SpecialBlock::TryGenerateCreateBlockModel(const string& blockName,
         outModel = GenerateCreateGearbox(blockName, ParseBlockStates(blockName));
         return !outModel.vertices.empty();
     }
+    // piston-shaft-6.0.8: MechanicalPistonRenderer always draws create:shaft on
+    // DirectionalAxisKineticBlock.getRotationAxis, for retracted, extended and moving
+    // (the kinetic BE exists in every state). Reuse GenerateCreateShaftedBlock; the
+    // shaft is 90°-symmetric and that path does not apply the 22.5° position offset.
+    if (baseName == "create:mechanical_piston" ||
+        baseName == "create:sticky_mechanical_piston") {
+        auto states = ParseBlockStates(blockName);
+        const string facing = states.contains("facing") ? states.at("facing") : "north";
+        const bool alongFirst = states.contains("axis_along_first") &&
+            states.at("axis_along_first") == "true";
+        // facing X → alongFirst ? Y : Z; facing Y → X : Z; facing Z → X : Y.
+        string axis = "y";
+        if (facing == "east" || facing == "west")
+            axis = alongFirst ? "y" : "z";
+        else if (facing == "up" || facing == "down")
+            axis = alongFirst ? "x" : "z";
+        else
+            axis = alongFirst ? "x" : "y";
+        states["axis"] = axis;
+        outModel = GenerateCreateShaftedBlock("mechanical_piston", blockName, states);
+        return !outModel.vertices.empty();
+    }
     // Clutch / gearshift / sequenced_gearshift: SplitShaftRenderer places SHAFT_HALF on the axis.
     if (baseName == "create:clutch" || baseName == "create:gearshift" ||
         baseName == "create:sequenced_gearshift") {
