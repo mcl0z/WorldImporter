@@ -147,6 +147,7 @@
     <ClCompile Include="BbsModelSupport.cpp" />
     <ClCompile Include="block.cpp" />
     <ClCompile Include="blockstate.cpp" />
+    <ClCompile Include="BookModel.cpp" />
     <ClCompile Include="chunk.cpp" />
     <ClCompile Include="ChunkGenerator.cpp" />
     <ClCompile Include="BannerModel.cpp" />
@@ -195,6 +196,7 @@
     <ClInclude Include="BbsModelSupport.h" />
     <ClInclude Include="block.h" />
     <ClInclude Include="blockstate.h" />
+    <ClInclude Include="BookModel.h" />
     <ClInclude Include="chunk.h" />
     <ClInclude Include="CTM.h" />
     <ClInclude Include="CreateBoilerGauge.h" />
