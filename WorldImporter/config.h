@@ -74,6 +74,7 @@ struct Config {
     bool useBiomeColors; // 是否启用群系颜色叠加
     VariantSeedMode variantSeedMode; // 加权变体的挑选方式(默认 Game=与游戏一致且可复现)
     bool importEntities; // 导出区域内生物/实体元数据
+    bool exportEntityModels; // 导出区域内生物的几何模型(entities.obj/.mtl, 村民层走 overlay.json)
 
     bool exportFullModel;  // 是否完整导入
     bool downloadPlayerSkins; // 下载玩家头颅皮肤(默认开; 关掉且无本地缓存时保持 Steve)
@@ -126,6 +127,7 @@ struct Config {
         useBiomeColors(true),
         variantSeedMode(VariantSeedMode::Game),
         importEntities(false),
+        exportEntityModels(true),
 
         exportFullModel(false),
         downloadPlayerSkins(true),

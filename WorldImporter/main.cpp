@@ -4,6 +4,7 @@
 #include "block.h"         // 包含 block.h 以访问缓存及其互斥锁的 extern 声明
 #include "TaskMonitor.h"   // 包含任务监控器头文件
 #include "EntityExporter.h"
+#include "EntityModelExporter.h"
 
 Config config;  // 定义全局变量
 
@@ -30,6 +31,9 @@ int main() {
         if (config.status == 1) {
             // 如果是 1,导出区域内所有方块模型
             RegionModelExporter::ExportModels("region_models");
+        }
+        if (config.status == 1 && config.exportEntityModels) {
+            EntityModelExporter::Export("entities");
         }
         if (config.importEntities) {
             EntityExporter::Export("entities.json");

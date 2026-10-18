@@ -1,0 +1,7 @@
+# family  layer-id (ModelLayerLocation "model#layer")
+legacy minecraft:villager#main
+legacy minecraft:zombie_villager#main
+modern minecraft:villager#main
+modern minecraft:villager_baby#main
+modern minecraft:zombie_villager#main
+modern minecraft:zombie_villager_baby#main
