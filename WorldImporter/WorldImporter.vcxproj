@@ -154,6 +154,7 @@
     <ClCompile Include="ChunkLoader.cpp" />
     <ClCompile Include="CTM.cpp" />
     <ClCompile Include="CreateCT.cpp" />
+    <ClCompile Include="CreateTankFluid.cpp" />
     <ClCompile Include="config.cpp" />
     <ClCompile Include="init.cpp" />
     <ClCompile Include="locutil.cpp" />
@@ -191,6 +192,7 @@
     <ClInclude Include="chunk.h" />
     <ClInclude Include="CTM.h" />
     <ClInclude Include="CreateCT.h" />
+    <ClInclude Include="CreateTankFluid.h" />
     <ClInclude Include="ChunkGenerator.h" />
     <ClInclude Include="BannerModel.h" />
     <ClInclude Include="ChunkGroupAllocator.h" />

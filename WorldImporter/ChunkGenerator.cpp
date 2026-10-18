@@ -32,6 +32,7 @@
 #include "PlayerSkin.h"
 #include "ChunkLoader.h"
 #include "SpecialBlock.h"
+#include "CreateTankFluid.h"
 #include "CableMesher.h"
 #include "BbsModelSupport.h"
 using namespace std;
@@ -452,6 +453,9 @@ void ChunkGenerator::ProcessBlockForModel(ModelData& chunkModel, int x, int y, i
         ApplyCtmToBlockModel(blockModel, ns, blockName, x, y, z);
         useCtm = true;
     }
+
+    if (ns == "create" && blockEntityNbt)
+        AppendCreateTankFluid("create:" + blockName, blockEntityNbt, blockModel);
 
     // 解析 tint 并按需拆分材质（必须在 CTM 之后、面剔除之前）
     ApplyTintToBlockModel(blockModel, currentBlock.name);
