@@ -709,6 +709,30 @@ namespace {
         return result;
     }
 
+    // mechanical_pump: casing + MECHANICAL_PUMP_COG (PumpRenderer: partialFacing + kinetic rest angle).
+    // millstone: casing + MILLSTONE_COG (MillstoneRenderer: unrotated partial, axis Y).
+    ModelData GenerateCreateCogPartial(const string& id, const string& blockName,
+        const unordered_map<string, string>& states, int x, int y, int z) {
+        ModelData result = LoadBlockstateModel(blockName);
+        string axis = "y";
+        ModelData cog;
+        if (id == "mechanical_pump") {
+            const string facing = states.contains("facing") ? states.at("facing") : "north";
+            axis = facing == "east" || facing == "west" ? "x" : facing == "up" || facing == "down" ? "y" : "z";
+            cog = LoadCreateModel("block/mechanical_pump/cog", 290);
+            // CachedBuffers.rotateToFace: rotateY(horizontalAngle) after rotateX(verticalAngle)
+            float vertical = facing == "up" ? -90.0f : facing == "down" ? 90.0f : 0.0f;
+            float horizontal = facing == "west" ? -90.0f : facing == "north" ? 180.0f : facing == "east" ? -270.0f : 0.0f;
+            Rotate(cog, vertical, horizontal, 0.0f);
+        }
+        else cog = LoadCreateModel("block/millstone/inner", 291);
+        int parity = axis == "x" ? y + z : axis == "z" ? x + y : x + z;
+        if (parity % 2 == 0) RotateAroundAxis(cog, axis, 22.5f);
+        DisableCulling(cog);
+        Append(result, std::move(cog));
+        return result;
+    }
+
     // Apply ArmRenderer transform stack (resting NO_TARGET pose) to one arm partial.
     // Create: center → [ceiling Rx180] → base(Ty 4/16, Ry) → lower(Ty 2/16, Rx+135) →
     // upper(Tz -14/16, Rx-90) → head(Tz -15/16, Rx-45) → claw grips.
@@ -824,7 +848,10 @@ bool SpecialBlock::TryGenerateCreateBlockModel(const string& blockName,
     }
     if (baseName == "create:andesite_encased_shaft" ||
         baseName == "create:brass_encased_shaft" ||
-        baseName == "create:metal_girder_encased_shaft") {
+        baseName == "create:metal_girder_encased_shaft" ||
+        baseName == "create:encased_chain_drive" ||
+        baseName == "create:adjustable_chain_gearshift" ||
+        baseName == "create:rotation_speed_controller") {
         outModel = GenerateCreateShaftedBlock(baseName.substr(7), blockName, ParseBlockStates(blockName));
         return !outModel.vertices.empty();
     }
@@ -872,6 +899,10 @@ bool SpecialBlock::TryGenerateCreateBlockModel(const string& blockName,
     }
     if (baseName == "create:deployer") {
         outModel = GenerateCreateDeployer(blockName, ParseBlockStates(blockName));
+        return !outModel.vertices.empty();
+    }
+    if (baseName == "create:mechanical_pump" || baseName == "create:millstone") {
+        outModel = GenerateCreateCogPartial(baseName.substr(7), blockName, ParseBlockStates(blockName), x, y, z);
         return !outModel.vertices.empty();
     }
     if (baseName == "create:mechanical_arm") {
