@@ -641,8 +641,12 @@ nlohmann::json MergeModelJson(const nlohmann::json& parentModelJson, const nlohm
     if (!currentModelJson.contains("children") && parentModelJson.contains("children")) {
         mergedModelJson["children"] = parentModelJson["children"];
     }
-    if (!currentModelJson.contains("porting_lib:loader") && parentModelJson.contains("porting_lib:loader")) {
-        mergedModelJson["porting_lib:loader"] = parentModelJson["porting_lib:loader"];
+    // Custom loaders (forge:obj, forge:composite, porting_lib:obj) and their OBJ
+    // "model" / "flip_v" are inherited, e.g. red_valve_handle -> valve_handle.
+    for (const char* key : { "porting_lib:loader", "loader", "model", "flip_v" }) {
+        if (!currentModelJson.contains(key) && parentModelJson.contains(key)) {
+            mergedModelJson[key] = parentModelJson[key];
+        }
     }
 
     return mergedModelJson;
@@ -1636,6 +1640,10 @@ ModelData ProcessModelData(const nlohmann::json& modelJson, const std::string& b
 
         // 处理元素生成几何数据
         processElements(effective, data, textureKeyToMaterialIndex);
+    }
+    else if (SpecialBlock::IsObjModelJson(effective)) {
+        // forge:obj / porting_lib:obj 模型(如 Create 阀门手轮、斜坡/对角铁轨)
+        data = SpecialBlock::GenerateObjModel(effective);
     }
     else {
         // 当模型中没有 "elements" 字段时,生成实体方块模型
