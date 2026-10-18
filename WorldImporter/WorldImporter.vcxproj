@@ -161,6 +161,7 @@
     <ClCompile Include="EntityExporter.cpp" />
     <ClCompile Include="EntityModel.cpp" />
     <ClCompile Include="EntityModelExporter.cpp" />
+    <ClCompile Include="ItemRender.cpp" />
     <ClCompile Include="MemoryMonitor.cpp" />
     <ClCompile Include="RegionCache.cpp" />
     <ClCompile Include="SpecialBlock.cpp" />

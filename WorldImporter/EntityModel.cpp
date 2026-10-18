@@ -1,5 +1,6 @@
 #include "EntityModel.h"
 #include "EntityModelData.inc"
+#include <algorithm>
 #include <cmath>
 
 namespace {
@@ -78,6 +79,47 @@ void EntityModel::AddRot(const std::string& part, float x, float y, float z) {
     poses_[i][3] += x; poses_[i][4] += y; poses_[i][5] += z;
 }
 
+void EntityModel::SetPose(const std::string& part, float x, float y, float z) {
+    int i = Find(part); if (i < 0) return;
+    poses_[i][0] = x; poses_[i][1] = y; poses_[i][2] = z;
+}
+void EntityModel::HideAllBut(const std::vector<std::string>& keep) {
+    for (int i = 1; i < PartCount(); ++i) {
+        if (parents_[i] != 0) continue;  // 只处理 root 的直接子部件
+        bool k = false;
+        for (const auto& n : keep) if (names_[i] == n) k = true;
+        visible_[i] = k;
+    }
+}
+void EntityModel::CopyPoseFrom(const EntityModel& src, const std::vector<std::string>& parts, bool withPosition) {
+    for (const auto& n : parts) {
+        int a = Find(n), b = src.Find(n);
+        if (a < 0 || b < 0) continue;
+        const float* p = src.Pose(b);
+        for (int k = withPosition ? 0 : 3; k < 6; ++k) poses_[a][k] = p[k];
+    }
+}
+namespace {
+EntityAffine LocalPose(const std::array<float, 9>& p) {
+    // ModelPart.translateAndRotate: translate(xyz/16) * rotationZYX(z, y, x) * scale
+    EntityAffine m = EntityAffine::T(p[0] / 16.0, p[1] / 16.0, p[2] / 16.0) *
+                     EntityAffine::RZ(p[5]) * EntityAffine::RY(p[4]) * EntityAffine::RX(p[3]);
+    if (p[6] != 1.0f || p[7] != 1.0f || p[8] != 1.0f) m = m * EntityAffine::S(p[6], p[7], p[8]);
+    return m;
+}
+}
+EntityAffine EntityModel::PartTransform(int part, const EntityAffine& base,
+                                        const std::function<EntityAffine(int)>& pre) const {
+    if (part < 0 || part >= PartCount()) return base;
+    std::vector<int> chain;
+    for (int p = part; p >= 0; p = parents_[p]) chain.push_back(p);
+    std::reverse(chain.begin(), chain.end());   // root ... part
+    EntityAffine m = base;
+    if (chain.size() > 1 && pre) m = m * pre(chain[1]);
+    for (int p : chain) m = m * LocalPose(poses_[p]);
+    return m;
+}
+
 void EntityModel::Emit(ModelData& out, const EntityAffine& base,
                        const std::function<int(int)>& material,
                        const std::function<EntityAffine(int)>& pre) const {
@@ -86,12 +128,7 @@ void EntityModel::Emit(ModelData& out, const EntityAffine& base,
     std::vector<EntityAffine> local(n), world(n);
     std::vector<bool> shown(n);
     for (int i = 0; i < n; ++i) {
-        const auto& p = poses_[i];
-        // ModelPart.translateAndRotate: translate(xyz/16) * rotationZYX(z, y, x) * scale
-        EntityAffine m = EntityAffine::T(p[0] / 16.0, p[1] / 16.0, p[2] / 16.0) *
-                         EntityAffine::RZ(p[5]) * EntityAffine::RY(p[4]) * EntityAffine::RX(p[3]);
-        if (p[6] != 1.0f || p[7] != 1.0f || p[8] != 1.0f) m = m * EntityAffine::S(p[6], p[7], p[8]);
-        local[i] = m;
+        local[i] = LocalPose(poses_[i]);
     }
     // parts are stored in pre-order: parent index < child index
     for (int i = 0; i < n; ++i) {
