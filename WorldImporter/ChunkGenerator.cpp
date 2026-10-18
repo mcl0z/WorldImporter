@@ -45,6 +45,16 @@ using namespace std;
 using namespace std::chrono;
 
 namespace {
+    // 进入区块时记下它的 DataVersion，供加权变体挑选使用。
+    struct ChunkVariantVersionScope {
+        std::optional<int> saved;
+        ChunkVariantVersionScope(int chunkX, int chunkZ) : saved(g_activeChunkDataVersion) {
+            g_activeChunkDataVersion = GetChunkDataVersion(chunkX, chunkZ);
+        }
+        ~ChunkVariantVersionScope() { g_activeChunkDataVersion = saved; }
+        ChunkVariantVersionScope(const ChunkVariantVersionScope&) = delete;
+    };
+
     // Indexed by the frozen global palette; rebuilt between batches only.
     struct PreparedBlockName { std::string ns, local, full; };
     std::vector<PreparedBlockName> preparedBlockNames;
@@ -695,6 +705,8 @@ ModelData ChunkGenerator::GenerateChunkModel(int chunkX, int sectionY, int chunk
         }
         if (!hasEntity) return ModelData{};
     }
+    // 本区块的 DataVersion 决定加权变体走 1.21.5+ 还是旧算法。
+    ChunkVariantVersionScope variantVersion(chunkX, chunkZ);
     // Reuse the material index across thousands of block appends.
     ModelData chunkModel;
     std::unordered_map<std::string, int> materialLookup;
@@ -766,6 +778,7 @@ ModelData ChunkGenerator::GenerateChunkModel(int chunkX, int sectionY, int chunk
 }
 
 ModelData ChunkGenerator::GenerateLODChunkModel(int chunkX, int sectionY, int chunkZ, float lodSize) {
+    ChunkVariantVersionScope variantVersion(chunkX, chunkZ);
     ModelData chunkModel;
     std::unordered_map<std::string, int> materialLookup;
     int xStart = config.minX;
