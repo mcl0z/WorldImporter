@@ -146,6 +146,9 @@
     <ClCompile Include="EntityBlock.cpp">
       <Filter>源文件\Blocks</Filter>
     </ClCompile>
+    <ClCompile Include="CreateBellCrafter.cpp">
+      <Filter>源文件\Blocks</Filter>
+    </ClCompile>
     <ClCompile Include="BbsModelSupport.cpp">
       <Filter>源文件\Blocks</Filter>
     </ClCompile>
@@ -222,6 +225,7 @@
       <Filter>头文件\Blocks</Filter>
     </ClInclude>
     <ClInclude Include="PlayerSkin.h">
+    <ClInclude Include="CreateBellCrafter.h">
       <Filter>头文件\Blocks</Filter>
     </ClInclude>
     <ClInclude Include="SpecialBlock.h">
