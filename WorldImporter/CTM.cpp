@@ -368,7 +368,83 @@ void LoadAtlasDirPrefixes(const std::unordered_map<std::string, nlohmann::json>&
     }
 }
 
+#include <filesystem>  // OptiFineCtmPropertiesEnabled 扫 mods 目录
+
 // ========= InitializeCtmRules =========
+// 游戏只在有 OptiFine / Continuity 时才读 optifine/ctm/**/*.properties。
+// mods 里只有 ConnectedTexturesMod 时这些规则不生效, 连接纹理走 .png.mcmeta。
+// 只扫 config.modsPath 下的 *.jar; 空、"None"、不是目录则跳过。资源包不算。
+static bool OptiFineCtmPropertiesEnabled() {
+    std::string mode = config.optifineCtm;
+    for (char& c : mode)
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+
+    bool enabled = true;
+    std::string why = mode;
+    if (mode == "off") {
+        enabled = false;
+    } else if (mode != "on") {
+        why = "auto";
+        bool hasCtmMod = false;
+        bool hasReader = false;
+        const std::string& modsPath = config.modsPath;
+        if (!modsPath.empty() && modsPath != "None") {
+            try {
+                namespace fs = std::filesystem;
+                const std::wstring modsPathW = string_to_wstring(modsPath);
+                if (fs::exists(modsPathW) && fs::is_directory(modsPathW)) {
+                    for (const auto& entry : fs::directory_iterator(modsPathW)) {
+                        if (!entry.is_regular_file()) continue;
+                        const std::wstring modPath = entry.path().wstring();
+                        const std::string modStr = wstring_to_string(entry.path().filename().wstring());
+                        if (modStr.size() <= 4 || modStr.substr(modStr.size() - 4) != ".jar") continue;
+                        try {
+                            JarReader jar(modPath);
+                            if (!jar.open()) continue;
+                            std::string id;
+                            try { id = jar.getID(); }
+                            catch (...) { id.clear(); }
+                            for (char& c : id)
+                                c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+                            if (id == "ctm") hasCtmMod = true;
+                            if (id == "continuity" || id == "optifine" || id == "optifabric")
+                                hasReader = true;
+                            // mod id 不是读取器时再看类路径(OptiFine 本体常常没有 mods.toml)
+                            if (!hasReader) {
+                                for (const auto& name : jar.getFilesInSubDirectory("")) {
+                                    if (!hasCtmMod && name.rfind("team/chisel/ctm/", 0) == 0)
+                                        hasCtmMod = true;
+                                    if (name.rfind("me/pepperbell/continuity/", 0) == 0 ||
+                                        name.rfind("net/optifine/", 0) == 0) {
+                                        hasReader = true;
+                                        break;
+                                    }
+                                }
+                            }
+                        } catch (const std::exception&) {
+                            continue;
+                        }
+                        if (hasReader) break;
+                    }
+                }
+            } catch (const std::exception& e) {
+                // 目录读失败时不要误关, 保持原先会加载 .properties 的行为
+                hasCtmMod = false;
+                hasReader = false;
+                std::cerr << "[CTM] 扫描 mods 失败, OptiFine CTM 保持开启: " << e.what() << std::endl;
+            }
+        }
+        if (hasCtmMod && !hasReader) {
+            enabled = false;
+            why = "auto, ConnectedTexturesMod without Continuity/OptiFine";
+        }
+    }
+
+    std::cout << "[CTM] OptiFine CTM (.properties): " << (enabled ? "on" : "off")
+              << " (" << why << ")" << std::endl;
+    return enabled;
+}
+
 void InitializeCtmRules() {
     if (g_ctmInitialized.exchange(true)) return;
 
@@ -392,6 +468,9 @@ void InitializeCtmRules() {
             size_t pa = priorityOf(a.second), pb = priorityOf(b.second);
             return pa != pb ? pa < pb : a.first < b.first;
         });
+
+    // 关掉时不登记 OptiFine .properties; mcmeta / LDLib / ModCT 仍走后面的逻辑
+    if (!OptiFineCtmPropertiesEnabled()) sortedEntries.clear();
 
     for (const auto& entry : sortedEntries) {
         const std::string& indexKey = entry.first;   // "ctmproperties:ns:propsPath"

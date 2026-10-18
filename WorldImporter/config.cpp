@@ -5,6 +5,7 @@
 #include <sstream>
 #include <iostream>
 #include <algorithm>
+#include <cctype>
 #include "include/json.hpp"
 Config LoadConfig(const std::string& configFile) {
     Config config;
@@ -109,6 +110,14 @@ Config LoadConfig(const std::string& configFile) {
 
 
     config.selectedDimension = j.value("selectedDimension", config.selectedDimension);
+
+    // OptiFine 格式 CTM(.properties): 只接受 auto/on/off, 其它值当 auto
+    {
+        std::string mode = j.value("optifineCtm", config.optifineCtm);
+        for (char& c : mode)
+            c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        config.optifineCtm = (mode == "on" || mode == "off") ? mode : "auto";
+    }
 
     // 区块对齐处理
     if (config.useChunkPrecision) {
