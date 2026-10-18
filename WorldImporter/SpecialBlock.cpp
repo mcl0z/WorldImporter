@@ -920,6 +920,12 @@ ModelData SpecialBlock::GenerateSpecialBlockModel(const string& blockName) {
         }
     }
 
+    // 箱子(实体渲染方块, 方块模型没有 elements)
+    {
+        ModelData chest = GenerateChestModel(blockName);
+        if (!chest.faces.empty()) return chest;
+    }
+
     // 其他类型方块的生成逻辑
     ModelData defaultModel;
     return defaultModel;
@@ -1284,5 +1290,112 @@ ModelData SpecialBlock::GenerateBedModel(const string& blockName) {
         ApplyRotationToVertices(span<float>(model.vertices.data(), model.vertices.size()), 0, rotY);
     }
 
+    return model;
+}
+
+// 箱子: 按原版 ChestModel (1.15+ 贴图布局, 64x64) 生成 bottom/lid/lock 三个盒子。
+// 原版箱子渲染不翻转 y, 盒子坐标即方块像素坐标; 默认朝南, 按 facing 旋转。
+ModelData SpecialBlock::GenerateChestModel(const string& blockName) {
+    string ns = "minecraft", processed = blockName;
+    size_t colonPos = processed.find(':');
+    if (colonPos != string::npos) { ns = processed.substr(0, colonPos); processed = processed.substr(colonPos + 1); }
+    if (ns != "minecraft") return ModelData();
+    size_t bracketPos = processed.find('[');
+    string blockID = processed.substr(0, bracketPos);
+    string id = blockID;
+    if (id.rfind("waxed_", 0) == 0) id = id.substr(6);
+
+    string tex;
+    if (id == "chest") tex = "normal";
+    else if (id == "trapped_chest") tex = "trapped";
+    else if (id == "ender_chest") tex = "ender";
+    else if (id == "copper_chest") tex = "copper";
+    else if (id == "exposed_copper_chest") tex = "copper_exposed";
+    else if (id == "weathered_copper_chest") tex = "copper_weathered";
+    else if (id == "oxidized_copper_chest") tex = "copper_oxidized";
+    else return ModelData();
+
+    string facing = "north", type = "single";
+    if (bracketPos != string::npos) {
+        string statePart = processed.substr(bracketPos + 1, processed.size() - bracketPos - 2);
+        stringstream ss(statePart); string pair;
+        while (getline(ss, pair, ',')) {
+            size_t eq = pair.find('=');
+            if (eq == string::npos) continue;
+            string k = pair.substr(0, eq), v = pair.substr(eq + 1);
+            if (k == "facing") facing = v; else if (k == "type") type = v;
+        }
+    }
+    if (id == "ender_chest") type = "single";
+    if (type == "left" || type == "right") tex += "_" + type;
+
+    string texPath = "entity/chest/" + tex;
+    string textureFileDir = "textures";
+    if (!SaveTextureToFile(ns, texPath, textureFileDir)) return ModelData();
+    string savedTexturePath = "textures/" + ns + "/" + texPath + ".png";
+    RegisterTexture(ns, texPath, savedTexturePath);
+
+    ModelData model;
+    Material material;
+    material.name = ns + ":" + blockID;
+    material.texturePath = savedTexturePath;
+    material.tintIndex = -1;
+    model.materials = { material };
+
+    const float T = 64.0f;
+    // 原版 ModelPart.Cube: 顶点 0..7 与 6 个面的 UV 分配
+    auto addBox = [&](float x, float y, float z, float dx, float dy, float dz, float u, float v) {
+        float x2 = x + dx, y2 = y + dy, z2 = z + dz;
+        float P[8][3] = { {x,y,z},{x2,y,z},{x2,y2,z},{x,y2,z},{x,y,z2},{x2,y,z2},{x2,y2,z2},{x,y2,z2} };
+        float f4 = u + dz, f5 = u + dz + dx, f6 = u + dz + dx + dx, f10 = u + dz + dx + dz, f11 = u + dz + dx + dz + dx;
+        float f7 = v, f8 = v + dz, f9 = v + dz + dy;
+        // {四个顶点, u1, v1, u2, v2}; 原版 Polygon: v[0]->(u2,v1) v[1]->(u1,v1) v[2]->(u1,v2) v[3]->(u2,v2)
+        struct Q { int a, b, c, d; float u1, v1, u2, v2; };
+        Q qs[6] = {
+            {5, 1, 2, 6, f5, f8, f10, f9},  // east  (+x)
+            {0, 4, 7, 3, u,  f8, f4,  f9},  // west  (-x)
+            {5, 4, 0, 1, f4, f7, f5,  f8},  // down  (-y)
+            {2, 3, 7, 6, f5, f8, f6,  f7},  // up    (+y)
+            {1, 0, 3, 2, f4, f8, f5,  f9},  // north (-z)
+            {4, 5, 6, 7, f10, f8, f11, f9}, // south (+z)
+        };
+        for (const Q& q : qs) {
+            int vs = (int)model.vertices.size() / 3, us = (int)model.uvCoordinates.size() / 2;
+            int idx[4] = { q.a, q.b, q.c, q.d };
+            float uv[4][2] = { {q.u2, q.v1}, {q.u1, q.v1}, {q.u1, q.v2}, {q.u2, q.v2} };
+            // 原版顶点绕序在 y 向上的方块空间里是反的, 逆序写入使法线朝外
+            for (int i = 3; i >= 0; --i) {
+                for (int k = 0; k < 3; ++k) model.vertices.push_back(P[idx[i]][k] / 16.0f);
+                model.uvCoordinates.push_back(uv[i][0] / T);
+                model.uvCoordinates.push_back(1.0f - uv[i][1] / T);
+            }
+            Face face;
+            face.vertexIndices = { vs, vs + 1, vs + 2, vs + 3 };
+            face.uvIndices = { us, us + 1, us + 2, us + 3 };
+            face.materialIndex = 0;
+            face.faceDirection = DO_NOT_CULL;
+            model.faces.push_back(face);
+        }
+    };
+
+    if (type == "left") {
+        addBox(0, 0, 1, 15, 10, 14, 0, 19);
+        addBox(0, 9, 1, 15, 5, 14, 0, 0);
+        addBox(0, 7, 15, 1, 4, 1, 0, 0);
+    } else if (type == "right") {
+        addBox(1, 0, 1, 15, 10, 14, 0, 19);
+        addBox(1, 9, 1, 15, 5, 14, 0, 0);
+        addBox(15, 7, 15, 1, 4, 1, 0, 0);
+    } else {
+        addBox(1, 0, 1, 14, 10, 14, 0, 19);
+        addBox(1, 9, 1, 14, 5, 14, 0, 0);
+        addBox(7, 7, 15, 2, 4, 1, 0, 0);
+    }
+
+    int rotY = 0;  // 模型默认朝南
+    if (facing == "west") rotY = 90;
+    else if (facing == "north") rotY = 180;
+    else if (facing == "east") rotY = 270;
+    if (rotY != 0) ApplyRotationToVertices(span<float>(model.vertices.data(), model.vertices.size()), 0, rotY);
     return model;
 }
