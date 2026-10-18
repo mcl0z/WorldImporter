@@ -120,64 +120,6 @@ static bool FaceGeometryAxis(const ModelData& model, const Face& face, int& axis
     return true;
 }
 
-static bool IsFullCubeModel(const ModelData& model) {
-    constexpr float epsilon = 0.0001f;
-    const std::array<FaceType, 6> directions = {
-        FaceType::DOWN, FaceType::UP, FaceType::NORTH,
-        FaceType::SOUTH, FaceType::WEST, FaceType::EAST
-    };
-
-    for (FaceType direction : directions) {
-        bool foundBoundaryFace = false;
-        for (const Face& face : model.faces) {
-            if (face.faceDirection != direction) continue;
-
-            float minA = 1.0f, maxA = 0.0f;
-            float minB = 1.0f, maxB = 0.0f;
-            bool onBoundary = true;
-            for (int vertexIndex : face.vertexIndices) {
-                size_t offset = static_cast<size_t>(vertexIndex) * 3;
-                if (offset + 2 >= model.vertices.size()) {
-                    onBoundary = false;
-                    break;
-                }
-
-                float x = model.vertices[offset];
-                float y = model.vertices[offset + 1];
-                float z = model.vertices[offset + 2];
-                float plane, a, b, expected;
-                if (direction == FaceType::DOWN || direction == FaceType::UP) {
-                    plane = y; a = x; b = z;
-                    expected = direction == FaceType::DOWN ? 0.0f : 1.0f;
-                }
-                else if (direction == FaceType::NORTH || direction == FaceType::SOUTH) {
-                    plane = z; a = x; b = y;
-                    expected = direction == FaceType::NORTH ? 0.0f : 1.0f;
-                }
-                else {
-                    plane = x; a = z; b = y;
-                    expected = direction == FaceType::WEST ? 0.0f : 1.0f;
-                }
-
-                if (std::abs(plane - expected) > epsilon) {
-                    onBoundary = false;
-                    break;
-                }
-                minA = std::min(minA, a); maxA = std::max(maxA, a);
-                minB = std::min(minB, b); maxB = std::max(maxB, b);
-            }
-
-            if (onBoundary && minA <= epsilon && maxA >= 1.0f - epsilon &&
-                minB <= epsilon && maxB >= 1.0f - epsilon) {
-                foundBoundaryFace = true;
-                break;
-            }
-        }
-        if (!foundBoundaryFace) return false;
-    }
-    return true;
-}
-
 // --------------------------------------------------------------------------------
 // 原版流体渲染辅助（FluidRenderer）
 // --------------------------------------------------------------------------------
@@ -443,8 +385,6 @@ void ChunkGenerator::ProcessBlockForModel(ModelData& chunkModel, int x, int y, i
         ApplyFramedCamoToBlockModel(blockModel, blockEntityNbt, blockName, x, y, z);
     }
 
-    // Preserve Yuushya's block-state geometry for partial blocks, while full
-    // cubes still use their CTM rules like other blocks.
     // Create 的连接纹理是运行时 UV 重映射(自带 *_connected.png), 与 OptiFine CTM
     // 是两套系统, 单独走 CreateCT 路径。
     bool useCtm = false;
@@ -463,8 +403,8 @@ void ChunkGenerator::ProcessBlockForModel(ModelData& chunkModel, int x, int y, i
     if ((!specialHandled || createSpecialNeedsCT) && ns == "create") {
         useCtm = ApplyCreateCTToBlockModel(blockModel, ns, blockName, x, y, z);
     }
-    if (!useCtm && !specialHandled && HasCtmRules() && ns != "create" &&
-        (ns != "yuushya" || IsFullCubeModel(blockModel))) {
+    // OptiFine/Continuity 对任意形状的面都按贴图匹配 CTM(台阶、半砖等非满方块也一样)。
+    if (!useCtm && !specialHandled && HasCtmRules() && ns != "create") {
         ApplyCtmToBlockModel(blockModel, ns, blockName, x, y, z);
         useCtm = true;
     }
