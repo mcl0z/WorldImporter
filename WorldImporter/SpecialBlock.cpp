@@ -1464,7 +1464,8 @@ ModelData SpecialBlock::GenerateBlockEntityModel(const string& blockName) {
         else if (f == "east") rot = AffRX(kPi / 2) * AffRZ(-kPi / 2);
         Aff root = AffT(0.5f, 0.5f, 0.5f) * AffS(0.9995f, 0.9995f, 0.9995f) * rot * AffS(1, -1, -1) * AffT(0, -1, 0);
         AddEntityCube(model, mat, root * PartPose(0, 24, 0), 0, 0, -8, -16, -8, 16, 12, 16, 0, 64, 64);
-        AddEntityCube(model, mat, root * PartPose(0, 24, 0), 0, 28, -8, -8, -8, 16, 8, 16, 0, 64, 64);
+        // 底座与盖子侧面共面, 盖子侧面下沿是镂空的; 底座略微内缩避免 z-fighting
+        AddEntityCube(model, mat, root * PartPose(0, 24, 0), 0, 28, -8, -8, -8, 16, 8, 16, -0.02f, 64, 64);
         return model;
     }
     return ModelData();
