@@ -69,6 +69,7 @@ static const std::array<std::tuple<int, int, int>, 6> kSectionNeighborOffsets = 
 // --------------------------------------------------------------------------------
 void UpdateSkyLightNeighborFlags() {
     std::unordered_map<std::tuple<int, int, int>, bool, triple_hash> needsUpdate;
+    bool anySkyLight = false;
 
     {
         std::shared_lock<std::shared_mutex> readLock(sectionCacheMutex);
@@ -80,7 +81,25 @@ void UpdateSkyLightNeighborFlags() {
             if (skyLightData.size() == 1 && skyLightData[0] == -1) {
                 needsUpdate[key] = true;
             }
+            else if (skyLightData.size() == 4096) {
+                anySkyLight = true;
+            }
         }
+    }
+
+    // 下界/末地等没有天空光照的维度从不写 SkyLight，按洞穴剔除会把整个维度剔空：
+    // 一个有天空光照的子区块都没有时，全部标记为保留(-2)。
+    if (!anySkyLight) {
+        static bool warned = false;
+        if (!needsUpdate.empty() && !warned) {
+            std::cerr << "cullCave: no SkyLight in loaded sections (nether/end?), cave culling skipped" << std::endl;
+            warned = true;
+        }
+        std::unique_lock<std::shared_mutex> writeLock(sectionCacheMutex);
+        for (auto& entry : needsUpdate) {
+            sectionCache[entry.first].skyLight.assign(1, -2);
+        }
+        return;
     }
 
     // 检查邻居,并更新skyLightData为单元素-2

@@ -340,6 +340,14 @@ ModelData GenerateFluidModel(const FluidModelParams& params, const std::string& 
     return model;
 }
 
+// 流体面的 tintIndex 跟随材质(水 = 2), 否则 ApplyTintToBlockModel 看不到着色面, 水不会带群系色
+static void SyncFluidFaceTint(ModelData& model) {
+    for (auto& face : model.faces) {
+        if (face.materialIndex >= 0 && face.materialIndex < static_cast<int>(model.materials.size()))
+            face.tintIndex = model.materials[face.materialIndex].tintIndex;
+    }
+}
+
 void AssignFluidMaterials(ModelData& model, const std::string& fluidId) {
     // Definitions and texture metadata are immutable after initialization.
     // Cache the two material templates per worker, not per water voxel.
@@ -347,6 +355,7 @@ void AssignFluidMaterials(ModelData& model, const std::string& fluidId) {
     auto cached = templates.find(fluidId);
     if (cached != templates.end()) {
         model.materials = cached->second;
+        SyncFluidFaceTint(model);
         return;
     }
     if (fluidId.find("minecraft:water") != string::npos) {
@@ -436,4 +445,5 @@ void AssignFluidMaterials(ModelData& model, const std::string& fluidId) {
 
     model.materials = { stillFluid, flowFluid };
     templates.emplace(fluidId, model.materials);
+    SyncFluidFaceTint(model);
 }
