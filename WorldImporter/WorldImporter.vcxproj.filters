@@ -92,6 +92,9 @@
     <ClCompile Include="main.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
+    <ClCompile Include="CreateFilterItems.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
     <ClCompile Include="locutil.cpp">
       <Filter>源文件\Utils</Filter>
     </ClCompile>
@@ -329,6 +332,8 @@
     </ClInclude>
     <ClInclude Include="RenderLayer.h">
       <Filter>头文件\Exporter</Filter>
+    <ClInclude Include="CreateFilterItems.h">
+      <Filter>头文件</Filter>
     </ClInclude>
     <ClInclude Include="ObjExporter.h">
       <Filter>头文件\Exporter</Filter>

@@ -38,6 +38,7 @@
 #include <atomic>
 #include "ModelDeduplicator.h"
 #include "CreateDepotItems.h"
+#include "CreateFilterItems.h"
 #include "ChunkGroupAllocator.h"
 #include <utility>
 #include "hashutils.h"
@@ -459,6 +460,10 @@ void ChunkGenerator::ProcessBlockForModel(ModelData& chunkModel, int x, int y, i
     // Create depot / ejector / belt: held and transported items appended to the block model.
     if (ns == "create" && blockEntityNbt)
         AppendCreateDepotItems("create:" + blockName, blockEntityNbt, blockModel);
+
+    // Create filter-slot items (FilteringRenderer.renderOnBlockEntity).
+    if (ns == "create" && blockEntityNbt)
+        AppendCreateFilterItems("create:" + blockName, blockEntityNbt, blockModel);
 
     // Copycats / Create copycat: material camo may rebuild empty air placeholders.
     if (blockEntityNbt && (ns == "copycats" ||
