@@ -373,6 +373,9 @@ size_t Export(const std::string& name) {
     });
     if (ctx.objects.empty()) {
         std::cout << "[EntityModels] no supported entities (" << chunks << " entity chunks)" << std::endl;
+        std::error_code ec;  // 不留上次导出的实体文件
+        fs::remove(Utf8Path(getExecutableDir() + name + ".obj"), ec);
+        fs::remove(Utf8Path(getExecutableDir() + name + ".mtl"), ec);
         return 0;
     }
     WriteFiles(ctx, name);
