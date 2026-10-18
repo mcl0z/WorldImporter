@@ -594,9 +594,11 @@ bool BuildTrident(const ItemStackInfo& item, ItemDisplay display, bool leftHand,
     const bool modern = HasItemDefinitions();
     EntityModel model(modern ? "modern" : "legacy", "minecraft:trident#main");
     if (!model.Valid()) return false;
-    const std::string rel = RelativeTexture("entity/trident");
-    if (ExportTextureFull("entity/trident").empty()) return false;
-    const int mat = MaterialIndex(out, "minecraft:entity/trident", rel);
+    // TridentModel.TEXTURE: 26.x entity/trident/trident, 1.21 entity/trident
+    const std::string texPath = modern ? "entity/trident/trident" : "entity/trident";
+    const std::string rel = RelativeTexture(texPath);
+    if (ExportTextureFull(texPath).empty()) return false;
+    const int mat = MaterialIndex(out, "minecraft:" + texPath, rel);
     EntityAffine world = DisplayTransform(r, display, leftHand, scaleY) * EntityAffine::S(1.0, -1.0, -1.0);
     model.Emit(out, world, [mat](int) { return mat; });
     return !out.faces.empty();

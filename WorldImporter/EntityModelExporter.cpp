@@ -912,6 +912,15 @@ int DyeRgb(int id) {
         0x9D9D97, 0x169C9C, 0x8932B8, 0x3C44AA, 0x835432, 0x5E7C16, 0xB02E26, 0x1D1D21 };
     return k[std::clamp(id, 0, 15)];
 }
+// 羊毛色 (1.21 Sheep.createSheepColor / 26.x ColorLerper.Type.SHEEP): 白是常量 0xE6E6E6, 其余 floor(textureDiffuse * 0.75)。
+// 非白的 textureDiffuse 与上面这张表一致。
+int SheepWoolRgb(int id) {
+    id = std::clamp(id, 0, 15);
+    if (id == 0) return 0xE6E6E6;
+    const int c = DyeRgb(id);
+    auto ch = [](int v) { return (v * 3) / 4; };  // floor(v * 0.75), v ∈ [0,255]
+    return (ch((c >> 16) & 255) << 16) | (ch((c >> 8) & 255) << 8) | ch(c & 255);
+}
 
 // Wolf.getTailAngle: 愤怒 1.5393804, 驯服 (0.55 - 0.4 * 损失血量比) * π, 野生 π/5
 float WolfTailAngle(const NbtTagPtr& e, bool tame, bool angry) {
@@ -1168,23 +1177,51 @@ void RenderMooshroom(Ctx& ctx, const NbtTagPtr& e) {
     OutObject& obj = ctx.NewObject("minecraft:mooshroom");
     EmitTextured(ctx, obj, model, base, pre, "minecraft:" + tex, ctx.Texture("minecraft", tex));
     // MushroomCowMushroomLayer: 成年, 实体 pose 上两朵背菇 + head.translateAndRotate 上的头菇。
-    // ItemDisplay::None 自带 T(-0.5), 即原版 renderSingleBlock 前的 translate(-0.5)。
+    // 1.21 与 26.x 都画植株 RED_MUSHROOM / BROWN_MUSHROOM (block/red_mushroom 十字), 不是蘑菇方块。
+    // 方块模型原点在角上; 末尾 T(-0.5) 即 renderSingleBlock 前的 translate(-0.5)。
     if (baby) return;
     using A = EntityAffine;
-    ItemStackInfo block;
-    block.id = (color == "brown") ? "minecraft:brown_mushroom_block" : "minecraft:red_mushroom_block";
-    block.count = 1;
+    const std::string shroom = (color == "brown") ? "block/brown_mushroom" : "block/red_mushroom";
     const double d = kPi / 180.0;
     const A flip = A::S(-1.0, -1.0, 1.0);
-    AppendItem(ctx, obj, block, ItemDisplay::None, false,
-               base * A::T(0.2, -0.35, 0.5) * A::RY(-48.0 * d) * flip);
-    AppendItem(ctx, obj, block, ItemDisplay::None, false,
-               base * A::T(0.2, -0.35, 0.5) * A::RY(42.0 * d) * A::T(0.1, 0.0, -0.6) * A::RY(-48.0 * d) * flip);
+    const A center = A::T(-0.5, -0.5, -0.5);
+    auto put = [&](const A& m) {
+        ModelData mesh = ProcessModelJson("minecraft", shroom, 0, 0, false);
+        if (mesh.faces.empty()) return;
+        ItemRender::Transform(mesh, m);
+        AppendMesh(ctx, obj, mesh);
+    };
+    put(base * A::T(0.2, -0.35, 0.5) * A::RY(-48.0 * d) * flip * center);
+    put(base * A::T(0.2, -0.35, 0.5) * A::RY(42.0 * d) * A::T(0.1, 0.0, -0.6) * A::RY(-48.0 * d) * flip * center);
     int head = model.Find("head");
-    if (head >= 0) {
-        AppendItem(ctx, obj, block, ItemDisplay::None, false,
-                   model.PartTransform(head, base) * A::T(0.0, -0.7, -0.2) * A::RY(-78.0 * d) * flip);
-    }
+    if (head >= 0)
+        put(model.PartTransform(head, base) * A::T(0.0, -0.7, -0.2) * A::RY(-78.0 * d) * flip * center);
+}
+
+// 纯文本 / "name" / {"text":"name"} (无 extra)。兔子 Toast 与羊 jeb_ 共用。
+bool PlainCustomName(const std::string& raw, const char* name) {
+    if (raw.empty() || !name || !*name) return false;
+    if (raw == name) return true;
+    const size_t n = std::char_traits<char>::length(name);
+    if (raw.size() == n + 2 && raw.front() == '"' && raw.back() == '"' && raw.compare(1, n, name) == 0) return true;
+    const auto k = raw.find("\"text\"");
+    if (k == std::string::npos) return false;
+    const auto c = raw.find(':', k);
+    if (c == std::string::npos) return false;
+    const auto q1 = raw.find('"', c + 1);
+    if (q1 == std::string::npos) return false;
+    const auto q2 = raw.find('"', q1 + 1);
+    if (q2 == std::string::npos) return false;
+    return raw.compare(q1 + 1, q2 - q1 - 1, name) == 0 && raw.find("\"extra\"") == std::string::npos;
+}
+
+void EmitDyedLayer(Ctx& ctx, OutObject& obj, EntityModel& model, const EntityAffine& base, const TopPre& pre,
+                   const std::string& texPath, uint32_t rgb) {
+    std::string tex = ctx.Texture("minecraft", texPath);
+    if (tex.empty()) return;
+    TintResult t; t.kind = TintKind::Fixed; t.color = rgb & 0xFFFFFFu;
+    int mat = ctx.Material("minecraft:" + texPath + TintSuffix(t), ctx.TintedTexture(tex, t.color));
+    model.Emit(obj.mesh, base, [mat](int) { return mat; }, pre);
 }
 
 void RenderSheep(Ctx& ctx, const NbtTagPtr& e) {
@@ -1192,6 +1229,10 @@ void RenderSheep(Ctx& ctx, const NbtTagPtr& e) {
     bool baby = IsBaby(e);
     bool sheared = NumOr(e, "Sheared", 0) != 0;
     int color = static_cast<int>(NumOr(e, "Color", NumOr(e, "color", 0)));
+    // 26.x SheepRenderer: 幼体身体是 sheep_baby.png
+    std::string bodyTex = "entity/sheep/sheep";
+    if (ctx.modern && baby && TextureExists("minecraft", "entity/sheep/sheep_baby"))
+        bodyTex = "entity/sheep/sheep_baby";
     std::string lid = std::string("minecraft:sheep") + (ctx.modern && baby ? "_baby" : "") + "#main";
     EntityModel model(fam, lid);
     if (!model.Valid()) return;
@@ -1200,21 +1241,34 @@ void RenderSheep(Ctx& ctx, const NbtTagPtr& e) {
     EntityAffine base = LivingBase(pl, 1.3 * (baby ? 0.5 : 1.0), 1.0);
     TopPre pre = (!ctx.modern && baby) ? LegacyAgeablePre(kAgeSheep) : nullptr;
     OutObject& obj = ctx.NewObject("minecraft:sheep");
-    EmitTextured(ctx, obj, model, base, pre, "minecraft:entity/sheep/sheep",
-                 ctx.Texture("minecraft", "entity/sheep/sheep"));
+    EmitTextured(ctx, obj, model, base, pre, "minecraft:" + bodyTex, ctx.Texture("minecraft", bodyTex));
+    // jeb_: 26.x getWoolColor = ColorLerper.getLerpedColor(SHEEP, ageInTicks)。
+    // 导出没有渲染 tick, 取 ageInTicks = 0: floor(0)/25 = 0, 插值系数 0, 即 DyeColor[0]=白 的 0xE6E6E6。
+    // 1.21 的 jeb_ 还加了实体 id, 静态导出不稳定, 仍用羊毛自身颜色。
+    const bool jeb = ctx.modern && PlainCustomName(Str(e, "CustomName"), "jeb_");
+    const int rgb = jeb ? 0xE6E6E6 : SheepWoolRgb(color);
+    const bool white = std::clamp(color, 0, 15) == 0;
+    static const char* kPose[] = { "head", "body", "right_front_leg", "left_front_leg", "right_hind_leg", "left_hind_leg" };
+    auto copyFur = [&](EntityModel& fur) {
+        fur.CopyPoseFrom(model, { kPose[0], kPose[1], kPose[2], kPose[3], kPose[4], kPose[5] }, true);
+    };
+    // SheepWoolUndercoatLayer: 未隐形、非幼体、且 (jeb_ 或颜色不是白)。剪过毛也画, 画在羊毛下面。
+    if (ctx.modern && !baby && NumOr(e, "Invisible", 0) == 0 && (jeb || !white)) {
+        EntityModel coat(fam, "minecraft:sheep#wool_undercoat");
+        if (coat.Valid()) {
+            copyFur(coat);
+            EmitDyedLayer(ctx, obj, coat, base, pre, "entity/sheep/sheep_wool_undercoat", static_cast<uint32_t>(rgb));
+        }
+    }
     if (!sheared) {
         std::string furId = std::string("minecraft:sheep") + (ctx.modern && baby ? "_baby" : "") +
                             (ctx.modern ? "#wool" : "#fur");
+        std::string woolTex = ctx.modern ? (baby ? "entity/sheep/sheep_wool_baby" : "entity/sheep/sheep_wool")
+                                         : "entity/sheep/sheep_fur";
         EntityModel fur(fam, furId);
         if (fur.Valid()) {
-            fur.CopyPoseFrom(model, { "head", "body", "right_front_leg", "left_front_leg", "right_hind_leg", "left_hind_leg" }, true);
-            std::string tex = ctx.Texture("minecraft", "entity/sheep/sheep_fur");
-            if (!tex.empty()) {
-                TintResult t; t.kind = TintKind::Fixed; t.color = static_cast<uint32_t>(DyeRgb(color));
-                std::string matName = "minecraft:entity/sheep/sheep_fur" + TintSuffix(t);
-                int mat = ctx.Material(matName, ctx.TintedTexture(tex, t.color));
-                fur.Emit(obj.mesh, base, [mat](int) { return mat; }, pre);
-            }
+            copyFur(fur);
+            EmitDyedLayer(ctx, obj, fur, base, pre, woolTex, static_cast<uint32_t>(rgb));
         }
     }
 }
@@ -1282,13 +1336,22 @@ void RenderCat(Ctx& ctx, const NbtTagPtr& e) {
     }
     auto [ns, v] = SplitId(variant);
     if (v.rfind("cat/", 0) == 0) v = v.substr(4);
+    // 1.21: entity/cat/<variant>. 26.x cat_variant.asset_id: entity/cat/cat_<variant>[_baby]。
     std::string texPath = "entity/cat/" + v;
+    if (ctx.modern) {
+        const std::string prefixed = "entity/cat/cat_" + v + (baby ? "_baby" : "");
+        if (TextureExists("minecraft", prefixed)) texPath = prefixed;
+        else if (baby && TextureExists("minecraft", texPath + "_baby")) texPath += "_baby";
+    }
     std::string baseTex = ctx.Texture(ns, texPath);
     bool tame = getChildByName(e, "Owner") || getChildByName(e, "OwnerUUID");
+    std::string collarPath = "entity/cat/cat_collar";
+    if (ctx.modern && baby && TextureExists("minecraft", "entity/cat/cat_collar_baby"))
+        collarPath = "entity/cat/cat_collar_baby";
     if (tame) {
         int collar = static_cast<int>(NumOr(e, "CollarColor", 14));
         int mat = CollaredMaterial(ctx, "minecraft:" + texPath, baseTex,
-                                   "minecraft", "entity/cat/cat_collar", DyeRgb(collar));
+                                   "minecraft", collarPath, DyeRgb(collar));
         if (mat >= 0) model.Emit(obj.mesh, base, [mat](int) { return mat; }, pre);
     } else {
         EmitTextured(ctx, obj, model, base, pre, "minecraft:" + texPath, baseTex);
@@ -2154,20 +2217,7 @@ TopPre RabbitPre(bool baby) {
     };
 }
 
-bool NameIsToast(const std::string& raw) {
-    if (raw.empty()) return false;
-    if (raw == "Toast") return true;
-    if (raw.size() >= 2 && raw.front() == '"' && raw.back() == '"' && raw.substr(1, raw.size() - 2) == "Toast") return true;
-    const auto k = raw.find("\"text\"");
-    if (k == std::string::npos) return false;
-    const auto c = raw.find(':', k);
-    if (c == std::string::npos) return false;
-    const auto q1 = raw.find('"', c + 1);
-    if (q1 == std::string::npos) return false;
-    const auto q2 = raw.find('"', q1 + 1);
-    if (q2 == std::string::npos) return false;
-    return raw.substr(q1 + 1, q2 - q1 - 1) == "Toast" && raw.find("\"extra\"") == std::string::npos;
-}
+bool NameIsToast(const std::string& raw) { return PlainCustomName(raw, "Toast"); }
 
 std::string RabbitTextureName(const NbtTagPtr& e) {
     if (NameIsToast(Str(e, "CustomName"))) return "toast";
@@ -2393,9 +2443,11 @@ void RenderArmorStand(Ctx& ctx, const NbtTagPtr& e) {
     }
     OutObject& obj = ctx.NewObject("minecraft:armor_stand");
     if (NumOr(e, "Invisible", 0) == 0) {
-        std::string tex = ctx.Texture("minecraft", "entity/armorstand/wood");
+        // ArmorStandRenderer.DEFAULT_SKIN_LOCATION: 26.x armorstand.png, 1.21 wood.png
+        const std::string skin = ctx.modern ? "entity/armorstand/armorstand" : "entity/armorstand/wood";
+        std::string tex = ctx.Texture("minecraft", skin);
         if (!tex.empty()) {
-            int mat = ctx.Material("minecraft:entity/armorstand/wood", tex);
+            int mat = ctx.Material("minecraft:" + skin, tex);
             model.Emit(obj.mesh, base, [mat](int) { return mat; }, pre);
         }
     }
