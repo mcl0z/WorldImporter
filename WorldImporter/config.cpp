@@ -52,6 +52,8 @@ Config LoadConfig(const std::string& configFile) {
     config.overlayLayerStep = std::clamp(j.value("overlayLayerStep", config.overlayLayerStep), 0.0002f, 0.05f);
     // matchTiles 以 '_' 结尾时是否再做前缀族匹配(关掉只保留剥掉下划线后的精确匹配)
     config.ctmPrefixMatchTiles = j.value("ctmPrefixMatchTiles", config.ctmPrefixMatchTiles);
+    // ConnectedTexturesMod 的 .png.mcmeta: auto 仅在 mods 里有 ctm 模组时启用, on 始终, off 从不
+    config.mcmetaCtm = j.value("mcmetaCtm", config.mcmetaCtm);
     // 模组方块是否复用同一张贴图已有的材质(原版方块之间始终不合并)
     config.mergeModTextures = j.value("mergeModTextures", config.mergeModTextures);
     config.isLODAutoCenter = j.value("isLODAutoCenter", config.isLODAutoCenter);

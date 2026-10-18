@@ -34,6 +34,7 @@
 #include <fstream>
 #include <locale>
 #include <algorithm>
+#include <cctype>
 
 #ifdef _WIN32
 extern "C" {
@@ -106,6 +107,9 @@ struct TaskResult {
 
 //========== 辅助函数 ==========
 
+// mods 目录里是否扫到 ConnectedTexturesMod。只在枚举 jar 时写入, 资源包不参与。
+static bool g_connectedTexturesModLoaded = false;
+
 /**
  * @brief 从JAR文件中提取模组ID
  * 
@@ -129,12 +133,37 @@ std::string GetModIdFromJar(std::wstring jarPath){
             return modId;
         }
         modId = jarReader.getID();
+        // ConnectedTexturesMod: mod id 为 ctm, 或 jar 内有 team/chisel/ctm/ 类。
+        // 本函数只给 mods 目录的 jar 用, 资源包不会因此打开 ctm mcmeta。
+        if (modId == "ctm" || !jarReader.getFilesInSubDirectory("team/chisel/ctm/").empty())
+            g_connectedTexturesModLoaded = true;
     }
     catch (const std::exception& e)
     {
         std::cerr << "Error occurred during mod ID extraction: " << e.what() << std::endl;
     }
     return modId;
+}
+
+// 枚举完 mods 后只算一次: auto 看有没有 ctm 模组, on/off 忽略检测结果。
+static void ResolveMcmetaCtm() {
+    std::string mode = config.mcmetaCtm;
+    for (char& ch : mode)
+        ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+    std::string detail;
+    if (mode == "on") {
+        config.mcmetaCtmEnabled = true;
+        detail = "on";
+    } else if (mode == "off") {
+        config.mcmetaCtmEnabled = false;
+        detail = "off";
+    } else {
+        config.mcmetaCtmEnabled = g_connectedTexturesModLoaded;
+        detail = config.mcmetaCtmEnabled
+            ? "on (auto, ctm mod found)"
+            : "off (auto, ctm mod not found)";
+    }
+    std::cout << "[CTM] mcmeta CTM (ConnectedTexturesMod): " << detail << std::endl;
 }
 
 /**
@@ -228,7 +257,10 @@ void InitializeAllCaches() {
             throw std::runtime_error(std::string("Config jarPath does not exist: ") + config.jarPath);
         }
 
+        g_connectedTexturesModLoaded = false;
         prepareQueue();
+        // jar 已枚举完(含 mods 的 mod id); 资源包不参与 ctm 检测
+        ResolveMcmetaCtm();
 
         // 将 jarQueue 中的 jar 路径复制到 vector 中,保证顺序与 GlobalCache::jarOrder 保持一致
         std::vector<std::wstring> jarPaths;
