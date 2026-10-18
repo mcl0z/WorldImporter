@@ -249,8 +249,48 @@ namespace {
         return GetRandomModelFromCache("create", localName);
     }
 
+    // WaterWheelRenderer swaps the oak template sprites for the BE "Material" planks
+    // (default spruce) and the matching log (x_log / x_stem / x_block).
+    void ApplyWaterWheelMaterial(ModelData& model, const NbtTagPtr& nbt) {
+        string planks = "minecraft:spruce_planks";
+        NbtTagPtr material = nbt && nbt->type == TagType::COMPOUND ? getChildByName(nbt, "Material") : nullptr;
+        if (material && material->type == TagType::COMPOUND) {
+            string name = NbtString(material, "Name");
+            if (!name.empty()) planks = name;
+        }
+        size_t colon = planks.find(':');
+        string ns = colon == string::npos ? "minecraft" : planks.substr(0, colon);
+        string path = colon == string::npos ? planks : planks.substr(colon + 1);
+        string wood;
+        if (path.size() > 7 && path.ends_with("_planks"))
+            wood = (path.starts_with("archwood") ? "blue_" : "") + path.substr(0, path.size() - 7);
+        else if (path.find("wood/planks/") != string::npos) wood = path.substr(path.find("wood/planks/") + 12);
+        if (wood.empty() || (ns == "minecraft" && wood == "oak")) return;
+
+        auto swap = [&](const string& from, const string& texNs, const string& texPath) {
+            string root = "textures";
+            if (!SaveTextureToFile(texNs, texPath, root)) return false;
+            string saved = "textures/" + texNs + "/" + texPath + ".png";
+            RegisterTexture(texNs, texPath, saved);
+            for (auto& m : model.materials) {
+                if (m.texturePath != "textures/minecraft/" + from + ".png") continue;
+                m.name = texNs + ":" + texPath;
+                m.texturePath = saved;
+                m.type = DetectMaterialType(texNs, texPath, m.aspectRatio);
+            }
+            return true;
+        };
+        swap("block/oak_planks", ns, "block/" + path);
+        for (const string& log : { wood + "_log", wood + "_stem", wood + "_block", "wood/log/" + wood }) {
+            if (swap("block/oak_log", ns, "block/" + log)) {
+                swap("block/oak_log_top", ns, "block/" + log + "_top");
+                break;
+            }
+        }
+    }
+
     ModelData GenerateCreateWaterWheel(const string& id, const string& blockName,
-        const unordered_map<string, string>& states, int x, int y, int z) {
+        const unordered_map<string, string>& states, int x, int y, int z, const NbtTagPtr& nbt) {
         ModelData result;
         string axis = "y";
         if (id == "water_wheel") {
@@ -259,6 +299,7 @@ namespace {
             axis = facing == "east" || facing == "west" ? "x" :
                 facing == "north" || facing == "south" ? "z" : "y";
             ModelData wheel = LoadCreateObjModel("block/water_wheel/wheel", 120);
+            ApplyWaterWheelMaterial(wheel, nbt);
             RotateKineticAxis(wheel, axis);
             Append(result, std::move(wheel));
         }
@@ -267,6 +308,7 @@ namespace {
             bool extension = states.contains("extension") && states.at("extension") == "true";
             result = LoadCreateObjModel(extension ? "block/large_water_wheel/block_extension" :
                 "block/large_water_wheel/block", 121);
+            ApplyWaterWheelMaterial(result, nbt);
             RotateKineticAxis(result, axis);
         }
         int parity = axis == "x" ? y + z : axis == "z" ? x + y : x + z;
@@ -819,7 +861,7 @@ bool SpecialBlock::TryGenerateCreateBlockModel(const string& blockName,
     }
     if (baseName == "create:water_wheel" || baseName == "create:large_water_wheel") {
         outModel = GenerateCreateWaterWheel(baseName.substr(7), blockName,
-            ParseBlockStates(blockName), x, y, z);
+            ParseBlockStates(blockName), x, y, z, blockEntityNbt);
         return !outModel.vertices.empty();
     }
     if (baseName == "create:andesite_encased_shaft" ||
