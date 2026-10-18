@@ -31,6 +31,7 @@
 #include "ChunkLoader.h"
 #include "SpecialBlock.h"
 #include "CableMesher.h"
+#include "CreateChainConveyor.h"
 #include "BbsModelSupport.h"
 using namespace std;
 using namespace std::chrono;
@@ -496,6 +497,10 @@ void ChunkGenerator::ProcessBlockForModel(ModelData& chunkModel, int x, int y, i
     const bool selfGlassLike =
         curBaseName.find("glass") != std::string::npos ||
         curBaseName.find("pane") != std::string::npos;
+
+    // Create chain conveyor shaft, wheel, guards and chains (static, DO_NOT_CULL).
+    if (ns == "create")
+        AppendCreateChainConveyor("create:" + blockName, x, y, z, blockEntityNbt, blockModel);
 
     // 遍历所有面
     for (size_t faceIdx = 0; faceIdx < blockModel.faces.size(); ++faceIdx) {
