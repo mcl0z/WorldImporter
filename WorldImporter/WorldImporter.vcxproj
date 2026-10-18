@@ -164,6 +164,7 @@
     <ClCompile Include="SpecialBlock.cpp" />
     <ClCompile Include="fileutils.cpp" />
     <ClCompile Include="Fluid.cpp" />
+    <ClCompile Include="CreateTrackMarkers.cpp" />
     <ClCompile Include="GlobalCache.cpp" />
     <ClCompile Include="JarReader.cpp" />
     <ClCompile Include="LODManager.cpp" />
@@ -190,6 +191,7 @@
     <ClInclude Include="ChunkLoader.h" />
     <ClInclude Include="config.h" />
     <ClInclude Include="Fluid.h" />
+    <ClInclude Include="CreateTrackMarkers.h" />
     <ClInclude Include="init.h" />
     <ClInclude Include="locutil.h" />
     <ClInclude Include="logutil.h" />
