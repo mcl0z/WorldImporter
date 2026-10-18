@@ -5,6 +5,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <mutex>
+#include <vector>
 
 using namespace std;
 
@@ -234,11 +235,116 @@ namespace {
         size_t e = blockName.find_first_of(",]", p);
         return blockName.substr(p, e == string::npos ? string::npos : e - p);
     }
+
+    // AngleHelper.horizontalAngle: toYRot, then negated when the axis is X.
+    // south 0, west -90, north 180, east -270. EntityAffine::RY matches
+    // Axis.YP.rotation (CCW looking down), so the angle is used as-is.
+    double HorizontalAngle(const string& facing) {
+        if (facing == "west") return -90.0;
+        if (facing == "north") return 180.0;
+        if (facing == "east") return -270.0;
+        return 0.0; // south, or vertical
+    }
+
+    // PlacardRenderer.renderSafe. Plate sits on the attached face (opposite
+    // facing); the item is translated +Z in local space, just in front of it.
+    void RenderPlacard(ModelData& model, const string& blockName, const NbtTagPtr& nbt) {
+        ItemStackInfo item = ItemRender::ParseItemStack(Child(nbt, "Item"));
+        if (item.empty()) return;
+        ModelData mesh;
+        if (!ItemRender::Build(item, ItemDisplay::Fixed, false, mesh)) return;
+        const string face = StateValue(blockName, "face");
+        const bool ceiling = face == "ceiling";
+        const bool floor = face == "floor";
+        const double yaw = (ceiling ? M_PI : 0.0) + (180.0 + HorizontalAngle(StateValue(blockName, "facing"))) * M_PI / 180.0;
+        const double pitch = ceiling ? -M_PI / 2.0 : floor ? M_PI / 2.0 : 0.0;
+        const double scale = IsGui3d(item.id) ? 0.5 : 0.375;
+        // center, Ry(yaw), Rx(pitch), T(0,0,4.5/16), scale. Fixed display is already in the mesh.
+        const EntityAffine pose = EntityAffine::T(0.5, 0.5, 0.5) * EntityAffine::RY(yaw) * EntityAffine::RX(pitch) *
+            EntityAffine::T(0.0, 0.0, 0.28125) * EntityAffine::S(scale);
+        Emit(model, std::move(mesh), pose);
+    }
+
+    // Vec3i.hashCode / BlockPos.hashCode: (y + z * 31) * 31 + x, 32-bit wrap.
+    int32_t BlockPosHash(int x, int y, int z) {
+        uint32_t h = (static_cast<uint32_t>(y) + static_cast<uint32_t>(z) * 31u) * 31u + static_cast<uint32_t>(x);
+        return static_cast<int32_t>(h);
+    }
+
+    // ItemStackHandler slots, indexed by Slot (missing slots stay null).
+    void FillSlots(const NbtTagPtr& inv, vector<NbtTagPtr>& slots) {
+        auto items = Child(inv, "Items");
+        if (!items || items->type != TagType::LIST) return;
+        for (const auto& stack : items->children) {
+            int slot = Int(stack, "Slot", -1);
+            if (slot >= 0 && slot < static_cast<int>(slots.size())) slots[slot] = stack;
+        }
+    }
+
+    // VecHelper.rotate(vec, deg, Axis.Y): x' = x*cos + z*sin, z' = z*cos - x*sin.
+    void RotateYDeg(double deg, double& x, double& z) {
+        const double rad = deg * M_PI / 180.0;
+        const double c = std::cos(rad), s = std::sin(rad);
+        const double nx = x * c + z * s;
+        z = z * c - x * s;
+        x = nx;
+    }
+
+    // BasinRenderer.renderSafe, items only (fluids, visualized outputs and the filter are skipped).
+    void RenderBasin(ModelData& model, const NbtTagPtr& nbt) {
+        // Input slots 0..8, then output slots 0..8 (CombinedStorage order).
+        vector<NbtTagPtr> in(9), out(9), slots(18);
+        FillSlots(Child(nbt, "InputItems"), in);
+        FillSlots(Child(nbt, "OutputItems"), out);
+        for (int i = 0; i < 9; ++i) { slots[i] = in[i]; slots[9 + i] = out[i]; }
+        vector<NbtTagPtr> stacks;
+        for (const auto& s : slots) {
+            if (!ItemRender::ParseItemStack(s).empty()) stacks.push_back(s);
+        }
+        if (stacks.empty()) return;
+        // fluidLevel 0 -> clamp(0 - 0.3, 0.125, 0.6) = 0.125. ingredientRotation is 0 when static.
+        const float level = 0.125f;
+        const int total = static_cast<int>(stacks.size());
+        const float anglePartition = 360.0f / static_cast<float>(total);
+        double baseX = total == 1 ? 0.0 : 0.125, baseZ = 0.0;
+        const double baseY = level;
+        // LegacyRandomSource(pos.hashCode()), seed sign-extended.
+        JavaRandom r(static_cast<int64_t>(BlockPosHash(Int(nbt, "x"), Int(nbt, "y"), Int(nbt, "z"))));
+        int itemCount = total;
+        for (const auto& stack : stacks) {
+            ItemStackInfo item = ItemRender::ParseItemStack(stack);
+            ModelData mesh;
+            const bool ok = ItemRender::Build(item, ItemDisplay::Ground, false, mesh);
+            const float ang = anglePartition * static_cast<float>(itemCount);
+            double px = baseX, pz = baseZ;
+            RotateYDeg(ang, px, pz);
+            const EntityAffine ms = EntityAffine::T(0.5, 0.2, 0.5) * EntityAffine::T(px, baseY, pz) *
+                EntityAffine::RYDeg(ang + 35.0) * EntityAffine::RX(65.0 * M_PI / 180.0);
+            const int copies = item.count / 8; // i = 0 .. count/8 inclusive
+            for (int i = 0; i <= copies; ++i) {
+                // offsetRandomly(ZERO, r, 1/16): (nextFloat-0.5)*2*(1/16) on x, then y, then z.
+                const float j = 2.0f / 16.0f;
+                const double ox = (r.NextFloat() - 0.5f) * j;
+                const double oy = (r.NextFloat() - 0.5f) * j;
+                const double oz = (r.NextFloat() - 0.5f) * j;
+                if (ok) Emit(model, mesh, ms * EntityAffine::T(ox, oy, oz));
+            }
+            --itemCount;
+        }
+    }
 }
 
 void AppendCreateDepotItems(const string& blockName, const NbtTagPtr& nbt, ModelData& model) {
     if (!nbt) return;
     string base = blockName.substr(0, blockName.find('['));
+    if (base == "create:placard") {
+        RenderPlacard(model, blockName, nbt);
+        return;
+    }
+    if (base == "create:basin") {
+        RenderBasin(model, nbt);
+        return;
+    }
     if (base == "create:belt") {
         // BeltRenderer.renderItems: only the controller draws, items of the whole belt.
         auto isController = Child(nbt, "IsController");
