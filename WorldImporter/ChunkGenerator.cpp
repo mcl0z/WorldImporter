@@ -9,6 +9,7 @@
 #include "blocktint.h"
 #include "fluid.h"
 #include "LODManager.h"
+#include "CreateSlidingDoor.h"
 #include "CTM.h"
 #include "CreateCT.h"
 #include "ModCT.h"
@@ -428,6 +429,8 @@ void ChunkGenerator::ProcessBlockForModel(ModelData& chunkModel, int x, int y, i
         (ns == "create" && blockName.rfind("copycat_", 0) == 0))) {
         ApplyCopycatCamoToBlockModel(blockModel, blockEntityNbt, ns, blockName, x, y, z);
     }
+    // Create sliding doors with visible=false are drawn by SlidingDoorRenderer.
+    if (ns == "create") ApplyCreateSlidingDoor(ns, blockName, blockModel);
 
     if (blockModel.vertices.empty()) return;
 
