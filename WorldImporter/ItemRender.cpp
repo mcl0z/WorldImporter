@@ -608,7 +608,11 @@ bool BuildSkullItem(const ItemStackInfo& item, ItemDisplay display, bool leftHan
     ResolvedModel r = ResolveModel("minecraft", modelPath);
     if (!r.ok) return false;
     EntityAffine world = DisplayTransform(r, display, leftHand, scaleY) * EntityAffine::T(0.5, 0.0, 0.5);
-    return ItemRender::EmitSkullModel(item.id, world, HasItemDefinitions(), out);
+    // 26.x: items/<skull>.json 的 special transformation = T(0.5,0,0.5) * left_rotation [1,0,0,0] (绕 X 180°),
+    // 即 S(1,-1,-1)。1.21 的 S(-1,-1,1) + yaw π 在 EmitSkullModel 里, 结果相同。
+    const bool modern = HasItemDefinitions();
+    if (modern) world = world * EntityAffine::S(1.0, -1.0, -1.0);
+    return ItemRender::EmitSkullModel(item.id, world, modern, out);
 }
 bool BuildSpecial(const ItemStackInfo& item, ItemDisplay display, bool leftHand, ModelData& out, double* scaleY) {
     auto [ns, path] = SplitId(item.id);
