@@ -2526,7 +2526,9 @@ void ApplyCtmToBlockModel(ModelData& model,
         }
 
         // 从材质名/路径提取贴图名。区块缓存里材质已被 RenameBlockMaterials 改名为
-        // "blockId#key~texshort", 只有 texturePath 仍保留完整贴图路径, 优先用它。
+        // "blockId#key~texshort", 只有 texturePath ("textures/<ns>/<path>.png") 仍保留
+        // 完整贴图路径, 命名空间和路径都优先取它: 模组方块用原版贴图时材质名是
+        // "yuushya:...", 贴图却是 minecraft:block/xxx (同 CreateCT.cpp)。
         std::string textureName;
         std::string matNs = ns;
         {
@@ -2534,12 +2536,14 @@ void ApplyCtmToBlockModel(ModelData& model,
             const std::string& mn = mat.name;
             size_t colon = mn.find(':');
             matNs = colon == std::string::npos ? ns : mn.substr(0, colon);
-            if (tp.size() > 4 && tp.rfind(".png") == tp.size() - 4) {
-                std::string p = tp.substr(0, tp.size() - 4);
-                if (p.rfind("textures/", 0) == 0) p = p.substr(9);
+            if (tp.size() > 13 && tp.rfind("textures/", 0) == 0 &&
+                tp.compare(tp.size() - 4, 4, ".png") == 0) {
+                std::string p = tp.substr(9, tp.size() - 13);
                 size_t slash = p.find('/');
-                if (slash != std::string::npos && p.substr(0, slash) == matNs) p = p.substr(slash + 1);
-                textureName = p;
+                if (slash != std::string::npos && slash > 0) {
+                    matNs = p.substr(0, slash);
+                    textureName = p.substr(slash + 1);
+                }
             }
             if (textureName.empty()) {
                 std::string pathPart = colon == std::string::npos ? mn : mn.substr(colon + 1);
