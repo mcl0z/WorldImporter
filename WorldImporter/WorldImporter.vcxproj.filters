@@ -134,6 +134,9 @@
     <ClCompile Include="JarReader.cpp">
       <Filter>源文件\Core\Reader</Filter>
     </ClCompile>
+    <ClCompile Include="CreatePostboxControls.cpp">
+      <Filter>源文件\Blocks</Filter>
+    </ClCompile>
     <ClCompile Include="EntityBlock.cpp">
       <Filter>源文件\Blocks</Filter>
     </ClCompile>
@@ -244,6 +247,9 @@
     </ClInclude>
     <ClInclude Include="JarReader.h">
       <Filter>头文件\Core\Reader</Filter>
+    </ClInclude>
+    <ClInclude Include="CreatePostboxControls.h">
+      <Filter>头文件\Blocks</Filter>
     </ClInclude>
     <ClInclude Include="LODManager.h">
       <Filter>头文件\Blocks</Filter>

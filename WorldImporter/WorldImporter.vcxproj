@@ -160,6 +160,7 @@
     <ClCompile Include="EntityBlock.cpp" />
     <ClCompile Include="EntityExporter.cpp" />
     <ClCompile Include="MemoryMonitor.cpp" />
+    <ClCompile Include="CreatePostboxControls.cpp" />
     <ClCompile Include="RegionCache.cpp" />
     <ClCompile Include="SpecialBlock.cpp" />
     <ClCompile Include="fileutils.cpp" />
@@ -198,6 +199,7 @@
     <ClInclude Include="EntityExporter.h" />
     <ClInclude Include="hashutils.h" />
     <ClInclude Include="MemoryMonitor.h" />
+    <ClInclude Include="CreatePostboxControls.h" />
     <ClInclude Include="RegionCache.h" />
     <ClInclude Include="SpecialBlock.h" />
     <ClInclude Include="fileutils.h" />
