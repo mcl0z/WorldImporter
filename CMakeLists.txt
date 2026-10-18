@@ -52,6 +52,12 @@ if (BUILD_TESTING AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/WorldImporter/tests/pa
     wi_apply_defaults(palette_format_tests)
     add_test(NAME palette_format COMMAND palette_format_tests)
     set_tests_properties(palette_format PROPERTIES TIMEOUT 30)
+if (BUILD_TESTING AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/WorldImporter/tests/resource_json_tests.cpp")
+    add_executable(resource_json_tests WorldImporter/tests/resource_json_tests.cpp)
+    target_link_libraries(resource_json_tests PRIVATE WorldImporterCore)
+    wi_apply_defaults(resource_json_tests)
+    add_test(NAME resource_json COMMAND resource_json_tests)
+    set_tests_properties(resource_json PROPERTIES TIMEOUT 30)
 endif()
 
 # This harness ships with the importer; tests/ below is an optional external suite.

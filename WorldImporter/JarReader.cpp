@@ -16,6 +16,17 @@ extern "C" {
 #include <stdexcept>
 #include "include/json.hpp"
 #include "fileutils.h"
+
+namespace {
+// Minecraft reads resource JSON with Gson and stops after the first value, so
+// trailing text (e.g. an extra closing brace) is ignored in game. Do the same.
+nlohmann::json ParseResourceJson(const std::string& content) {
+    nlohmann::json result;
+    nlohmann::detail::json_sax_dom_parser<nlohmann::json> sax(result, true);
+    nlohmann::json::sax_parse(content, &sax, nlohmann::json::input_format_t::json, false);
+    return result;
+}
+}
 namespace {
     // The archive walk already knows the index. Avoid resolving the name again,
     // and share one stat/open/read path across text and binary resource types.
@@ -346,7 +357,7 @@ void JarReader::cacheAllResources(
                     std::string content = readText();
                     if (!content.empty()) {
                         try {
-                            blockstateCache.emplace(cacheKey, nlohmann::json::parse(content));
+                            blockstateCache.emplace(cacheKey, ParseResourceJson(content));
                         } catch (const std::exception& e) {
                             std::cerr << "Blockstate JSON Error: " << filePath << " - " << e.what() << std::endl;
                         }
@@ -367,7 +378,7 @@ void JarReader::cacheAllResources(
                     std::string content = readText();
                     if (!content.empty()) {
                         try {
-                            modelCache.emplace(cacheKey, nlohmann::json::parse(content));
+                            modelCache.emplace(cacheKey, ParseResourceJson(content));
                         } catch (const std::exception& e) {
                             std::cerr << "Model JSON Error: " << filePath << " - " << e.what() << std::endl;
                         }
@@ -392,7 +403,7 @@ void JarReader::cacheAllResources(
                         std::string content = readText();
                         if (!content.empty()) {
                             try {
-                                mcmetaCache.emplace(cacheKey, nlohmann::json::parse(content));
+                                mcmetaCache.emplace(cacheKey, ParseResourceJson(content));
                             } catch (const std::exception& e) {
                                 std::cerr << ".mcmeta JSON Error: " << filePath << " - " << e.what() << std::endl;
                             }
@@ -407,7 +418,7 @@ void JarReader::cacheAllResources(
                         std::string content = readText();
                         if (!content.empty()) {
                             try {
-                                mcmetaCache.emplace(cacheKey, nlohmann::json::parse(content));
+                                mcmetaCache.emplace(cacheKey, ParseResourceJson(content));
                             } catch (const std::exception& e) {
                                 std::cerr << ".mcmeta JSON Error: " << filePath << " - " << e.what() << std::endl;
                             }
@@ -464,7 +475,7 @@ void JarReader::cacheAllResources(
                         std::string content = readText();
                         if (!content.empty()) {
                             try {
-                                mcmetaCache.emplace(cacheKey, nlohmann::json::parse(content));
+                                mcmetaCache.emplace(cacheKey, ParseResourceJson(content));
                             } catch (const std::exception& e) {
                                 std::cerr << "CTM .mcmeta JSON Error: " << filePath << " - " << e.what() << std::endl;
                             }
