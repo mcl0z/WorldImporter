@@ -530,6 +530,336 @@ void RenderVillagerLike(Ctx& ctx, const NbtTagPtr& e, bool zombie) {
 }
 
 
+
+// ---------- common mob helpers ----------
+bool IsBaby(const NbtTagPtr& e) {
+    if (NumOr(e, "IsBaby", 0) != 0) return true;
+    if (getChildByName(e, "Age") && NumOr(e, "Age", 0) < 0) return true;
+    return false;
+}
+bool IsSitting(const NbtTagPtr& e) {
+    return NumOr(e, "Sitting", 0) != 0 || NumOr(e, "sitting", 0) != 0;
+}
+
+// AgeableMob / Humanoid baby pre (legacy only)
+std::function<EntityAffine(int)> LegacyBabyPre(const EntityModel& model) {
+    int head = model.Find("head"), hat = model.Find("hat");
+    return [head, hat](int top) {
+        if (top == head || top == hat) return EntityAffine::S(0.75) * EntityAffine::T(0.0, 1.0, 0.0);
+        return EntityAffine::S(0.5) * EntityAffine::T(0.0, 1.5, 0.0);
+    };
+}
+
+void EmitTextured(Ctx& ctx, OutObject& obj, EntityModel& model, const EntityAffine& base,
+                  const std::function<EntityAffine(int)>& pre, const std::string& matName, const std::string& tex) {
+    if (tex.empty()) return;
+    int mat = ctx.Material(matName, tex);
+    model.Emit(obj.mesh, base, [mat](int) { return mat; }, pre);
+}
+
+void ApplyHeadLook(EntityModel& model, const Placement& pl, const char* headPart = "head") {
+    // netHeadYaw relative to body; NoAI entities keep head yRot = 0
+    model.SetRot(headPart, static_cast<float>(pl.pitch * kPi / 180.0), 0.0f, 0.0f);
+}
+
+// DyeColor.textureDiffuseColor (1.21) — sheep wool / wolf collar
+int DyeRgb(int id) {
+    static const int k[] = {
+        0xF9FFFF, 0xF9801D, 0xC74EBD, 0x3AB3DA, 0xFED83D, 0x80C71F, 0xF38BAA, 0x474F52,
+        0x9D9D97, 0x169C9C, 0x8932B8, 0x3C44AA, 0x835432, 0x5E7C16, 0xB02E26, 0x1D1D21 };
+    return k[std::clamp(id, 0, 15)];
+}
+
+void PoseWolf(EntityModel& model, bool sitting) {
+    using A = EntityAffine;
+    if (sitting) {
+        model.SetPose("upper_body", -1.0f, 16.0f, -3.0f);
+        model.SetRot("upper_body", static_cast<float>(kPi * 2.0 / 5.0), 0.0f, 0.0f);
+        model.SetPose("body", 0.0f, 18.0f, 0.0f);
+        model.SetRot("body", static_cast<float>(kPi / 4), 0.0f, 0.0f);
+        model.SetPose("tail", -1.0f, 21.0f, 6.0f);
+        model.SetPose("right_hind_leg", -2.5f, 22.7f, 2.0f);
+        model.SetRot("right_hind_leg", static_cast<float>(kPi * 3.0 / 2.0), 0.0f, 0.0f);
+        model.SetPose("left_hind_leg", 0.5f, 22.7f, 2.0f);
+        model.SetRot("left_hind_leg", static_cast<float>(kPi * 3.0 / 2.0), 0.0f, 0.0f);
+        model.SetPose("right_front_leg", -2.49f, 17.0f, -4.0f);
+        model.SetRot("right_front_leg", 5.811947f, 0.0f, 0.0f);
+        model.SetPose("left_front_leg", 0.51f, 17.0f, -4.0f);
+        model.SetRot("left_front_leg", 5.811947f, 0.0f, 0.0f);
+    }
+    // standing: baked pose already correct (body/upper_body xRot = π/2)
+}
+
+void PoseCatSitting(EntityModel& model) {
+    // CatModel.prepareMobModel sitting: start from standing baked pose then offset
+    auto add = [&](const char* p, float dy, float dz) {
+        int i = model.Find(p); if (i < 0) return;
+        float* pose = model.Pose(i);
+        pose[1] += dy; pose[2] += dz;
+    };
+    model.SetRot("body", static_cast<float>(kPi / 4), 0.0f, 0.0f);
+    add("body", -4.0f, 5.0f);
+    add("head", -3.3f, 1.0f);
+    add("tail1", 8.0f, -2.0f);
+    add("tail2", 2.0f, -0.8f);
+    model.SetRot("tail1", 1.7278761f, 0.0f, 0.0f);
+    model.SetRot("tail2", 2.670354f, 0.0f, 0.0f);
+    auto setLeg = [&](const char* name, float y, float z, float xRot) {
+        int i = model.Find(name); if (i < 0) return;
+        float* p = model.Pose(i); model.SetPose(name, p[0], y, z); model.SetRot(name, xRot, 0.0f, 0.0f);
+    };
+    setLeg("left_front_leg", 16.1f, -7.0f, static_cast<float>(-kPi / 20));
+    setLeg("right_front_leg", 16.1f, -7.0f, static_cast<float>(-kPi / 20));
+    setLeg("left_hind_leg", 21.0f, 1.0f, static_cast<float>(-kPi / 2));
+    setLeg("right_hind_leg", 21.0f, 1.0f, static_cast<float>(-kPi / 2));
+}
+
+void PoseZombieArms(EntityModel& model) {
+    const float armX = static_cast<float>(-kPi / 2.25);
+    model.SetRot("right_arm", armX, -0.1f, 0.05f);
+    model.SetRot("left_arm", armX, 0.1f, -0.05f);
+    model.SetRot("right_leg", 0.0f, 0.005f, 0.005f);
+    model.SetRot("left_leg", 0.0f, -0.005f, -0.005f);
+}
+
+void PoseSkeletonIdle(EntityModel& model) {
+    // HumanoidModel idle bob mean: arms zRot ±0.05, legs ±0.005
+    model.SetRot("right_arm", 0.0f, 0.0f, 0.05f);
+    model.SetRot("left_arm", 0.0f, 0.0f, -0.05f);
+    model.SetRot("right_leg", 0.0f, 0.005f, 0.005f);
+    model.SetRot("left_leg", 0.0f, -0.005f, -0.005f);
+}
+
+// Humanoid mob (zombie / skeleton) + armor + held items
+void RenderHumanoidMob(Ctx& ctx, const NbtTagPtr& e, const std::string& kind, const std::string& texPath,
+                       double eyeHeight, bool zombieArms, const std::string& objectId = {}) {
+    const std::string objId = objectId.empty() ? ("minecraft:" + kind) : objectId;
+    const std::string fam = ctx.modern ? "modern" : "legacy";
+    bool baby = IsBaby(e);
+    const std::string layer = "minecraft:" + kind + (ctx.modern && baby ? "_baby" : "") + "#main";
+    EntityModel model(fam, layer);
+    if (!model.Valid()) return;
+    Placement pl = ReadPlacement(e);
+    ApplyHeadLook(model, pl);
+    if (zombieArms) PoseZombieArms(model); else PoseSkeletonIdle(model);
+    double eye = eyeHeight * (baby ? 0.5 : 1.0);
+    EntityAffine base = LivingBase(pl, eye, 1.0);
+    std::function<EntityAffine(int)> pre;
+    if (!ctx.modern && baby) pre = LegacyBabyPre(model);
+    OutObject& obj = ctx.NewObject(objId);
+    std::string tex = ctx.Texture("minecraft", texPath);
+    EmitTextured(ctx, obj, model, base, pre, "minecraft:" + texPath, tex);
+    Equipment eq = ReadEquipment(e);
+    RenderArmor(ctx, obj, "minecraft:" + kind, model, eq, base, pre, baby, false);
+    RenderHeldItems(ctx, obj, model, eq, base, !ctx.modern && baby, ctx.modern && baby);
+    RenderHeadItem(ctx, obj, model, eq, base, baby, false, 0.0);
+}
+
+void RenderCreeper(Ctx& ctx, const NbtTagPtr& e) {
+    const std::string fam = ctx.modern ? "modern" : "legacy";
+    EntityModel model(fam, "minecraft:creeper#main");
+    if (!model.Valid()) return;
+    Placement pl = ReadPlacement(e);
+    ApplyHeadLook(model, pl);
+    EntityAffine base = LivingBase(pl, 1.7, 1.0);
+    OutObject& obj = ctx.NewObject("minecraft:creeper");
+    EmitTextured(ctx, obj, model, base, nullptr, "minecraft:entity/creeper/creeper",
+                 ctx.Texture("minecraft", "entity/creeper/creeper"));
+}
+
+void RenderQuadruped(Ctx& ctx, const NbtTagPtr& e, const std::string& id, const std::string& layerId,
+                     const std::string& texPath, double eye, double rendererScale = 1.0) {
+    const std::string fam = ctx.modern ? "modern" : "legacy";
+    bool baby = IsBaby(e);
+    std::string lid = layerId;
+    if (ctx.modern && baby) {
+        // pig_baby / cow_baby / sheep_baby / chicken_baby
+        size_t hash = lid.find('#');
+        if (hash != std::string::npos) lid = lid.substr(0, hash) + "_baby" + lid.substr(hash);
+    }
+    EntityModel model(fam, lid);
+    if (!model.Valid()) return;
+    Placement pl = ReadPlacement(e);
+    ApplyHeadLook(model, pl);
+    double rs = rendererScale;
+    if (!ctx.modern && baby) rs *= 0.5;  // AgeableMob.scale baby
+    EntityAffine base = LivingBase(pl, eye * (baby && !ctx.modern ? 0.5 : 1.0), rs);
+    std::function<EntityAffine(int)> pre;
+    // quadruped babies in legacy: AgeableListModel same as humanoid
+    if (!ctx.modern && baby) pre = LegacyBabyPre(model);
+    OutObject& obj = ctx.NewObject(id);
+    EmitTextured(ctx, obj, model, base, pre, "minecraft:" + texPath, ctx.Texture("minecraft", texPath));
+}
+
+void RenderSheep(Ctx& ctx, const NbtTagPtr& e) {
+    const std::string fam = ctx.modern ? "modern" : "legacy";
+    bool baby = IsBaby(e);
+    bool sheared = NumOr(e, "Sheared", 0) != 0;
+    int color = static_cast<int>(NumOr(e, "Color", NumOr(e, "color", 0)));
+    std::string lid = std::string("minecraft:sheep") + (ctx.modern && baby ? "_baby" : "") + "#main";
+    EntityModel model(fam, lid);
+    if (!model.Valid()) return;
+    Placement pl = ReadPlacement(e);
+    ApplyHeadLook(model, pl);
+    double rs = (!ctx.modern && baby) ? 0.5 : 1.0;
+    EntityAffine base = LivingBase(pl, 1.3 * (baby && !ctx.modern ? 0.5 : 1.0), rs);
+    std::function<EntityAffine(int)> pre = (!ctx.modern && baby) ? LegacyBabyPre(model) : nullptr;
+    OutObject& obj = ctx.NewObject("minecraft:sheep");
+    EmitTextured(ctx, obj, model, base, pre, "minecraft:entity/sheep/sheep",
+                 ctx.Texture("minecraft", "entity/sheep/sheep"));
+    if (!sheared) {
+        std::string furId = std::string("minecraft:sheep") + (ctx.modern && baby ? "_baby" : "") +
+                            (ctx.modern ? "#wool" : "#fur");
+        EntityModel fur(fam, furId);
+        if (fur.Valid()) {
+            fur.CopyPoseFrom(model, { "head", "body", "right_front_leg", "left_front_leg", "right_hind_leg", "left_hind_leg" }, true);
+            std::string tex = ctx.Texture("minecraft", "entity/sheep/sheep_fur");
+            if (!tex.empty()) {
+                TintResult t; t.kind = TintKind::Fixed; t.color = static_cast<uint32_t>(DyeRgb(color));
+                std::string matName = "minecraft:entity/sheep/sheep_fur" + TintSuffix(t);
+                int mat = ctx.Material(matName, tex);
+                ctx.tints[matName] = t;
+                fur.Emit(obj.mesh, base, [mat](int) { return mat; }, pre);
+            }
+        }
+    }
+}
+
+void RenderWolf(Ctx& ctx, const NbtTagPtr& e) {
+    const std::string fam = ctx.modern ? "modern" : "legacy";
+    bool baby = IsBaby(e);
+    std::string lid = std::string("minecraft:wolf") + (ctx.modern && baby ? "_baby" : "") + "#main";
+    EntityModel model(fam, lid);
+    if (!model.Valid()) return;
+    Placement pl = ReadPlacement(e);
+    PoseWolf(model, IsSitting(e));
+    ApplyHeadLook(model, pl);
+    double rs = (!ctx.modern && baby) ? 0.5 : 1.0;
+    EntityAffine base = LivingBase(pl, 0.85 * (baby && !ctx.modern ? 0.5 : 1.0), rs);
+    std::function<EntityAffine(int)> pre = (!ctx.modern && baby) ? LegacyBabyPre(model) : nullptr;
+    OutObject& obj = ctx.NewObject("minecraft:wolf");
+    // 1.20.5+: variant string; older: always wolf.png / wolf_tame / wolf_angry
+    std::string variant = Str(e, "variant");
+    if (variant.empty()) variant = Str(e, "Variant");
+    bool angry = NumOr(e, "Angry", 0) != 0 || NumOr(e, "AngerTime", 0) > 0;
+    bool tame = getChildByName(e, "Owner") != nullptr || getChildByName(e, "OwnerUUID") != nullptr;
+    std::string texPath = "entity/wolf/wolf";
+    if (!variant.empty() && variant.find(':') != std::string::npos) {
+        auto [ns, v] = SplitId(variant);
+        texPath = "entity/wolf/" + v;
+        if (angry) texPath += "_angry";
+        else if (tame) texPath += "_tame";
+        // if missing fall back below
+        if (!TextureExists(ns, texPath)) texPath = "entity/wolf/wolf";
+    } else {
+        if (angry) texPath = "entity/wolf/wolf_angry";
+        else if (tame) texPath = "entity/wolf/wolf_tame";
+    }
+    EmitTextured(ctx, obj, model, base, pre, "minecraft:" + texPath, ctx.Texture("minecraft", texPath));
+    if (tame) {
+        int collar = static_cast<int>(NumOr(e, "CollarColor", 14));  // default red
+        std::string ctex = ctx.Texture("minecraft", "entity/wolf/wolf_collar");
+        if (!ctex.empty()) {
+            TintResult t; t.kind = TintKind::Fixed; t.color = static_cast<uint32_t>(DyeRgb(collar));
+            std::string matName = "minecraft:entity/wolf/wolf_collar" + TintSuffix(t);
+            int mat = ctx.Material(matName, ctex);
+            ctx.tints[matName] = t;
+            // collar uses same model geometry
+            model.Emit(obj.mesh, base, [mat](int) { return mat; }, pre);
+        }
+    }
+}
+
+void RenderCat(Ctx& ctx, const NbtTagPtr& e) {
+    const std::string fam = ctx.modern ? "modern" : "legacy";
+    bool baby = IsBaby(e);
+    std::string lid = std::string("minecraft:cat") + (ctx.modern && baby ? "_baby" : "") + "#main";
+    EntityModel model(fam, lid);
+    if (!model.Valid()) return;
+    Placement pl = ReadPlacement(e);
+    if (IsSitting(e)) PoseCatSitting(model);
+    ApplyHeadLook(model, pl);
+    // CatRenderer.scale 0.8 (legacy); modern bakes into root
+    double rs = ctx.modern ? 1.0 : 0.8 * (baby ? 0.5 : 1.0);
+    EntityAffine base = LivingBase(pl, 0.7 * (baby && !ctx.modern ? 0.5 : 1.0), rs);
+    std::function<EntityAffine(int)> pre = (!ctx.modern && baby) ? LegacyBabyPre(model) : nullptr;
+    OutObject& obj = ctx.NewObject("minecraft:cat");
+    static const char* kCatType[] = { "tabby", "black", "red", "siamese", "british_shorthair", "calico",
+                                      "persian", "ragdoll", "white", "jellie", "all_black" };
+    std::string variant = Str(e, "variant");
+    if (variant.empty()) {
+        int t = static_cast<int>(NumOr(e, "CatType", 0));
+        variant = std::string("minecraft:") + kCatType[std::clamp(t, 0, 10)];
+    }
+    auto [ns, v] = SplitId(variant);
+    if (v.rfind("cat/", 0) == 0) v = v.substr(4);
+    std::string texPath = "entity/cat/" + v;
+    EmitTextured(ctx, obj, model, base, pre, "minecraft:" + texPath, ctx.Texture(ns, texPath));
+    bool tame = getChildByName(e, "Owner") || getChildByName(e, "OwnerUUID");
+    if (tame) {
+        int collar = static_cast<int>(NumOr(e, "CollarColor", 14));
+        std::string ctex = ctx.Texture("minecraft", "entity/cat/cat_collar");
+        if (!ctex.empty()) {
+            TintResult t; t.kind = TintKind::Fixed; t.color = static_cast<uint32_t>(DyeRgb(collar));
+            std::string matName = "minecraft:entity/cat/cat_collar" + TintSuffix(t);
+            int mat = ctx.Material(matName, ctex);
+            ctx.tints[matName] = t;
+            // collar layer geometry (same parts)
+            EntityModel collarM(fam, std::string("minecraft:cat") + (ctx.modern && baby ? "_baby" : "") + "#collar");
+            if (collarM.Valid()) {
+                collarM.CopyPoseFrom(model, { "head", "body", "tail1", "tail2", "left_front_leg", "right_front_leg",
+                                              "left_hind_leg", "right_hind_leg" }, true);
+                collarM.Emit(obj.mesh, base, [mat](int) { return mat; }, pre);
+            } else {
+                model.Emit(obj.mesh, base, [mat](int) { return mat; }, pre);
+            }
+        }
+    }
+}
+
+void RenderHorse(Ctx& ctx, const NbtTagPtr& e) {
+    const std::string fam = ctx.modern ? "modern" : "legacy";
+    bool baby = IsBaby(e);
+    std::string lid = std::string("minecraft:horse") + (ctx.modern && baby ? "_baby" : "") + "#main";
+    EntityModel model(fam, lid);
+    if (!model.Valid()) return;
+    Placement pl = ReadPlacement(e);
+    // head look on head_parts
+    model.SetRot("head_parts", static_cast<float>(pl.pitch * kPi / 180.0), 0.0f, 0.0f);
+    bool saddled = false;
+    if (auto eq = getChildByName(e, "equipment"))
+        saddled = !ItemRender::ParseItemStack(getChildByName(eq, "saddle")).empty();
+    if (!saddled) saddled = !ItemRender::ParseItemStack(getChildByName(e, "SaddleItem")).empty();
+    if (!saddled) saddled = NumOr(e, "Saddle", 0) != 0;
+    for (const char* p : { "saddle", "left_saddle_mouth", "right_saddle_mouth", "left_saddle_line",
+                           "right_saddle_line", "head_saddle", "mouth_saddle_wrap" })
+        model.SetVisible(p, saddled);
+    // hide baby-only / adult-only legs
+    for (const char* p : { "left_hind_baby_leg", "right_hind_baby_leg", "left_front_baby_leg", "right_front_baby_leg" })
+        model.SetVisible(p, baby && !ctx.modern);  // modern baby model already correct
+    if (!ctx.modern && baby) {
+        for (const char* p : { "left_hind_leg", "right_hind_leg", "left_front_leg", "right_front_leg" })
+            model.SetVisible(p, false);
+    }
+    // HorseRenderer scale: 1.1 adult (modern baked); legacy AgeableListModel baby
+    double rs = ctx.modern ? 1.0 : (baby ? 0.5667 : 1.1);  // ≈ 1.1 * 0.5 * 1.03 baby fudge from vanilla
+    EntityAffine base = LivingBase(pl, 2.3 * (baby ? 0.5 : 1.0), rs);
+    std::function<EntityAffine(int)> pre;
+    OutObject& obj = ctx.NewObject("minecraft:horse");
+    static const char* kVar[] = { "white", "creamy", "chestnut", "brown", "black", "gray", "darkbrown" };
+    int variant = static_cast<int>(NumOr(e, "Variant", 0));
+    std::string vStr = Str(e, "variant");
+    std::string texPath;
+    if (!vStr.empty()) {
+        auto [ns, v] = SplitId(vStr);
+        texPath = (v.find('/') != std::string::npos) ? v : ("entity/horse/horse_" + v);
+    } else {
+        texPath = std::string("entity/horse/horse_") + kVar[std::clamp(variant & 0xFF, 0, 6)];
+    }
+    EmitTextured(ctx, obj, model, base, pre, "minecraft:" + texPath, ctx.Texture("minecraft", texPath));
+}
+
+
 // ---------- armor stand ----------
 // ArmorStandRenderer + ArmorStandModel(setupAnim) + 盔甲/手持/头部物品层
 void RenderArmorStand(Ctx& ctx, const NbtTagPtr& e) {
@@ -740,6 +1070,22 @@ size_t Export(const std::string& name) {
         if (NumOr(e, "Invisible", 0) != 0) return;
         if (id == "minecraft:villager") RenderVillagerLike(ctx, e, false);
         else if (id == "minecraft:zombie_villager") RenderVillagerLike(ctx, e, true);
+        else if (id == "minecraft:zombie" || id == "minecraft:husk" || id == "minecraft:drowned")
+            RenderHumanoidMob(ctx, e, "zombie", "entity/zombie/zombie", 1.74, true);
+        else if (id == "minecraft:skeleton" || id == "minecraft:stray" || id == "minecraft:bogged")
+            RenderHumanoidMob(ctx, e, "skeleton", "entity/skeleton/skeleton", 1.74, false);
+        else if (id == "minecraft:wither_skeleton")
+            RenderHumanoidMob(ctx, e, "skeleton", "entity/skeleton/wither_skeleton", 2.1, false, "minecraft:wither_skeleton");
+        else if (id == "minecraft:creeper") RenderCreeper(ctx, e);
+        else if (id == "minecraft:pig") RenderQuadruped(ctx, e, id, "minecraft:pig#main", "entity/pig/pig", 0.9);
+        else if (id == "minecraft:cow" || id == "minecraft:mooshroom")
+            RenderQuadruped(ctx, e, id, "minecraft:cow#main",
+                            id == "minecraft:mooshroom" ? "entity/cow/red_mooshroom" : "entity/cow/cow", 1.4);
+        else if (id == "minecraft:sheep") RenderSheep(ctx, e);
+        else if (id == "minecraft:chicken") RenderQuadruped(ctx, e, id, "minecraft:chicken#main", "entity/chicken", 0.7);
+        else if (id == "minecraft:wolf") RenderWolf(ctx, e);
+        else if (id == "minecraft:cat") RenderCat(ctx, e);
+        else if (id == "minecraft:horse") RenderHorse(ctx, e);
     });
     if (ctx.objects.empty()) {
         std::cout << "[EntityModels] no supported entities (" << chunks << " entity chunks)" << std::endl;
