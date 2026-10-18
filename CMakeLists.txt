@@ -138,6 +138,16 @@ if (BUILD_TESTING AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/WorldImporter/tests/pl
     set_tests_properties(plant_offset PROPERTIES TIMEOUT 30)
 endif()
 
+# Biome zoom / blend golden vectors (no world, no PNG). Java generators live in
+# WorldImporter/tests/vref3 and are not required at ctest time.
+if (BUILD_TESTING AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/WorldImporter/tests/biome_blend_tests.cpp")
+    add_executable(biome_blend_tests WorldImporter/tests/biome_blend_tests.cpp)
+    target_link_libraries(biome_blend_tests PRIVATE WorldImporterCore)
+    wi_apply_defaults(biome_blend_tests)
+    add_test(NAME biome_blend COMMAND biome_blend_tests)
+    set_tests_properties(biome_blend PROPERTIES TIMEOUT 30)
+endif()
+
 # tests/ 是可选目录：删掉它（例如只发布主程序源码）时必须仍能正常编译主程序。
 set(WI_TESTS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/tests")
 if (BUILD_TESTING AND NOT EXISTS "${WI_TESTS_DIR}")
