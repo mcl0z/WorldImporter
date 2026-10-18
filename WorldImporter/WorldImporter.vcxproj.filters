@@ -182,6 +182,9 @@
     <ClCompile Include="ChunkGenerator.cpp">
       <Filter>源文件\Exporter</Filter>
     </ClCompile>
+    <ClCompile Include="BannerModel.cpp">
+      <Filter>源文件\Blocks</Filter>
+    </ClCompile>
     <ClCompile Include="init.cpp">
       <Filter>源文件</Filter>
     </ClCompile>

@@ -149,6 +149,7 @@
     <ClCompile Include="blockstate.cpp" />
     <ClCompile Include="chunk.cpp" />
     <ClCompile Include="ChunkGenerator.cpp" />
+    <ClCompile Include="BannerModel.cpp" />
     <ClCompile Include="ChunkGroupAllocator.cpp" />
     <ClCompile Include="ChunkLoader.cpp" />
     <ClCompile Include="CTM.cpp" />
@@ -189,6 +190,7 @@
     <ClInclude Include="CTM.h" />
     <ClInclude Include="CreateCT.h" />
     <ClInclude Include="ChunkGenerator.h" />
+    <ClInclude Include="BannerModel.h" />
     <ClInclude Include="ChunkGroupAllocator.h" />
     <ClInclude Include="ChunkLoader.h" />
     <ClInclude Include="config.h" />
