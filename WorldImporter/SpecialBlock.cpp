@@ -5,6 +5,7 @@
 #include <span>
 #include "texture.h"
 #include "blockstate.h"
+#include "SkullModel.h"
 #include <unordered_map>
 #include <unordered_set>
 #include <cmath>
@@ -903,6 +904,12 @@ ModelData SpecialBlock::GenerateSpecialBlockModel(const string& blockName) {
 
     if (IsLightBlock(blockName, texturePath)&&config.exportLightBlock) {
         return GenerateLightBlockModel(texturePath);
+    }
+
+    // 头颅/头(实体渲染方块, 方块模型没有 elements)
+    {
+        ModelData skull = GenerateSkullModel(blockName);
+        if (!skull.faces.empty()) return skull;
     }
 
     // 检查床方块 (block ID 以 _bed 结尾)

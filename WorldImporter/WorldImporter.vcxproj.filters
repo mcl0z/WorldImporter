@@ -140,6 +140,9 @@
     <ClCompile Include="BbsModelSupport.cpp">
       <Filter>源文件\Blocks</Filter>
     </ClCompile>
+    <ClCompile Include="SkullModel.cpp">
+      <Filter>源文件\Blocks</Filter>
+    </ClCompile>
     <ClCompile Include="SpecialBlock.cpp">
       <Filter>源文件\Blocks</Filter>
     </ClCompile>
