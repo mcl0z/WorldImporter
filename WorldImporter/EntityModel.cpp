@@ -109,20 +109,20 @@ EntityAffine LocalPose(const std::array<float, 9>& p) {
 }
 }
 EntityAffine EntityModel::PartTransform(int part, const EntityAffine& base,
-                                        const std::function<EntityAffine(int)>& pre) const {
+                                        const TopPre& pre) const {
     if (part < 0 || part >= PartCount()) return base;
     std::vector<int> chain;
     for (int p = part; p >= 0; p = parents_[p]) chain.push_back(p);
     std::reverse(chain.begin(), chain.end());   // root ... part
     EntityAffine m = base;
-    if (chain.size() > 1 && pre) m = m * pre(chain[1]);
+    if (chain.size() > 1 && pre) m = m * pre(names_[chain[1]]);
     for (int p : chain) m = m * LocalPose(poses_[p]);
     return m;
 }
 
 void EntityModel::Emit(ModelData& out, const EntityAffine& base,
                        const std::function<int(int)>& material,
-                       const std::function<EntityAffine(int)>& pre) const {
+                       const TopPre& pre) const {
     if (layer_ < 0) return;
     const int n = PartCount();
     std::vector<EntityAffine> local(n), world(n);
@@ -135,7 +135,7 @@ void EntityModel::Emit(ModelData& out, const EntityAffine& base,
         int par = parents_[i];
         if (par < 0) { world[i] = base * local[i]; shown[i] = visible_[i]; continue; }
         shown[i] = shown[par] && visible_[i];
-        if (par == 0 && pre) world[i] = base * pre(i) * local[0] * local[i];
+        if (par == 0 && pre) world[i] = base * pre(names_[i]) * local[0] * local[i];
         else world[i] = world[par] * local[i];
     }
     for (int i = 0; i < n; ++i) {
