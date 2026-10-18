@@ -116,6 +116,9 @@
     <ClCompile Include="biome.cpp">
       <Filter>源文件\World</Filter>
     </ClCompile>
+    <ClCompile Include="legacybiomes.cpp">
+      <Filter>源文件\World</Filter>
+    </ClCompile>
     <ClCompile Include="blocktint.cpp">
       <Filter>源文件\World</Filter>
     </ClCompile>
@@ -213,6 +216,9 @@
       <Filter>头文件\Core\Model</Filter>
     </ClInclude>
     <ClInclude Include="biome.h">
+      <Filter>头文件\World</Filter>
+    </ClInclude>
+    <ClInclude Include="legacybiomes.h">
       <Filter>头文件\World</Filter>
     </ClInclude>
     <ClInclude Include="blocktint.h">
