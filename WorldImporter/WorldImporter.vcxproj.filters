@@ -139,6 +139,9 @@
     <ClCompile Include="block.cpp">
       <Filter>源文件\World</Filter>
     </ClCompile>
+    <ClCompile Include="CreateCurvedTrack.cpp">
+      <Filter>源文件\Blocks</Filter>
+    </ClCompile>
     <ClCompile Include="ModelDeduplicator.cpp">
       <Filter>源文件\Exporter</Filter>
     </ClCompile>
@@ -277,6 +280,9 @@
     </ClInclude>
     <ClInclude Include="CTM.h">
       <Filter>头文件\Core\Model</Filter>
+    </ClInclude>
+    <ClInclude Include="CreateCurvedTrack.h">
+      <Filter>头文件\Blocks</Filter>
     </ClInclude>
     <ClInclude Include="biome.h">
       <Filter>头文件\World</Filter>
