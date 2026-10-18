@@ -71,6 +71,7 @@ Config LoadConfig(const std::string& configFile) {
     config.activeLOD3 = j.value("activeLOD3", config.activeLOD3);
     config.activeLOD4 = j.value("activeLOD4", config.activeLOD4);
     config.useBiomeColors = j.value("useBiomeColors", config.useBiomeColors);
+    config.biomeBlendRadius = std::clamp(j.value("biomeBlendRadius", config.biomeBlendRadius), 0, 32);
     // 加权变体挑选方式。旧开关 useRandomBlockModels 已被 variantSeedMode 取代，
     // 这里只作为老配置文件的兼容回退读取：显式 false 等价于 First，其余默认 Game
     // （与游戏一致，且导出可复现）。

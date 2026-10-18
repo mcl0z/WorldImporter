@@ -74,6 +74,10 @@ struct Config {
     bool activeLOD3; // 是否启用LOD3
     bool activeLOD4; // 是否启用LOD4
     bool useBiomeColors; // 是否启用群系颜色叠加
+    // Vanilla client option biomeBlendRadius. 0 keeps one sample per column
+    // (seed fuzz still applies). Clamped to [0, 32] so the channel sum fits in int32.
+    // Samples past the preloaded chunk ring are clamped back into the export rect.
+    int biomeBlendRadius;
     VariantSeedMode variantSeedMode; // 加权变体的挑选方式(默认 Game=与游戏一致且可复现)
     bool importEntities; // 导出区域内生物/实体元数据
     bool exportEntityModels; // 导出区域内生物的几何模型(entities.obj/.mtl, 村民层走 overlay.json)
@@ -130,6 +134,7 @@ struct Config {
         activeLOD4(true),
         lod1Blocks({}),
         useBiomeColors(true),
+        biomeBlendRadius(2),
         variantSeedMode(VariantSeedMode::Game),
         importEntities(false),
         exportEntityModels(true),

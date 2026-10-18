@@ -145,6 +145,7 @@
     <ClCompile Include="biome.cpp" />
     <ClCompile Include="BeaconBeam.cpp" />
     <ClCompile Include="legacybiomes.cpp" />
+    <ClCompile Include="biome_zoom.cpp" />
     <ClCompile Include="blocktint.cpp" />
     <ClCompile Include="CreateBellCrafter.cpp" />
     <ClCompile Include="BbsModelSupport.cpp" />

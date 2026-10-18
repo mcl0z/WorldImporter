@@ -15,6 +15,13 @@
 #include <string>
 #include <cmath>
 #include "hashutils.h"
+#include "config.h"
+#include "nbtutils.h"
+#include "decompressor.h"
+#include <algorithm>
+#include <cstdint>
+#include <limits>
+#include <unordered_map>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -395,12 +402,15 @@ BiomeColors Biome::ParseBiomeColors(const nlohmann::json& biomeJson) {
 
         colors.grass = ParseColorWithFallback("grass_color", "grass");
 
-        // grass_color_modifier (vanilla GrassColorModifier): swamp 用固定色(取噪声高值一侧),
-        // dark_forest 与 0x28340A 取平均。没有 grass_color 覆盖时才生效。
+        // grass_color_modifier (vanilla GrassColorModifier). dark_forest is a
+        // position-independent average with 0x28340A, baked here. swamp depends on
+        // BIOME_INFO_NOISE at the block column: keep 0x6A7039 for LOD/GetColor and
+        // set swampGrass so the tint export substitutes BiomeSwampGrassColor.
         if (effects.contains("grass_color_modifier") && effects["grass_color_modifier"].is_string()) {
             const std::string mod = effects["grass_color_modifier"].get<std::string>();
             if (mod == "swamp") {
                 colors.grass = 0x6A7039;
+                colors.swampGrass = true;
             } else if (mod == "dark_forest") {
                 colors.grass = ((colors.grass & 0xFEFEFE) + 0x28340A) >> 1;
             }
@@ -654,6 +664,310 @@ int Biome::CalculateColorFromColormap(const std::string& filePath,float adjTempe
 int g_biomeMapMinX = 0;
 int g_biomeMapMinZ = 0;
 
+namespace {
+
+constexpr int kBlendChannels = 7;
+
+int BlendChannel(BiomeColorType type) {
+    switch (type) {
+    case BiomeColorType::Foliage: return 0;
+    case BiomeColorType::DryFoliage: return 1;
+    case BiomeColorType::Grass: return 2;
+    case BiomeColorType::Fog: return 3;
+    case BiomeColorType::Sky: return 4;
+    case BiomeColorType::Water: return 5;
+    case BiomeColorType::WaterFog: return 6;
+    }
+    return -1;
+}
+
+// Per-pixel blended colours filled by GenerateBiomeMap while sectionCache still
+// holds the batch (plus its one-chunk ring). ExportToPNG runs after that cache
+// is dropped, so it only writes these buffers. ready == 0 keeps the id-to-colour
+// path used by tests that never call GenerateBiomeMap. 0xFFFFFF is a legal tint,
+// so a colour sentinel cannot mark "not computed".
+std::vector<uint8_t> g_blendReady;
+std::vector<uint32_t> g_blendColor[kBlendChannels];
+bool g_seedReady = false;
+bool g_hasZoom = false;
+int64_t g_zoomSeed = 0;
+
+struct TintLut {
+    std::vector<int> color[kBlendChannels];
+    std::vector<uint8_t> swamp;
+};
+
+bool IsBlockTintChannel(int channel) {
+    return channel == 0 || channel == 1 || channel == 2 || channel == 5;
+}
+
+int LutColor(const TintLut& lut, int channel, int biomeId, int sampleX, int sampleZ) {
+    if (channel == 2 && biomeId >= 0 && biomeId < static_cast<int>(lut.swamp.size()) && lut.swamp[biomeId]) {
+        return BiomeSwampGrassColor(sampleX, sampleZ);
+    }
+    if (biomeId < 0 || biomeId >= static_cast<int>(lut.color[channel].size())) return 0xFFFFFF;
+    return lut.color[channel][biomeId];
+}
+
+struct SecKey {
+    int cx, cz, sy;
+    bool operator==(const SecKey& other) const {
+        return cx == other.cx && cz == other.cz && sy == other.sy;
+    }
+};
+
+struct SecKeyHash {
+    size_t operator()(const SecKey& key) const {
+        size_t h = std::hash<int>{}(key.cx);
+        h ^= std::hash<int>{}(key.cz) + 0x9e3779b9u + (h << 6) + (h >> 2);
+        h ^= std::hash<int>{}(key.sy) + 0x9e3779b9u + (h << 6) + (h >> 2);
+        return h;
+    }
+};
+
+struct SecSnap {
+    bool present = false;
+    std::vector<int> biomes;
+};
+
+struct SampleKey {
+    int x, y, z;
+    bool operator==(const SampleKey& other) const {
+        return x == other.x && y == other.y && z == other.z;
+    }
+};
+
+struct SampleKeyHash {
+    size_t operator()(const SampleKey& key) const {
+        size_t h = std::hash<int>{}(key.x);
+        h ^= std::hash<int>{}(key.z) + 0x9e3779b9u + (h << 6) + (h >> 2);
+        h ^= std::hash<int>{}(key.y) + 0x9e3779b9u + (h << 6) + (h >> 2);
+        return h;
+    }
+};
+
+struct Resolved {
+    bool ok = false;
+    int id = 0;
+    int x = 0;
+    int z = 0;
+};
+
+// Copies section biome palettes out of sectionCache. Does not insert into the
+// shared cache and does not call LoadAndCacheBlockData: the palette is frozen
+// while the tint map is built, and a missing section is a real gap (Y range or
+// a column past the one-chunk preload), not a request to parse another chunk.
+class BiomeSampler {
+public:
+    bool TryAt(int blockX, int blockY, int blockZ, int& biomeId) {
+        int chunkX = 0, chunkZ = 0;
+        blockToChunk(blockX, blockZ, chunkX, chunkZ);
+        int sectionY = 0;
+        blockYToSectionY(blockY, sectionY);
+        const SecKey key{chunkX, chunkZ, AdjustSectionY(sectionY)};
+        auto found = sections.find(key);
+        if (found == sections.end()) {
+            SecSnap snap;
+            {
+                std::shared_lock<std::shared_mutex> lock(sectionCacheMutex);
+                auto cached = sectionCache.find(std::make_tuple(chunkX, chunkZ, key.sy));
+                if (cached != sectionCache.end()) {
+                    snap.present = true;
+                    snap.biomes = cached->second.biomeData;
+                }
+            }
+            found = sections.emplace(key, std::move(snap)).first;
+        }
+        const SecSnap& snap = found->second;
+        if (!snap.present) return false;
+        const int biomeX = mod16(blockX) / 4;
+        const int biomeY = mod16(blockY) / 4;
+        const int biomeZ = mod16(blockZ) / 4;
+        const int index = 16 * biomeY + 4 * biomeZ + biomeX;
+        biomeId = (index >= 0 && static_cast<size_t>(index) < snap.biomes.size()) ? snap.biomes[index] : 0;
+        return true;
+    }
+
+    // Winner-first quart lookup. If that section is loaded the other seven
+    // corners are not consulted (the distance winner is unique in the vanilla
+    // strict-> rule). If it is missing, the nearest loaded corner is used.
+    // Missing corners are treated as infinite distance. Ties keep the lower index.
+    Resolved Resolve(int x, int y, int z) {
+        const SampleKey key{x, y, z};
+        auto cached = samples.find(key);
+        if (cached != samples.end()) return cached->second;
+
+        Resolved resolved;
+        resolved.x = x;
+        resolved.z = z;
+        if (!g_hasZoom) {
+            int biomeId = 0;
+            if (TryAt(x, y, z, biomeId)) {
+                resolved.ok = true;
+                resolved.id = biomeId;
+            }
+            samples.emplace(key, resolved);
+            return resolved;
+        }
+
+        const int shiftedX = x - 2;
+        const int shiftedY = y - 2;
+        const int shiftedZ = z - 2;
+        const int parentX = shiftedX >> 2;
+        const int parentY = shiftedY >> 2;
+        const int parentZ = shiftedZ >> 2;
+        const double fractX = static_cast<double>(shiftedX & 3) / 4.0;
+        const double fractY = static_cast<double>(shiftedY & 3) / 4.0;
+        const double fractZ = static_cast<double>(shiftedZ & 3) / 4.0;
+
+        int cornerX[8], cornerY[8], cornerZ[8];
+        double cornerDist[8];
+        int winner = 0;
+        double bestDist = std::numeric_limits<double>::infinity();
+        for (int i = 0; i < 8; ++i) {
+            const bool xEven = (i & 4) == 0;
+            const bool yEven = (i & 2) == 0;
+            const bool zEven = (i & 1) == 0;
+            cornerX[i] = xEven ? parentX : parentX + 1;
+            cornerY[i] = yEven ? parentY : parentY + 1;
+            cornerZ[i] = zEven ? parentZ : parentZ + 1;
+            cornerDist[i] = BiomeFiddledDistance(
+                g_zoomSeed, cornerX[i], cornerY[i], cornerZ[i],
+                xEven ? fractX : fractX - 1.0,
+                yEven ? fractY : fractY - 1.0,
+                zEven ? fractZ : fractZ - 1.0);
+            if (bestDist > cornerDist[i]) {
+                bestDist = cornerDist[i];
+                winner = i;
+            }
+        }
+
+        int biomeId = 0;
+        if (TryAt(cornerX[winner] << 2, cornerY[winner] << 2, cornerZ[winner] << 2, biomeId)) {
+            resolved.ok = true;
+            resolved.id = biomeId;
+            samples.emplace(key, resolved);
+            return resolved;
+        }
+
+        int fallback = -1;
+        double fallbackDist = std::numeric_limits<double>::infinity();
+        for (int i = 0; i < 8; ++i) {
+            if (i == winner) continue;
+            if (!(fallbackDist > cornerDist[i])) continue;
+            int candidate = 0;
+            if (!TryAt(cornerX[i] << 2, cornerY[i] << 2, cornerZ[i] << 2, candidate)) continue;
+            fallback = i;
+            fallbackDist = cornerDist[i];
+            biomeId = candidate;
+        }
+        if (fallback >= 0) {
+            resolved.ok = true;
+            resolved.id = biomeId;
+        }
+        samples.emplace(key, resolved);
+        return resolved;
+    }
+
+private:
+    std::unordered_map<SecKey, SecSnap, SecKeyHash> sections;
+    std::unordered_map<SampleKey, Resolved, SampleKeyHash> samples;
+};
+
+// Neighbours outside the loaded set: clamp X/Z into the export rectangle and
+// sample that column at the same Y. The batch loader preloads one chunk (16
+// blocks) around the batch, which covers the default radius 2 and the fuzz
+// quart in XZ. A quart can still sit one section above or below the surface
+// block; that section is used only when the export Y range already loaded it.
+// If the clamped column is also missing, the caller reuses the center column.
+// Swamp noise uses the coordinates of the sample that actually supplied the id.
+Resolved SampleColumn(BiomeSampler& sampler, int x, int y, int z, int minX, int maxX, int minZ, int maxZ) {
+    Resolved resolved = sampler.Resolve(x, y, z);
+    if (resolved.ok) return resolved;
+    const int clampedX = std::clamp(x, minX, maxX);
+    const int clampedZ = std::clamp(z, minZ, maxZ);
+    if (clampedX != x || clampedZ != z) {
+        resolved = sampler.Resolve(clampedX, y, clampedZ);
+    }
+    return resolved;
+}
+
+bool ReadFileBytes(const std::string& path, std::vector<char>& out) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in) return false;
+    in.seekg(0, std::ios::end);
+    const std::streamoff size = in.tellg();
+    if (size <= 0 || size > 8 * 1024 * 1024) return false;
+    in.seekg(0, std::ios::beg);
+    out.resize(static_cast<size_t>(size));
+    in.read(out.data(), size);
+    return static_cast<size_t>(in.gcount()) == out.size();
+}
+
+bool ParseNbtRoot(const std::vector<char>& file, NbtTagPtr& root) {
+    const std::vector<char>* source = &file;
+    std::vector<char> inflated;
+    if (file.size() >= 2 && static_cast<unsigned char>(file[0]) == 0x1f &&
+        static_cast<unsigned char>(file[1]) == 0x8b) {
+        if (!DecompressGzip(file, inflated)) return false;
+        source = &inflated;
+    }
+    try {
+        size_t index = 0;
+        root = readTag(*source, index);
+        return static_cast<bool>(root);
+    } catch (...) {
+        return false;
+    }
+}
+
+bool ChildLong(const NbtTagPtr& parent, const char* name, int64_t& out) {
+    if (!parent) return false;
+    const NbtTagPtr child = getChildByName(parent, name);
+    if (!child || child->type != TagType::LONG || child->payload.size() < 8) return false;
+    out = bytesToLong(child->payload);
+    return true;
+}
+
+bool SeedFromNbtFile(const std::string& path, int64_t& out) {
+    std::vector<char> bytes;
+    if (!ReadFileBytes(path, bytes)) return false;
+    NbtTagPtr root;
+    if (!ParseNbtRoot(bytes, root)) return false;
+    // 1.18-1.21 level.dat: Data.WorldGenSettings.seed
+    const NbtTagPtr data = getChildByName(root, "Data");
+    const NbtTagPtr settings = data ? getChildByName(data, "WorldGenSettings") : nullptr;
+    if (ChildLong(settings, "seed", out)) return true;
+    // 26.x: world/data/minecraft/world_gen_settings.dat compound "data".seed
+    const NbtTagPtr data26 = getChildByName(root, "data");
+    if (ChildLong(data26, "seed", out)) return true;
+    return ChildLong(root, "seed", out);
+}
+
+bool ReadWorldSeed(int64_t& out) {
+    if (config.worldPath.empty()) return false;
+    if (SeedFromNbtFile(JoinPath(config.worldPath, "level.dat"), out)) return true;
+    return SeedFromNbtFile(JoinPath(config.worldPath, "data", "minecraft", "world_gen_settings.dat"), out);
+}
+
+void EnsureZoomSeed() {
+    if (g_seedReady) return;
+    g_seedReady = true;
+    g_hasZoom = false;
+    int64_t worldSeed = 0;
+    if (ReadWorldSeed(worldSeed)) {
+        g_zoomSeed = BiomeObfuscateSeed(worldSeed);
+        g_hasZoom = true;
+        std::cout << "Biome blend: world seed " << worldSeed << ", zoom seed " << g_zoomSeed
+                  << ", radius " << std::clamp(config.biomeBlendRadius, 0, 32) << std::endl;
+    } else {
+        std::cout << "Biome blend: world seed unavailable, raw quart biomes, radius "
+                  << std::clamp(config.biomeBlendRadius, 0, 32) << std::endl;
+    }
+}
+
+}  // namespace
+
 // 初始化生物群系地图尺寸和偏移量
 void Biome::InitializeBiomeMap(int minX, int minZ, int maxX, int maxZ) {
     int width = maxX - minX + 1;
@@ -661,6 +975,40 @@ void Biome::InitializeBiomeMap(int minX, int minZ, int maxX, int maxZ) {
     g_biomeMap.assign(height, std::vector<int>(width));
     g_biomeMapMinX = minX;
     g_biomeMapMinZ = minZ;
+    const size_t pixels = (width > 0 && height > 0)
+        ? static_cast<size_t>(width) * static_cast<size_t>(height)
+        : 0;
+    g_blendReady.assign(pixels, 0);
+    for (int channel = 0; channel < kBlendChannels; ++channel) g_blendColor[channel].assign(pixels, 0);
+    g_seedReady = false;
+    g_hasZoom = false;
+    g_zoomSeed = 0;
+}
+
+void Biome::FillBiomeExportLut(std::vector<int> (&colors)[7], std::vector<uint8_t>& swamp) {
+    std::shared_lock<std::shared_mutex> lock(registryMutex);
+    int maxId = 0;
+    for (const auto& entry : biomeRegistry) {
+        if (entry.second.id > maxId) maxId = entry.second.id;
+    }
+    for (int channel = 0; channel < 7; ++channel) {
+        colors[channel].assign(static_cast<size_t>(maxId) + 1, 0xFFFFFF);
+    }
+    swamp.assign(static_cast<size_t>(maxId) + 1, 0);
+    for (const auto& entry : biomeRegistry) {
+        const int id = entry.second.id;
+        if (id < 0) continue;
+        std::lock_guard<std::mutex> colorLock(entry.second.colorMutex);
+        const BiomeColors& biomeColors = entry.second.colors;
+        colors[0][id] = biomeColors.foliage;
+        colors[1][id] = biomeColors.dryFoliage;
+        colors[2][id] = biomeColors.grass;
+        colors[3][id] = biomeColors.fog;
+        colors[4][id] = biomeColors.sky;
+        colors[5][id] = biomeColors.water;
+        colors[6][id] = biomeColors.waterFog;
+        swamp[id] = biomeColors.swampGrass ? 1 : 0;
+    }
 }
 
 void Biome::GenerateBiomeMap(int minX, int minZ, int maxX, int maxZ) {
@@ -670,24 +1018,80 @@ void Biome::GenerateBiomeMap(int minX, int minZ, int maxX, int maxZ) {
         return;
     }
 
-    int globalMinX = g_biomeMapMinX;
-    int globalMinZ = g_biomeMapMinZ;
-    size_t mapWidth = g_biomeMap[0].size();
-    size_t mapHeight = g_biomeMap.size();
+    EnsureZoomSeed();
+    TintLut lut;
+    FillBiomeExportLut(lut.color, lut.swamp);
+    BiomeSampler sampler;
 
+    int radius = config.biomeBlendRadius;
+    if (radius < 0) radius = 0;
+    if (radius > 32) radius = 32;
+    const int sampleCount = (radius * 2 + 1) * (radius * 2 + 1);
+
+    const int globalMinX = g_biomeMapMinX;
+    const int globalMinZ = g_biomeMapMinZ;
+    const int globalMaxX = globalMinX + static_cast<int>(g_biomeMap[0].size()) - 1;
+    const int globalMaxZ = globalMinZ + static_cast<int>(g_biomeMap.size()) - 1;
+    const size_t mapWidth = g_biomeMap[0].size();
+    const size_t mapHeight = g_biomeMap.size();
+
+    // Every neighbour is sampled at this column's surface Y, matching
+    // ClientLevel.calculateBlockTint (Cursor3D keeps Y fixed). The blended
+    // colour is the toward-zero mean of all (2r+1)^2 samples, including ones
+    // substituted by the clamp / center fallback, so the divisor stays full.
     for (int x = minX; x <= maxX; ++x) {
         for (int z = minZ; z <= maxZ; ++z) {
-            // 检查当前方块坐标是否在全局生物群系地图范围内
-            int mapX = x - globalMinX;
-            int mapZ = z - globalMinZ;
+            const int mapX = x - globalMinX;
+            const int mapZ = z - globalMinZ;
+            if (mapX < 0 || mapZ < 0 || static_cast<size_t>(mapX) >= mapWidth ||
+                static_cast<size_t>(mapZ) >= mapHeight) {
+                continue;
+            }
 
-            if (mapX >= 0 && mapX < mapWidth && mapZ >= 0 && mapZ < mapHeight) {
-                // 高度图存的是 (最高方块Y + 1) - 世界最低Y, 需换算成世界Y再取表面方块所在群系
-                int hm = GetHeightMapY(x, z, "MOTION_BLOCKING");
-                int currentY = hm > 0 ? hm - 1 + minSectionY * 16 : hm;
-                int biomeId = GetBiomeId(x, currentY, z);
-                // 将生物群系ID写入全局地图的对应位置
-                g_biomeMap[mapZ][mapX] = biomeId;
+            // 高度图存的是 (最高方块Y + 1) - 世界最低Y, 需换算成世界Y再取表面方块所在群系
+            const int hm = GetHeightMapY(x, z, "MOTION_BLOCKING");
+            const int currentY = hm > 0 ? hm - 1 + minSectionY * 16 : hm;
+
+            Resolved center = SampleColumn(sampler, x, currentY, z, globalMinX, globalMaxX, globalMinZ, globalMaxZ);
+            if (!center.ok) {
+                center.ok = true;
+                center.id = 0;
+                center.x = x;
+                center.z = z;
+            }
+            g_biomeMap[mapZ][mapX] = center.id;
+
+            int red[kBlendChannels] = {};
+            int green[kBlendChannels] = {};
+            int blue[kBlendChannels] = {};
+            for (int dz = -radius; dz <= radius; ++dz) {
+                for (int dx = -radius; dx <= radius; ++dx) {
+                    Resolved sample = SampleColumn(
+                        sampler, x + dx, currentY, z + dz,
+                        globalMinX, globalMaxX, globalMinZ, globalMaxZ);
+                    if (!sample.ok) sample = center;
+                    for (int channel = 0; channel < kBlendChannels; ++channel) {
+                        // 原版只有方块着色（草/树叶/干树叶/水）走 calculateBlockTint 的方形平均；
+                        // 天空/雾/水雾由 CubicSampler 另行处理，这里取本格群系，不做方形平均。
+                        const Resolved& src = IsBlockTintChannel(channel) ? sample : center;
+                        const int color = LutColor(lut, channel, src.id, src.x, src.z);
+                        red[channel] += (color >> 16) & 0xFF;
+                        green[channel] += (color >> 8) & 0xFF;
+                        blue[channel] += color & 0xFF;
+                    }
+                }
+            }
+
+            const size_t pixel = static_cast<size_t>(mapZ) * mapWidth + static_cast<size_t>(mapX);
+            if (pixel < g_blendReady.size()) {
+                g_blendReady[pixel] = 1;
+                for (int channel = 0; channel < kBlendChannels; ++channel) {
+                    const int blended =
+                        ((red[channel] / sampleCount) & 0xFF) << 16 |
+                        ((green[channel] / sampleCount) & 0xFF) << 8 |
+                        ((blue[channel] / sampleCount) & 0xFF);
+                    g_blendColor[channel][pixel] = static_cast<uint32_t>(blended);
+                }
             }
         }
     }
@@ -731,12 +1135,23 @@ bool Biome::ExportToPNG(const std::string& filename, BiomeColorType colorType)
             return false;
         }
     }
+    const int blendChannel = BlendChannel(colorType);
+    const bool haveBlend = blendChannel >= 0 &&
+        g_blendReady.size() == static_cast<size_t>(width) * static_cast<size_t>(height) &&
+        g_blendColor[blendChannel].size() == g_blendReady.size();
     for (int y = 0; y < height; ++y) {
         for (int x = 0; x < width; ++x) {
+            const size_t pixel = static_cast<size_t>(y) * static_cast<size_t>(width) + static_cast<size_t>(x);
+            const int index = (y * width + x) * 3;
+            if (haveBlend && g_blendReady[pixel]) {
+                const uint32_t blended = g_blendColor[blendChannel][pixel];
+                imageData[index] = static_cast<uint8_t>((blended >> 16) & 0xFF);
+                imageData[index + 1] = static_cast<uint8_t>((blended >> 8) & 0xFF);
+                imageData[index + 2] = static_cast<uint8_t>(blended & 0xFF);
+                continue;
+            }
             int biomeId = g_biomeMap[y][x];
-
             auto& color = finalColorMap[biomeId];
-            int index = (y * width + x) * 3;
             imageData[index] = std::get<0>(color);  // R
             imageData[index + 1] = std::get<1>(color);  // G
             imageData[index + 2] = std::get<2>(color);  // B
