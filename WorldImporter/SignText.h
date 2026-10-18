@@ -9,9 +9,14 @@
 // Only minecraft:*_sign, *_wall_sign, *_hanging_sign, *_wall_hanging_sign.
 // Returns false when every line is empty or the font cannot be loaded.
 //
-// Limitation: per-component colours and styles (bold, italic, shadow, font)
-// are ignored. The sign's dye colour and glowing flag are used for the whole
-// line. translate/score/selector components are not resolved; a "translate"
-// key is copied literally when the component has no "text".
+// Styles follow the 1.21.1 client (Style / TextColor / ChatFormatting /
+// StringDecomposer / Font.StringRenderOutput). Each glyph uses its own colour
+// (named formatting colours and #RRGGBB), bold, italic, underline, and
+// strikethrough. "§" codes inside a literal are applied the same way; §r
+// returns to that component's style. Child components ("extra") inherit the
+// parent style unless they set a field. Obfuscated (§k) is drawn as the real
+// glyph. A glowing outline is the darkened dye colour for every glyph.
+// translate/score/selector are not resolved; a "translate" key is copied
+// literally when the component has no text. Custom fonts are not selected.
 bool BuildSignTextModel(const std::string& ns, const std::string& blockNameWithState,
     const NbtTagPtr& blockEntityNbt, int x, int y, int z, ModelData& out);

@@ -30,12 +30,17 @@
 #include <utility>
 #include <vector>
 
-// Vanilla sign text. Per-component colours and styles are ignored; the sign dye
-// colour and the glowing flag paint the whole side. translate/score/selector
-// components are not resolved — a "translate" key is copied literally when the
-// component has no "text". Bitmap and space providers are loaded first. unihex
+// Vanilla sign text. Bitmap and space providers are loaded first. unihex
 // (1.20+) and legacy_unicode (1.18/1.19) supply the remaining codepoints. The
 // first provider that has a codepoint wins. ttf is not loaded.
+//
+// Per-glyph style matches Font.StringRenderOutput (1.21.1): a style colour
+// replaces the sign colour, bold draws the glyph again at +getBoldOffset and
+// advances by that offset, italic shears by 1 - 0.25*y (top of an 8-unit glyph
+// is +1 relative to the bottom). Underline and strikethrough are the solid
+// Font effect rects. Obfuscated draws the real glyph. The 8-neighbour glow
+// outline uses the darkened dye for every glyph (drawInBatch8xOutline replaces
+// the style colour). translate/score/selector are not resolved.
 //
 // Hanging signs use the block entity's line height of 9 (standing and wall signs
 // use 10). The bake hash includes that line height and the max line width so a
@@ -91,6 +96,88 @@ struct PlacedGlyph {
     const Glyph* glyph = nullptr;
     float penX = 0.0f;
     float lineY = 0.0f;
+    float advance = 0.0f;
+    bool bold = false;
+    bool italic = false;
+    bool underlined = false;
+    bool strikethrough = false;
+    bool hasColor = false;
+    int color = 0;
+};
+
+// Resolved style. Unset fields are not stored: inheritance happens in RawStyle
+// before a run is built. hasColor false means "use the sign's default colour".
+struct RunStyle {
+    bool hasColor = false;
+    int color = 0;
+    bool bold = false;
+    bool italic = false;
+    bool underlined = false;
+    bool strikethrough = false;
+    bool obfuscated = false;
+
+    bool affectsPixels() const {
+        return hasColor || bold || italic || underlined || strikethrough;
+    }
+};
+
+// Tri-state flags: -1 inherits, 0/1 are explicit. Matches Style.applyTo.
+struct RawStyle {
+    bool hasColor = false;
+    int color = 0;
+    int bold = -1;
+    int italic = -1;
+    int underlined = -1;
+    int strikethrough = -1;
+    int obfuscated = -1;
+
+    RawStyle ApplyTo(const RawStyle& parent) const {
+        RawStyle out = parent;
+        if (hasColor) {
+            out.hasColor = true;
+            out.color = color;
+        }
+        if (bold >= 0) out.bold = bold;
+        if (italic >= 0) out.italic = italic;
+        if (underlined >= 0) out.underlined = underlined;
+        if (strikethrough >= 0) out.strikethrough = strikethrough;
+        if (obfuscated >= 0) out.obfuscated = obfuscated;
+        return out;
+    }
+
+    RunStyle Resolve() const {
+        RunStyle style;
+        style.hasColor = hasColor;
+        style.color = color & 0xFFFFFF;
+        style.bold = bold == 1;
+        style.italic = italic == 1;
+        style.underlined = underlined == 1;
+        style.strikethrough = strikethrough == 1;
+        style.obfuscated = obfuscated == 1;
+        return style;
+    }
+};
+
+struct TextRun {
+    std::string text;
+    RunStyle style;
+};
+
+struct StyledLine {
+    std::vector<TextRun> runs;
+
+    std::string Plain() const {
+        std::string out;
+        for (const auto& run : runs) out += run.text;
+        return out;
+    }
+
+    bool HasStyle() const {
+        for (const auto& run : runs) {
+            if (run.style.affectsPixels()) return true;
+        }
+        return false;
+    }
 };
 
 FontLib gFont;
@@ -225,79 +312,223 @@ int DarkColor(int textRgb, bool glowing) {
     return DarkenRgb(textRgb);
 }
 
-std::string FlattenJson(const nlohmann::json& node) {
-    if (node.is_string()) return node.get<std::string>();
+// ChatFormatting colours (not dye colours). Names match TextColor.parseColor.
+bool NamedChatColor(const std::string& name, int& rgb) {
+    static const std::pair<const char*, int> kColors[] = {
+        {"black", 0},
+        {"dark_blue", 170},
+        {"dark_green", 43520},
+        {"dark_aqua", 43690},
+        {"dark_red", 11141120},
+        {"dark_purple", 11141290},
+        {"gold", 16755200},
+        {"gray", 11184810},
+        {"dark_gray", 5592405},
+        {"blue", 5592575},
+        {"green", 5635925},
+        {"aqua", 5636095},
+        {"red", 16733525},
+        {"light_purple", 16733695},
+        {"yellow", 16777045},
+        {"white", 16777215},
+    };
+    for (const auto& entry : kColors) {
+        if (name == entry.first) {
+            rgb = entry.second;
+            return true;
+        }
+    }
+    return false;
+}
+
+// TextColor.parseColor: '#' + hex, value in 0..0xFFFFFF.
+bool ParseHexColor(const std::string& text, int& rgb) {
+    if (text.size() < 2 || text[0] != '#') return false;
+    int value = 0;
+    for (size_t i = 1; i < text.size(); ++i) {
+        const char c = text[i];
+        int digit = -1;
+        if (c >= '0' && c <= '9') digit = c - '0';
+        else if (c >= 'a' && c <= 'f') digit = c - 'a' + 10;
+        else if (c >= 'A' && c <= 'F') digit = c - 'A' + 10;
+        else return false;
+        value = (value << 4) | digit;
+        if (value > 0xFFFFFF) return false;
+    }
+    rgb = value;
+    return true;
+}
+
+bool ParseColorString(const std::string& text, int& rgb) {
+    if (ParseHexColor(text, rgb)) return true;
+    return NamedChatColor(text, rgb);
+}
+
+int JsonTri(const nlohmann::json& node, const char* key) {
+    if (!node.contains(key)) return -1;
+    const auto& value = node[key];
+    if (value.is_boolean()) return value.get<bool>() ? 1 : 0;
+    if (value.is_number_integer()) return value.get<int>() != 0 ? 1 : 0;
+    return -1;
+}
+
+RawStyle StyleFromJson(const nlohmann::json& node) {
+    RawStyle style;
+    if (!node.is_object()) return style;
+    if (node.contains("color") && node["color"].is_string()) {
+        int rgb = 0;
+        if (ParseColorString(node["color"].get<std::string>(), rgb)) {
+            style.hasColor = true;
+            style.color = rgb;
+        }
+    }
+    style.bold = JsonTri(node, "bold");
+    style.italic = JsonTri(node, "italic");
+    style.underlined = JsonTri(node, "underlined");
+    style.strikethrough = JsonTri(node, "strikethrough");
+    style.obfuscated = JsonTri(node, "obfuscated");
+    return style;
+}
+
+int NbtTri(const NbtTagPtr& parent, const char* key) {
+    const NbtTagPtr tag = getChildByName(parent, key);
+    if (!tag || tag->payload.empty()) return -1;
+    if (tag->type == TagType::BYTE) return static_cast<unsigned char>(tag->payload[0]) != 0 ? 1 : 0;
+    if (tag->type == TagType::SHORT && tag->payload.size() >= 2) return bytesToShort(tag->payload) != 0 ? 1 : 0;
+    if (tag->type == TagType::INT && tag->payload.size() >= 4) return bytesToInt(tag->payload) != 0 ? 1 : 0;
+    return -1;
+}
+
+RawStyle StyleFromNbt(const NbtTagPtr& tag) {
+    RawStyle style;
+    if (!tag || tag->type != TagType::COMPOUND) return style;
+    const NbtTagPtr color = getChildByName(tag, "color");
+    if (color && color->type == TagType::STRING) {
+        int rgb = 0;
+        if (ParseColorString(TagString(color), rgb)) {
+            style.hasColor = true;
+            style.color = rgb;
+        }
+    } else if (color && color->type == TagType::INT && color->payload.size() >= 4) {
+        style.hasColor = true;
+        style.color = bytesToInt(color->payload) & 0xFFFFFF;
+    }
+    style.bold = NbtTri(tag, "bold");
+    style.italic = NbtTri(tag, "italic");
+    style.underlined = NbtTri(tag, "underlined");
+    style.strikethrough = NbtTri(tag, "strikethrough");
+    style.obfuscated = NbtTri(tag, "obfuscated");
+    return style;
+}
+
+void AddRun(std::vector<TextRun>& runs, const std::string& text, const RunStyle& style) {
+    if (text.empty()) return;
+    runs.push_back(TextRun{text, style});
+}
+
+// Component.visit: this style applied onto the parent, then contents, then extra.
+void AppendJson(const nlohmann::json& node, const RawStyle& parent, std::vector<TextRun>& runs) {
+    if (node.is_string()) {
+        AddRun(runs, node.get<std::string>(), parent.Resolve());
+        return;
+    }
     if (node.is_array()) {
-        std::string out;
-        for (const auto& child : node) out += FlattenJson(child);
-        return out;
+        for (const auto& child : node) AppendJson(child, parent, runs);
+        return;
     }
-    if (node.is_object()) {
-        std::string out;
-        if (node.contains("text") && node["text"].is_string()) out += node["text"].get<std::string>();
-        else if (node.contains("translate") && node["translate"].is_string())
-            out += node["translate"].get<std::string>();
-        if (node.contains("extra")) out += FlattenJson(node["extra"]);
-        return out;
+    if (!node.is_object()) return;
+    const RawStyle style = StyleFromJson(node).ApplyTo(parent);
+    const RunStyle resolved = style.Resolve();
+    if (node.contains("text") && node["text"].is_string()) {
+        AddRun(runs, node["text"].get<std::string>(), resolved);
+    } else if (node.contains("translate") && node["translate"].is_string()) {
+        AddRun(runs, node["translate"].get<std::string>(), resolved);
     }
-    return {};
+    if (node.contains("extra")) AppendJson(node["extra"], style, runs);
 }
 
-std::string ParseJsonText(const std::string& raw) {
-    if (raw.empty()) return {};
-    try {
-        return FlattenJson(nlohmann::json::parse(raw));
-    } catch (const std::exception&) {
-        return raw;
+void AppendNbt(const NbtTagPtr& tag, const RawStyle& parent, std::vector<TextRun>& runs) {
+    if (!tag) return;
+    if (tag->type == TagType::STRING) {
+        AddRun(runs, TagString(tag), parent.Resolve());
+        return;
     }
-}
-
-std::string DecodeString(const std::string& raw, StringMode mode) {
-    if (mode == StringMode::Literal) return raw;
-    if (mode == StringMode::Json) return ParseJsonText(raw);
-    if (!raw.empty() && (raw[0] == '"' || raw[0] == '{' || raw[0] == '[')) return ParseJsonText(raw);
-    return raw;
-}
-
-std::string FlattenNbtComponent(const NbtTagPtr& tag) {
-    if (!tag) return {};
-    if (tag->type == TagType::STRING) return TagString(tag);
     if (tag->type == TagType::LIST) {
-        std::string out;
-        for (const auto& child : tag->children) out += FlattenNbtComponent(child);
-        return out;
+        for (const auto& child : tag->children) AppendNbt(child, parent, runs);
+        return;
     }
-    if (tag->type != TagType::COMPOUND) return {};
-    std::string out;
+    if (tag->type != TagType::COMPOUND) return;
+    const RawStyle style = StyleFromNbt(tag).ApplyTo(parent);
+    const RunStyle resolved = style.Resolve();
     const NbtTagPtr text = getChildByName(tag, "text");
     if (text && text->type == TagType::STRING) {
-        out += TagString(text);
+        AddRun(runs, TagString(text), resolved);
     } else {
-        const NbtTagPtr translate = getChildByName(tag, "translate");
-        if (translate && translate->type == TagType::STRING) out += TagString(translate);
+        // 1.21.5+ stores a bare string component as {"": "literal"}.
+        const NbtTagPtr literal = getChildByName(tag, "");
+        if (literal && literal->type == TagType::STRING) {
+            AddRun(runs, TagString(literal), resolved);
+        } else {
+            const NbtTagPtr translate = getChildByName(tag, "translate");
+            if (translate && translate->type == TagType::STRING) AddRun(runs, TagString(translate), resolved);
+        }
     }
     const NbtTagPtr extra = getChildByName(tag, "extra");
-    if (extra) out += FlattenNbtComponent(extra);
-    return out;
+    if (extra) AppendNbt(extra, style, runs);
 }
 
-std::string DecodeMessage(const NbtTagPtr& tag, StringMode mode) {
-    if (!tag) return {};
-    if (tag->type == TagType::STRING) return DecodeString(TagString(tag), mode);
-    if (tag->type == TagType::COMPOUND || tag->type == TagType::LIST) return FlattenNbtComponent(tag);
-    return {};
+StyledLine ParseJsonLine(const std::string& raw) {
+    StyledLine line;
+    if (raw.empty()) return line;
+    try {
+        AppendJson(nlohmann::json::parse(raw), RawStyle{}, line.runs);
+    } catch (const std::exception&) {
+        line.runs.push_back(TextRun{raw, {}});
+    }
+    return line;
 }
 
-void ReadFourLines(const NbtTagPtr& messages, StringMode mode, std::array<std::string, 4>& lines) {
-    lines = {"", "", "", ""};
+StyledLine DecodeStyledMessage(const NbtTagPtr& tag, StringMode mode) {
+    StyledLine line;
+    if (!tag) return line;
+    if (tag->type == TagType::STRING) {
+        const std::string raw = TagString(tag);
+        const bool asJson = mode == StringMode::Json ||
+            (mode == StringMode::Heuristic && !raw.empty() && (raw[0] == '"' || raw[0] == '{' || raw[0] == '['));
+        if (!asJson) {
+            if (!raw.empty()) line.runs.push_back(TextRun{raw, {}});
+            return line;
+        }
+        return ParseJsonLine(raw);
+    }
+    if (tag->type == TagType::COMPOUND || tag->type == TagType::LIST) {
+        AppendNbt(tag, RawStyle{}, line.runs);
+    }
+    return line;
+}
+
+void ReadFourLines(const NbtTagPtr& messages, StringMode mode, std::array<StyledLine, 4>& lines) {
+    lines = {};
     if (!messages || messages->type != TagType::LIST) return;
     const size_t count = std::min<size_t>(4, messages->children.size());
-    for (size_t i = 0; i < count; ++i) lines[i] = DecodeMessage(messages->children[i], mode);
+    for (size_t i = 0; i < count; ++i) lines[i] = DecodeStyledMessage(messages->children[i], mode);
 }
 
-bool SideHasText(const std::array<std::string, 4>& lines) {
+bool SideHasText(const std::array<StyledLine, 4>& lines) {
     for (const auto& line : lines) {
-        if (!line.empty()) return true;
+        if (!line.Plain().empty()) return true;
+    }
+    return false;
+}
+
+bool LineNeedsStyleHash(const StyledLine& line) {
+    if (line.HasStyle()) return true;
+    for (const auto& run : line.runs) {
+        const auto* bytes = reinterpret_cast<const unsigned char*>(run.text.data());
+        const size_t n = run.text.size();
+        for (size_t i = 0; i + 1 < n; ++i) {
+            if (bytes[i] == 0xC2 && bytes[i + 1] == 0xA7) return true;
+        }
     }
     return false;
 }
@@ -905,7 +1136,7 @@ const FontLib& Font() {
     return gFont;
 }
 
-uint64_t HashText(const std::array<std::string, 4>& lines, int rgb, bool glowing, int lineHeight, int maxWidth) {
+uint64_t HashText(const std::array<StyledLine, 4>& lines, int rgb, bool glowing, int lineHeight, int maxWidth) {
     uint64_t hash = 14695981039346656037ull;
     auto mix = [&hash](unsigned char byte) {
         hash ^= byte;
@@ -915,11 +1146,37 @@ uint64_t HashText(const std::array<std::string, 4>& lines, int rgb, bool glowing
         for (unsigned char c : text) mix(c);
         mix(0);
     };
-    for (const auto& line : lines) mixString(line);
+    // Unstyled lines mix only the plain text, same bytes as before styles existed.
+    for (const auto& line : lines) mixString(line.Plain());
     mixString(std::to_string(rgb));
     mix(glowing ? 1 : 0);
     mixString(std::to_string(lineHeight));
     mixString(std::to_string(maxWidth));
+    bool styled = false;
+    for (const auto& line : lines) {
+        if (LineNeedsStyleHash(line)) styled = true;
+    }
+    if (styled) {
+        mix(1);
+        for (const auto& line : lines) {
+            for (const auto& run : line.runs) {
+                unsigned char flags = 0;
+                if (run.style.bold) flags |= 1;
+                if (run.style.italic) flags |= 2;
+                if (run.style.underlined) flags |= 4;
+                if (run.style.strikethrough) flags |= 8;
+                if (run.style.hasColor) flags |= 16;
+                mix(flags);
+                if (run.style.hasColor) {
+                    mix(static_cast<unsigned char>((run.style.color >> 16) & 255));
+                    mix(static_cast<unsigned char>((run.style.color >> 8) & 255));
+                    mix(static_cast<unsigned char>(run.style.color & 255));
+                }
+                mixString(run.text);
+            }
+            mix(2);
+        }
+    }
     return hash;
 }
 
@@ -1087,24 +1344,108 @@ const Glyph* FindGlyph(const FontLib& font, uint32_t cp) {
     return &fallback->second;
 }
 
-std::vector<PlacedGlyph> LayoutLine(const std::string& text, float lineY, int maxWidth, const FontLib& font) {
-    std::vector<const Glyph*> glyphs;
+// GlyphInfo.getBoldOffset: 1 for bitmap, 0.5 for unihex / legacy (oversample 2).
+float BoldOffset(const Glyph& glyph) {
+    return glyph.oversample >= 1.5f ? 0.5f : 1.0f;
+}
+
+// StringDecomposer.iterateFormatted + Style.applyLegacyFormat. §r restores `base`.
+void ApplyLegacyCode(RunStyle& current, const RunStyle& base, uint32_t code) {
+    if (code >= 'A' && code <= 'Z') code = code - 'A' + 'a';
+    if (code > 127) return;
+    const char c = static_cast<char>(code);
+    switch (c) {
+        case 'k': current.obfuscated = true; return;
+        case 'l': current.bold = true; return;
+        case 'm': current.strikethrough = true; return;
+        case 'n': current.underlined = true; return;
+        case 'o': current.italic = true; return;
+        case 'r': current = base; return;
+        default: break;
+    }
+    int rgb = 0;
+    bool color = false;
+    switch (c) {
+        case '0': rgb = 0; color = true; break;
+        case '1': rgb = 170; color = true; break;
+        case '2': rgb = 43520; color = true; break;
+        case '3': rgb = 43690; color = true; break;
+        case '4': rgb = 11141120; color = true; break;
+        case '5': rgb = 11141290; color = true; break;
+        case '6': rgb = 16755200; color = true; break;
+        case '7': rgb = 11184810; color = true; break;
+        case '8': rgb = 5592405; color = true; break;
+        case '9': rgb = 5592575; color = true; break;
+        case 'a': rgb = 5635925; color = true; break;
+        case 'b': rgb = 5636095; color = true; break;
+        case 'c': rgb = 16733525; color = true; break;
+        case 'd': rgb = 16733695; color = true; break;
+        case 'e': rgb = 16777045; color = true; break;
+        case 'f': rgb = 16777215; color = true; break;
+        default: break;
+    }
+    if (!color) return;
+    current.hasColor = true;
+    current.color = rgb;
+    current.bold = false;
+    current.italic = false;
+    current.underlined = false;
+    current.strikethrough = false;
+    current.obfuscated = false;
+}
+
+std::vector<PlacedGlyph> LayoutLine(const StyledLine& line, float lineY, int maxWidth, const FontLib& font) {
+    struct Item {
+        const Glyph* glyph = nullptr;
+        RunStyle style;
+        float advance = 0.0f;
+    };
+    std::vector<Item> items;
     float used = 0.0f;
-    for (uint32_t cp : Codepoints(text)) {
-        const Glyph* glyph = FindGlyph(font, cp);
-        if (!glyph) continue;
-        const float next = used + static_cast<float>(glyph->advance);
-        if (!glyphs.empty() && next > static_cast<float>(maxWidth)) break;
-        glyphs.push_back(glyph);
-        used = next;
+    bool stop = false;
+    for (const auto& run : line.runs) {
+        if (stop) break;
+        const std::vector<uint32_t> cps = Codepoints(run.text);
+        RunStyle current = run.style;
+        for (size_t i = 0; i < cps.size(); ++i) {
+            if (cps[i] == 0xA7u) {
+                if (i + 1 >= cps.size()) {
+                    stop = true;
+                    break;
+                }
+                ApplyLegacyCode(current, run.style, cps[++i]);
+                continue;
+            }
+            const Glyph* glyph = FindGlyph(font, cps[i]);
+            if (!glyph) continue;
+            const float advance = static_cast<float>(glyph->advance) + (current.bold ? BoldOffset(*glyph) : 0.0f);
+            const float next = used + advance;
+            if (!items.empty() && next > static_cast<float>(maxWidth)) {
+                stop = true;
+                break;
+            }
+            items.push_back(Item{glyph, current, advance});
+            used = next;
+        }
     }
     const int width = static_cast<int>(std::ceil(static_cast<double>(used)));
     float pen = static_cast<float>(-(width / 2));
     std::vector<PlacedGlyph> placed;
-    placed.reserve(glyphs.size());
-    for (const Glyph* glyph : glyphs) {
-        placed.push_back(PlacedGlyph{glyph, pen, lineY});
-        pen += static_cast<float>(glyph->advance);
+    placed.reserve(items.size());
+    for (const Item& item : items) {
+        PlacedGlyph stamp;
+        stamp.glyph = item.glyph;
+        stamp.penX = pen;
+        stamp.lineY = lineY;
+        stamp.advance = item.advance;
+        stamp.bold = item.style.bold;
+        stamp.italic = item.style.italic;
+        stamp.underlined = item.style.underlined;
+        stamp.strikethrough = item.style.strikethrough;
+        stamp.hasColor = item.style.hasColor;
+        stamp.color = item.style.color;
+        placed.push_back(stamp);
+        pen += item.advance;
     }
     return placed;
 }
@@ -1131,23 +1472,40 @@ void Plot(std::vector<unsigned char>& canvas, int width, int height, int x, int 
 }
 
 void BlitGlyph(std::vector<unsigned char>& canvas, int canvasW, int originX, int originY,
-    const PlacedGlyph& placed, int dx, int dy, int rgb, const FontLib& font) {
+    const PlacedGlyph& placed, float dx, float dy, int rgb, const FontLib& font) {
     const Glyph& glyph = *placed.glyph;
     if (glyph.image < 0 || glyph.image >= static_cast<int>(font.images.size())) return;
     const FontImage& image = font.images[glyph.image];
     const float gw = static_cast<float>(glyph.cellW) * glyph.scale;
     const float gh = static_cast<float>(glyph.cellH) * glyph.scale;
     if (gw <= 0.0f || gh <= 0.0f) return;
-    const float ox = placed.penX + static_cast<float>(dx);
-    const float oy = placed.lineY + static_cast<float>(7 - glyph.ascent) + static_cast<float>(dy);
-    const int x0 = static_cast<int>(std::floor(ox));
+    const float ox = placed.penX + dx;
+    const float oy = placed.lineY + static_cast<float>(7 - glyph.ascent) + dy;
+    int x0 = static_cast<int>(std::floor(ox));
     const int y0 = static_cast<int>(std::floor(oy));
-    const int x1 = static_cast<int>(std::ceil(ox + gw));
+    int x1 = static_cast<int>(std::ceil(ox + gw));
     const int y1 = static_cast<int>(std::ceil(oy + gh));
+    if (placed.italic) {
+        const float localTop = static_cast<float>(7 - glyph.ascent);
+        const float localBot = localTop + gh;
+        const float s0 = 1.0f - 0.25f * localTop;
+        const float s1 = 1.0f - 0.25f * localBot;
+        const float sMin = s0 < s1 ? s0 : s1;
+        const float sMax = s0 > s1 ? s0 : s1;
+        x0 = static_cast<int>(std::floor(ox + sMin));
+        x1 = static_cast<int>(std::ceil(ox + gw + sMax));
+    }
     const int canvasH = canvas.empty() || canvasW <= 0 ? 0 : static_cast<int>(canvas.size() / (static_cast<size_t>(canvasW) * 4));
     for (int fy = y0; fy < y1; ++fy) {
         for (int fx = x0; fx < x1; ++fx) {
-            const float u = ((static_cast<float>(fx) + 0.5f) - ox) / gw;
+            float u;
+            if (placed.italic) {
+                const float localY = (static_cast<float>(fy) + 0.5f) - (placed.lineY + dy);
+                const float shear = 1.0f - 0.25f * localY;
+                u = ((static_cast<float>(fx) + 0.5f) - ox - shear) / gw;
+            } else {
+                u = ((static_cast<float>(fx) + 0.5f) - ox) / gw;
+            }
             const float v = ((static_cast<float>(fy) + 0.5f) - oy) / gh;
             if (u < 0.0f || v < 0.0f || u >= 1.0f || v >= 1.0f) continue;
             const int sx = std::min(glyph.cellW - 1, static_cast<int>(u * static_cast<float>(glyph.cellW)));
@@ -1171,13 +1529,13 @@ bool GlyphDrawn(const Glyph& glyph) {
 }
 
 void BlitGlyphHi(std::vector<unsigned char>& canvas, int canvasW, int originX, int originY,
-    const PlacedGlyph& placed, int dx, int dy, int rgb, const FontLib& font) {
+    const PlacedGlyph& placed, float dx, float dy, int rgb, const FontLib& font) {
     const Glyph& glyph = *placed.glyph;
     const float gw = static_cast<float>(glyph.cellW) * glyph.scale;
     const float gh = static_cast<float>(glyph.cellH) * glyph.scale;
     if (gw <= 0.0f || gh <= 0.0f) return;
-    const float ox = placed.penX + static_cast<float>(dx);
-    const float oy = placed.lineY + static_cast<float>(7 - glyph.ascent) + static_cast<float>(dy);
+    const float ox = placed.penX + dx;
+    const float oy = placed.lineY + static_cast<float>(7 - glyph.ascent) + dy;
     const int canvasH = canvas.empty() || canvasW <= 0 ? 0 : static_cast<int>(canvas.size() / (static_cast<size_t>(canvasW) * 4));
 
     // Oversample-2 glyphs are already 2 texels per font unit. Copy them 1:1.
@@ -1210,7 +1568,13 @@ void BlitGlyphHi(std::vector<unsigned char>& canvas, int canvasW, int originX, i
                     pa = image->pixels[index + 3];
                 }
                 if (pa == 0) continue;
-                Plot(canvas, canvasW, canvasH, baseX + sx, baseY + sy, pr, pg, pb, pa, rgb);
+                int shiftX = 0;
+                if (placed.italic) {
+                    const float localY = static_cast<float>(7 - glyph.ascent) +
+                        (static_cast<float>(sy) + 0.5f) / glyph.oversample;
+                    shiftX = static_cast<int>(std::lround((1.0f - 0.25f * localY) * glyph.oversample));
+                }
+                Plot(canvas, canvasW, canvasH, baseX + sx + shiftX, baseY + sy, pr, pg, pb, pa, rgb);
             }
         }
         return;
@@ -1219,13 +1583,30 @@ void BlitGlyphHi(std::vector<unsigned char>& canvas, int canvasW, int originX, i
     // Bitmap glyphs on a 2x side: nearest-neighbour double of the 1x sample.
     if (glyph.image < 0 || glyph.image >= static_cast<int>(font.images.size())) return;
     const FontImage& image = font.images[glyph.image];
-    const int x0 = static_cast<int>(std::floor(ox));
+    int x0 = static_cast<int>(std::floor(ox));
     const int y0 = static_cast<int>(std::floor(oy));
-    const int x1 = static_cast<int>(std::ceil(ox + gw));
+    int x1 = static_cast<int>(std::ceil(ox + gw));
     const int y1 = static_cast<int>(std::ceil(oy + gh));
+    if (placed.italic) {
+        const float localTop = static_cast<float>(7 - glyph.ascent);
+        const float localBot = localTop + gh;
+        const float s0 = 1.0f - 0.25f * localTop;
+        const float s1 = 1.0f - 0.25f * localBot;
+        const float sMin = s0 < s1 ? s0 : s1;
+        const float sMax = s0 > s1 ? s0 : s1;
+        x0 = static_cast<int>(std::floor(ox + sMin));
+        x1 = static_cast<int>(std::ceil(ox + gw + sMax));
+    }
     for (int fy = y0; fy < y1; ++fy) {
         for (int fx = x0; fx < x1; ++fx) {
-            const float u = ((static_cast<float>(fx) + 0.5f) - ox) / gw;
+            float u;
+            if (placed.italic) {
+                const float localY = (static_cast<float>(fy) + 0.5f) - (placed.lineY + dy);
+                const float shear = 1.0f - 0.25f * localY;
+                u = ((static_cast<float>(fx) + 0.5f) - ox - shear) / gw;
+            } else {
+                u = ((static_cast<float>(fx) + 0.5f) - ox) / gw;
+            }
             const float v = ((static_cast<float>(fy) + 0.5f) - oy) / gh;
             if (u < 0.0f || v < 0.0f || u >= 1.0f || v >= 1.0f) continue;
             const int sx = std::min(glyph.cellW - 1, static_cast<int>(u * static_cast<float>(glyph.cellW)));
@@ -1248,7 +1629,143 @@ void BlitGlyphHi(std::vector<unsigned char>& canvas, int canvasW, int originX, i
     }
 }
 
-bool BakeSideHi(const std::array<std::string, 4>& lines, const std::vector<PlacedGlyph>& placed, int textRgb, bool glowing,
+// Unstyled glyphs keep the original floor/ceil box. Styled glyphs also cover the
+// bold copy, the italic shear, and the underline / strikethrough rects.
+bool StampBox(const PlacedGlyph& stamp, bool hi, int margin, int& x0, int& y0, int& x1, int& y1) {
+    const Glyph& glyph = *stamp.glyph;
+    const bool pixels = hi ? GlyphDrawn(glyph) : glyph.image >= 0;
+    const bool decorated = stamp.bold || stamp.italic || stamp.underlined || stamp.strikethrough;
+    if (!pixels && !stamp.underlined && !stamp.strikethrough) return false;
+    const float gw = static_cast<float>(glyph.cellW) * glyph.scale;
+    const float gh = static_cast<float>(glyph.cellH) * glyph.scale;
+    const float top = stamp.lineY + static_cast<float>(7 - glyph.ascent);
+    if (!decorated) {
+        x0 = static_cast<int>(std::floor(stamp.penX)) - margin;
+        y0 = static_cast<int>(std::floor(top)) - margin;
+        x1 = static_cast<int>(std::ceil(stamp.penX + gw)) + margin;
+        y1 = static_cast<int>(std::ceil(top + gh)) + margin;
+        return true;
+    }
+    float left = 0.0f;
+    float right = 0.0f;
+    float boxTop = 0.0f;
+    float boxBot = 0.0f;
+    bool any = false;
+    auto add = [&](float l, float t, float r, float b) {
+        if (!any) {
+            left = l;
+            boxTop = t;
+            right = r;
+            boxBot = b;
+            any = true;
+        } else {
+            left = std::min(left, l);
+            boxTop = std::min(boxTop, t);
+            right = std::max(right, r);
+            boxBot = std::max(boxBot, b);
+        }
+    };
+    if (pixels) {
+        float l = stamp.penX;
+        float r = stamp.penX + gw;
+        if (stamp.bold) r += BoldOffset(glyph);
+        if (stamp.italic) {
+            const float y0r = top - stamp.lineY;
+            const float y1r = y0r + gh;
+            const float s0 = 1.0f - 0.25f * y0r;
+            const float s1 = 1.0f - 0.25f * y1r;
+            l += s0 < s1 ? s0 : s1;
+            r += s0 > s1 ? s0 : s1;
+        }
+        add(l, top, r, top + gh);
+    }
+    if (stamp.strikethrough || stamp.underlined) {
+        const float xL = stamp.penX - 1.0f;
+        const float xR = stamp.penX + stamp.advance;
+        if (stamp.strikethrough) add(xL, stamp.lineY + 3.5f, xR, stamp.lineY + 4.5f);
+        if (stamp.underlined) add(xL, stamp.lineY + 8.0f, xR, stamp.lineY + 9.0f);
+    }
+    if (!any) return false;
+    x0 = static_cast<int>(std::floor(left)) - margin;
+    y0 = static_cast<int>(std::floor(boxTop)) - margin;
+    x1 = static_cast<int>(std::ceil(right)) + margin;
+    y1 = static_cast<int>(std::ceil(boxBot)) + margin;
+    return true;
+}
+
+void AccumulateBox(bool& any, int& minX, int& minY, int& maxX, int& maxY, int x0, int y0, int x1, int y1) {
+    if (!any) {
+        minX = x0;
+        minY = y0;
+        maxX = x1;
+        maxY = y1;
+        any = true;
+    } else {
+        minX = std::min(minX, x0);
+        minY = std::min(minY, y0);
+        maxX = std::max(maxX, x1);
+        maxY = std::max(maxY, y1);
+    }
+}
+
+int GlyphRgb(const PlacedGlyph& stamp, int textRgb, bool glowing) {
+    if (stamp.hasColor) return stamp.color;
+    return glowing ? textRgb : DarkColor(textRgb, false);
+}
+
+void BlitStyled(std::vector<unsigned char>& canvas, int canvasW, int originX, int originY,
+    const PlacedGlyph& stamp, float dx, float dy, int rgb, const FontLib& font, bool hi) {
+    if (hi) BlitGlyphHi(canvas, canvasW, originX, originY, stamp, dx, dy, rgb, font);
+    else BlitGlyph(canvas, canvasW, originX, originY, stamp, dx, dy, rgb, font);
+    if (!stamp.bold) return;
+    const float off = BoldOffset(*stamp.glyph);
+    if (hi) BlitGlyphHi(canvas, canvasW, originX, originY, stamp, dx + off, dy, rgb, font);
+    else BlitGlyph(canvas, canvasW, originX, originY, stamp, dx + off, dy, rgb, font);
+}
+
+void FillFontRect(std::vector<unsigned char>& canvas, int canvasW, int originX, int originY, float scale,
+    float x0, float y0, float x1, float y1, int rgb) {
+    if (x1 < x0) std::swap(x0, x1);
+    if (y1 < y0) std::swap(y0, y1);
+    int px0 = 0;
+    int px1 = 0;
+    int py0 = 0;
+    int py1 = 0;
+    if (scale <= 1.01f) {
+        const int row = static_cast<int>(std::floor((y0 + y1) * 0.5f));
+        py0 = row - originY;
+        py1 = py0 + 1;
+        px0 = static_cast<int>(std::floor(x0)) - originX;
+        px1 = static_cast<int>(std::ceil(x1)) - originX;
+    } else {
+        px0 = static_cast<int>(std::floor((x0 - static_cast<float>(originX)) * scale));
+        px1 = static_cast<int>(std::ceil((x1 - static_cast<float>(originX)) * scale));
+        py0 = static_cast<int>(std::floor((y0 - static_cast<float>(originY)) * scale));
+        py1 = static_cast<int>(std::ceil((y1 - static_cast<float>(originY)) * scale));
+    }
+    const int canvasH = canvas.empty() || canvasW <= 0 ? 0 : static_cast<int>(canvas.size() / (static_cast<size_t>(canvasW) * 4));
+    for (int y = py0; y < py1; ++y) {
+        for (int x = px0; x < px1; ++x) Plot(canvas, canvasW, canvasH, x, y, 255, 255, 255, 255, rgb);
+    }
+}
+
+void DrawEffects(std::vector<unsigned char>& canvas, int canvasW, int originX, int originY, float scale,
+    const std::vector<PlacedGlyph>& placed, int textRgb, bool glowing) {
+    for (const auto& stamp : placed) {
+        if (!stamp.underlined && !stamp.strikethrough) continue;
+        const int rgb = GlyphRgb(stamp, textRgb, glowing);
+        const float x0 = stamp.penX - 1.0f;
+        const float x1 = stamp.penX + stamp.advance;
+        if (stamp.strikethrough) {
+            FillFontRect(canvas, canvasW, originX, originY, scale, x0, stamp.lineY + 3.5f, x1, stamp.lineY + 4.5f, rgb);
+        }
+        if (stamp.underlined) {
+            FillFontRect(canvas, canvasW, originX, originY, scale, x0, stamp.lineY + 8.0f, x1, stamp.lineY + 9.0f, rgb);
+        }
+    }
+}
+
+bool BakeSideHi(const std::array<StyledLine, 4>& lines, const std::vector<PlacedGlyph>& placed, int textRgb, bool glowing,
     int lineHeight, int maxWidth, std::string& hexOut, float& xMin, float& yMin, float& xMax, float& yMax, const FontLib& font) {
     const int margin = glowing ? 1 : 0;
     int minX = 0;
@@ -1257,26 +1774,12 @@ bool BakeSideHi(const std::array<std::string, 4>& lines, const std::vector<Place
     int maxY = 0;
     bool any = false;
     for (const auto& stamp : placed) {
-        if (!GlyphDrawn(*stamp.glyph)) continue;
-        const float gw = static_cast<float>(stamp.glyph->cellW) * stamp.glyph->scale;
-        const float gh = static_cast<float>(stamp.glyph->cellH) * stamp.glyph->scale;
-        const float top = stamp.lineY + static_cast<float>(7 - stamp.glyph->ascent);
-        const int x0 = static_cast<int>(std::floor(stamp.penX)) - margin;
-        const int y0 = static_cast<int>(std::floor(top)) - margin;
-        const int x1 = static_cast<int>(std::ceil(stamp.penX + gw)) + margin;
-        const int y1 = static_cast<int>(std::ceil(top + gh)) + margin;
-        if (!any) {
-            minX = x0;
-            minY = y0;
-            maxX = x1;
-            maxY = y1;
-            any = true;
-        } else {
-            minX = std::min(minX, x0);
-            minY = std::min(minY, y0);
-            maxX = std::max(maxX, x1);
-            maxY = std::max(maxY, y1);
-        }
+        int x0 = 0;
+        int y0 = 0;
+        int x1 = 0;
+        int y1 = 0;
+        if (!StampBox(stamp, true, margin, x0, y0, x1, y1)) continue;
+        AccumulateBox(any, minX, minY, maxX, maxY, x0, y0, x1, y1);
     }
     if (!any || maxX <= minX || maxY <= minY) return false;
     if (maxX - minX > 4096 || maxY - minY > 4096) return false;
@@ -1284,17 +1787,21 @@ bool BakeSideHi(const std::array<std::string, 4>& lines, const std::vector<Place
     const int canvasW = (maxX - minX) * 2;
     const int canvasH = (maxY - minY) * 2;
     std::vector<unsigned char> canvas(static_cast<size_t>(canvasW) * canvasH * 4, 0);
-    const int fill = glowing ? textRgb : DarkColor(textRgb, false);
     const int outline = DarkColor(textRgb, true);
     if (glowing) {
         for (int dy = -1; dy <= 1; ++dy) {
             for (int dx = -1; dx <= 1; ++dx) {
                 if (dx == 0 && dy == 0) continue;
-                for (const auto& stamp : placed) BlitGlyphHi(canvas, canvasW, minX, minY, stamp, dx, dy, outline, font);
+                for (const auto& stamp : placed) {
+                    BlitStyled(canvas, canvasW, minX, minY, stamp, static_cast<float>(dx), static_cast<float>(dy), outline, font, true);
+                }
             }
         }
     }
-    for (const auto& stamp : placed) BlitGlyphHi(canvas, canvasW, minX, minY, stamp, 0, 0, fill, font);
+    for (const auto& stamp : placed) {
+        BlitStyled(canvas, canvasW, minX, minY, stamp, 0.0f, 0.0f, GlyphRgb(stamp, textRgb, glowing), font, true);
+    }
+    DrawEffects(canvas, canvasW, minX, minY, 2.0f, placed, textRgb, glowing);
 
     int cropX0 = canvasW;
     int cropY0 = canvasH;
@@ -1349,7 +1856,7 @@ bool BakeSideHi(const std::array<std::string, 4>& lines, const std::vector<Place
     return true;
 }
 
-bool BakeSide(const std::array<std::string, 4>& lines, int textRgb, bool glowing, int lineHeight, int maxWidth,
+bool BakeSide(const std::array<StyledLine, 4>& lines, int textRgb, bool glowing, int lineHeight, int maxWidth,
     std::string& hexOut, float& xMin, float& yMin, float& xMax, float& yMax) {
     const FontLib& font = Font();
     if (!font.ok) return false;
@@ -1374,26 +1881,12 @@ bool BakeSide(const std::array<std::string, 4>& lines, int textRgb, bool glowing
     int maxY = 0;
     bool any = false;
     for (const auto& stamp : placed) {
-        if (stamp.glyph->image < 0) continue;
-        const float gw = static_cast<float>(stamp.glyph->cellW) * stamp.glyph->scale;
-        const float gh = static_cast<float>(stamp.glyph->cellH) * stamp.glyph->scale;
-        const float top = stamp.lineY + static_cast<float>(7 - stamp.glyph->ascent);
-        const int x0 = static_cast<int>(std::floor(stamp.penX)) - margin;
-        const int y0 = static_cast<int>(std::floor(top)) - margin;
-        const int x1 = static_cast<int>(std::ceil(stamp.penX + gw)) + margin;
-        const int y1 = static_cast<int>(std::ceil(top + gh)) + margin;
-        if (!any) {
-            minX = x0;
-            minY = y0;
-            maxX = x1;
-            maxY = y1;
-            any = true;
-        } else {
-            minX = std::min(minX, x0);
-            minY = std::min(minY, y0);
-            maxX = std::max(maxX, x1);
-            maxY = std::max(maxY, y1);
-        }
+        int x0 = 0;
+        int y0 = 0;
+        int x1 = 0;
+        int y1 = 0;
+        if (!StampBox(stamp, false, margin, x0, y0, x1, y1)) continue;
+        AccumulateBox(any, minX, minY, maxX, maxY, x0, y0, x1, y1);
     }
     if (!any || maxX <= minX || maxY <= minY) return false;
 
@@ -1402,19 +1895,21 @@ bool BakeSide(const std::array<std::string, 4>& lines, int textRgb, bool glowing
     if (canvasW > 4096 || canvasH > 4096) return false;
     std::vector<unsigned char> canvas(static_cast<size_t>(canvasW) * canvasH * 4, 0);
 
-    const int fill = glowing ? textRgb : DarkColor(textRgb, false);
     const int outline = DarkColor(textRgb, true);
     if (glowing) {
         for (int dy = -1; dy <= 1; ++dy) {
             for (int dx = -1; dx <= 1; ++dx) {
                 if (dx == 0 && dy == 0) continue;
                 for (const auto& stamp : placed) {
-                    BlitGlyph(canvas, canvasW, minX, minY, stamp, dx, dy, outline, font);
+                    BlitStyled(canvas, canvasW, minX, minY, stamp, static_cast<float>(dx), static_cast<float>(dy), outline, font, false);
                 }
             }
         }
     }
-    for (const auto& stamp : placed) BlitGlyph(canvas, canvasW, minX, minY, stamp, 0, 0, fill, font);
+    for (const auto& stamp : placed) {
+        BlitStyled(canvas, canvasW, minX, minY, stamp, 0.0f, 0.0f, GlyphRgb(stamp, textRgb, glowing), font, false);
+    }
+    DrawEffects(canvas, canvasW, minX, minY, 1.0f, placed, textRgb, glowing);
 
     int cropX0 = canvasW;
     int cropY0 = canvasH;
@@ -1564,7 +2059,7 @@ std::unordered_map<std::string, std::string> ParseState(const std::string& state
     return props;
 }
 
-bool ReadSide(const NbtTagPtr& side, StringMode mode, std::array<std::string, 4>& lines, int& rgb, bool& glowing) {
+bool ReadSide(const NbtTagPtr& side, StringMode mode, std::array<StyledLine, 4>& lines, int& rgb, bool& glowing) {
     if (!side || side->type != TagType::COMPOUND) return false;
     ReadFourLines(getChildByName(side, "messages"), mode, lines);
     rgb = 0;
@@ -1574,7 +2069,7 @@ bool ReadSide(const NbtTagPtr& side, StringMode mode, std::array<std::string, 4>
     return SideHasText(lines);
 }
 
-void EmitSide(ModelData& out, const std::array<std::string, 4>& lines, int textRgb, bool glowing,
+void EmitSide(ModelData& out, const std::array<StyledLine, 4>& lines, int textRgb, bool glowing,
     int lineHeight, int maxWidth, float scale, const Vec3& offset, bool back, bool wall, bool hanging,
     float angle, float yBase, int x, int y, int z) {
     std::string hex;
@@ -1653,7 +2148,7 @@ bool BuildSignTextModel(const std::string& ns, const std::string& blockNameWithS
     const NbtTagPtr front = getChildByName(blockEntityNbt, "front_text");
     if (front && front->type == TagType::COMPOUND) {
         const StringMode mode = MessageStringMode();
-        std::array<std::string, 4> lines;
+        std::array<StyledLine, 4> lines;
         int rgb = 0;
         bool glowing = false;
         if (ReadSide(front, mode, lines, rgb, glowing)) {
@@ -1664,11 +2159,11 @@ bool BuildSignTextModel(const std::string& ns, const std::string& blockNameWithS
             EmitSide(out, lines, rgb, glowing, lineHeight, maxWidth, scale, offset, true, wall, hanging, angle, yBase, x, y, z);
         }
     } else {
-        std::array<std::string, 4> lines;
+        std::array<StyledLine, 4> lines;
         bool any = false;
         for (int i = 0; i < 4; ++i) {
-            lines[i] = ParseJsonText(TagString(getChildByName(blockEntityNbt, "Text" + std::to_string(i + 1))));
-            if (!lines[i].empty()) any = true;
+            lines[i] = ParseJsonLine(TagString(getChildByName(blockEntityNbt, "Text" + std::to_string(i + 1))));
+            if (!lines[i].Plain().empty()) any = true;
         }
         if (!any) return false;
         int rgb = 0;
