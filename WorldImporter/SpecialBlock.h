@@ -16,6 +16,7 @@ public:
 private:
     static ModelData GenerateLightBlockModel(const std::string& texturePath);
     static ModelData GenerateBedModel(const std::string& blockName);
+    static ModelData GenerateSignModel(const std::string& blockName);
 
     static bool IsLightBlock(const std::string& blockName, std::string& outTexturePath);
 
