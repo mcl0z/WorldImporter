@@ -189,3 +189,11 @@ if (WI_BUILD_MODCT_MEK_TEST AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/modct_
         target_compile_definitions(modct_mek_test PRIVATE _GLIBCXX_ASSERTIONS)
     endif()
 endif()
+
+if (BUILD_TESTING AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/WorldImporter/tests/ctm_mod_pillar_tests.cpp")
+    add_executable(ctm_mod_pillar_tests WorldImporter/tests/ctm_mod_pillar_tests.cpp)
+    target_link_libraries(ctm_mod_pillar_tests PRIVATE WorldImporterCore)
+    wi_apply_defaults(ctm_mod_pillar_tests)
+    add_test(NAME ctm_mod_pillar COMMAND ctm_mod_pillar_tests)
+    set_tests_properties(ctm_mod_pillar PROPERTIES TIMEOUT 30)
+endif()

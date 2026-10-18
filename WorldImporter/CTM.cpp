@@ -19,6 +19,7 @@
 #include <iostream>
 #include <fstream>
 #include <sstream>
+#include "CtmModPillar.h"  // ConnectedTexturesMod pillar
 #include <algorithm>
 #include <cctype>
 #include <mutex>
@@ -2447,6 +2448,53 @@ static void SelectMcmetaGridCell(const McmetaGridRule& rule, FaceType ft,
     }
 }
 
+static CtmPillarFace ToCtmPillarFace(FaceType ft) {
+    switch (ft) {
+    case FaceType::DOWN: return CtmPillarFace::Down;
+    case FaceType::UP: return CtmPillarFace::Up;
+    case FaceType::NORTH: return CtmPillarFace::North;
+    case FaceType::SOUTH: return CtmPillarFace::South;
+    case FaceType::WEST: return CtmPillarFace::West;
+    case FaceType::EAST: return CtmPillarFace::East;
+    default: return CtmPillarFace::Down;
+    }
+}
+
+// pillar: 按 ConnectedTexturesMod TexturePillar 选 2x2 象限和旋转(不再走上面的单列取行)。
+// 调色板 id 按完整方块状态字符串唯一, id 相等即同一 BlockState。
+// sprite 1: textures[0] 按 2x2 象限进图集; sprite 0: 保留基础材质, 只旋转规范 UV。
+static void ApplyMcmetaPillar(ModelData& model, Face& face, FaceType ft,
+    int x, int y, int z, const McmetaGridRule& grid, CtmTexInfo& info, bool& got) {
+    const int centerId = GetBlockId(x, y, z);
+    const CtmPillarQuad q = DecideCtmModPillar(ToCtmPillarFace(ft),
+        [&](int dx, int dy, int dz) {
+            return GetBlockId(x + dx, y + dy, z + dz) == centerId;
+        });
+
+    const int uvBase = static_cast<int>(model.uvCoordinates.size()) / 2;
+    AssignCanonicalFaceUv(model, face, ft);
+    for (int i = 0; i < 4; ++i) {
+        const int uvIdx = face.uvIndices[i];
+        if (uvIdx < uvBase || uvIdx * 2 + 1 >= static_cast<int>(model.uvCoordinates.size())) continue;
+        float& u = model.uvCoordinates[uvIdx * 2];
+        float& v = model.uvCoordinates[uvIdx * 2 + 1];
+        // AssignCanonical 的 down 写成 u=1-x。原版 FaceInfo (minX,minY,maxZ)
+        // 对 BlockFaceUV 的 (u0,v0), model.cpp 默认 UV 也是 u=x, v=z, 差一次左右镜像。
+        if (ft == FaceType::DOWN) u = 1.0f - u;
+        RotateCtmPillarUv(u, v, q.rotation);
+    }
+    if (q.sprite != 1) return;
+
+    McmetaGridRule sheet = grid;
+    sheet.cols = 2;
+    sheet.rows = 2;
+    const CtmTexInfo gi = GetOrCreateMcmetaGridTexInfo(sheet);
+    if (!gi.saved) return;
+    RemapFaceUvToAtlas(model, face, q.col, q.row, 2, 2);
+    info = gi;
+    got = true;
+}
+
 // ========= ApplyCtmToBlockModel =========
 void ApplyCtmToBlockModel(ModelData& model,
     const std::string& ns,
@@ -2666,13 +2714,17 @@ void ApplyCtmToBlockModel(ModelData& model,
             // 面 UV 映射到选中格子。没有 ConnectedTexturesMod 时游戏不读这段。
             McmetaGridRule grid;
             if (GetMcmetaGridRuleCached(matNs, textureName, grid)) {
-                const CtmTexInfo gi = GetOrCreateMcmetaGridTexInfo(grid);
-                if (gi.saved) {
-                    int col = 0, row = 0;
-                    SelectMcmetaGridCell(grid, ft, x, y, z, col, row);
-                    RemapFaceUvToAtlas(model, face, col, row, grid.cols, grid.rows);
-                    info = gi; // 交给下方统一的 got 分支建材质/链 overlay
-                    got = true;
+                if (grid.kind == 'l') {
+                    ApplyMcmetaPillar(model, face, ft, x, y, z, grid, info, got);
+                } else {
+                    const CtmTexInfo gi = GetOrCreateMcmetaGridTexInfo(grid);
+                    if (gi.saved) {
+                        int col = 0, row = 0;
+                        SelectMcmetaGridCell(grid, ft, x, y, z, col, row);
+                        RemapFaceUvToAtlas(model, face, col, row, grid.cols, grid.rows);
+                        info = gi; // 交给下方统一的 got 分支建材质/链 overlay
+                        got = true;
+                    }
                 }
             }
         }
