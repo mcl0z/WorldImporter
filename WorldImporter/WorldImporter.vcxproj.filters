@@ -140,6 +140,12 @@
     <ClCompile Include="BbsModelSupport.cpp">
       <Filter>源文件\Blocks</Filter>
     </ClCompile>
+    <ClCompile Include="SkullModel.cpp">
+      <Filter>源文件\Blocks</Filter>
+    </ClCompile>
+    <ClCompile Include="PlayerSkin.cpp">
+      <Filter>源文件\Blocks</Filter>
+    </ClCompile>
     <ClCompile Include="SpecialBlock.cpp">
       <Filter>源文件\Blocks</Filter>
     </ClCompile>
@@ -195,6 +201,9 @@
     <!-- 数据格式相关文件 -->
     <!-- 渲染相关文件 -->
     <ClInclude Include="BbsModelSupport.h">
+      <Filter>头文件\Blocks</Filter>
+    </ClInclude>
+    <ClInclude Include="PlayerSkin.h">
       <Filter>头文件\Blocks</Filter>
     </ClInclude>
     <ClInclude Include="SpecialBlock.h">

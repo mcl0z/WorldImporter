@@ -76,6 +76,7 @@ struct Config {
     bool importEntities; // 导出区域内生物/实体元数据
 
     bool exportFullModel;  // 是否完整导入
+    bool downloadPlayerSkins; // 下载玩家头颅皮肤(默认开; 关掉且无本地缓存时保持 Steve)
     int partitionSize; //分割大小
     size_t maxTasksPerBatch; //每批次区块任务数量上限
     int modelThreads; //模型生成线程数(默认1，自动模式可提高)
@@ -127,6 +128,7 @@ struct Config {
         importEntities(false),
 
         exportFullModel(false),
+        downloadPlayerSkins(true),
         partitionSize(4),
         maxTasksPerBatch(32768),
         modelThreads(1),

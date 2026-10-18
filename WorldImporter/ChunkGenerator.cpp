@@ -28,6 +28,7 @@
 #include "ChunkGroupAllocator.h"
 #include <utility>
 #include "hashutils.h"
+#include "PlayerSkin.h"
 #include "ChunkLoader.h"
 #include "SpecialBlock.h"
 #include "CableMesher.h"
@@ -426,6 +427,43 @@ void ChunkGenerator::ProcessBlockForModel(ModelData& chunkModel, int x, int y, i
             !blockModel.vertices.empty()) {
             static const ModelData bellBody = SpecialBlock::GenerateBlockEntityModel("minecraft:bell");
             if (!bellBody.faces.empty()) MergeModelsDirectly(blockModel, bellBody);
+        }
+    }
+
+    // Player heads: swap the shared Steve material for the profile skin before
+    // position offset. All faces of the skull model use that one material.
+    if (ns == "minecraft" && blockEntityNbt) {
+        std::string headId = blockName;
+        size_t br = headId.find('[');
+        if (br != std::string::npos) headId.resize(br);
+        if (headId == "player_head" || headId == "player_wall_head") {
+            const std::string skin = ResolvePlayerSkinTexture(blockEntityNbt);
+            if (!skin.empty() && !blockModel.materials.empty()) {
+                const std::string marker = "entity/player_skins/";
+                std::string key;
+                size_t p = skin.find(marker);
+                if (p != std::string::npos) {
+                    key = skin.substr(p + marker.size());
+                    size_t dot = key.find('.');
+                    if (dot != std::string::npos) key.resize(dot);
+                } else {
+                    key = skin;
+                    const std::string prefix = "textures/";
+                    if (key.rfind(prefix, 0) == 0) key = key.substr(prefix.size());
+                    if (key.size() >= 4 && key.compare(key.size() - 4, 4, ".png") == 0)
+                        key.resize(key.size() - 4);
+                    for (char& c : key) {
+                        if (c == '/' || c == '\\' || c == ':') c = '_';
+                    }
+                }
+                const std::string matName = "minecraft:player_head#skin_" + key;
+                for (auto& mat : blockModel.materials) {
+                    mat.name = matName;
+                    mat.texturePath = skin;
+                    mat.type = NORMAL;
+                    mat.aspectRatio = 1.0f;
+                }
+            }
         }
     }
 
