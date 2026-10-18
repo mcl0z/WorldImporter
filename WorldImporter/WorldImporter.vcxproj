@@ -161,6 +161,7 @@
     <ClCompile Include="EntityExporter.cpp" />
     <ClCompile Include="MemoryMonitor.cpp" />
     <ClCompile Include="RegionCache.cpp" />
+    <ClCompile Include="SkullModel.cpp" />
     <ClCompile Include="SpecialBlock.cpp" />
     <ClCompile Include="CopperGolemStatue.cpp" />
     <ClCompile Include="fileutils.cpp" />
@@ -200,6 +201,8 @@
     <ClInclude Include="hashutils.h" />
     <ClInclude Include="MemoryMonitor.h" />
     <ClInclude Include="RegionCache.h" />
+    <ClInclude Include="EntityCube.h" />
+    <ClInclude Include="SkullModel.h" />
     <ClInclude Include="SpecialBlock.h" />
     <ClInclude Include="CopperGolemStatue.h" />
     <ClInclude Include="fileutils.h" />
