@@ -41,6 +41,14 @@ if (BUILD_TESTING AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/WorldImporter/tests/mo
     set_tests_properties(model_deduplicator PROPERTIES TIMEOUT 30)
 endif()
 
+if (BUILD_TESTING AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/WorldImporter/tests/ctm_random_tests.cpp")
+    add_executable(ctm_random_tests WorldImporter/tests/ctm_random_tests.cpp)
+    target_link_libraries(ctm_random_tests PRIVATE WorldImporterCore)
+    wi_apply_defaults(ctm_random_tests)
+    add_test(NAME ctm_random COMMAND ctm_random_tests)
+    set_tests_properties(ctm_random PROPERTIES TIMEOUT 30)
+endif()
+
 if (BUILD_TESTING AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/WorldImporter/tests/cache_init_tests.cpp")
     add_executable(cache_init_tests WorldImporter/tests/cache_init_tests.cpp)
     target_link_libraries(cache_init_tests PRIVATE WorldImporterCore)

@@ -1,5 +1,6 @@
 // ==================== OptiFine CTM 连接材质实现 ====================
 #include "CTM.h"
+#include "CtmRandom.h"
 #include "ModCT.h"
 #include "block.h"          // GetBlockId / GetBlockById / Block
 #include "blockstate.h"     // GetRandomModelFromCache (connect=tile)
@@ -1941,15 +1942,7 @@ static FaceType OppositeFace(FaceType ft) {
     }
 }
 
-static uint64_t Mix64(uint64_t v) {
-    v = (v ^ (v >> 30)) * UINT64_C(0xbf58476d1ce4e5b9);
-    v = (v ^ (v >> 27)) * UINT64_C(0x94d049bb133111eb);
-    return v ^ (v >> 31);
-}
-static int32_t Mix32(uint64_t v) {
-    v = (v ^ (v >> 33)) * UINT64_C(0x62a9d9ed799705f5);
-    return static_cast<int32_t>(((v ^ (v >> 28)) * UINT64_C(0xcb24d0a5c88c35b3)) >> 32);
-}
+// Yuushya mcmeta 网格随机用的自制哈希，不是原版 Mth.getSeed。Continuity random 见 CtmRandom.h。
 static int32_t McPositionHash(int x, int y, int z) {
     uint32_t i = UINT32_C(1664525) * static_cast<uint32_t>(x) + UINT32_C(1013904223);
     uint32_t j = UINT32_C(1664525) * (static_cast<uint32_t>(z) ^ UINT32_C(0xDEADBEEF)) + UINT32_C(1013904223);
@@ -1973,26 +1966,9 @@ static int SelectRandomTile(const CtmRule& rule, FaceType ft, int x, int y, int 
         (ft == FaceType::UP || ft == FaceType::SOUTH || ft == FaceType::EAST)) {
         face = FaceOrdinal(OppositeFace(ft));
     }
-    constexpr uint64_t gamma = UINT64_C(0x9e3779b97f4a7c15);
-    uint64_t seed = static_cast<uint64_t>(static_cast<int64_t>(McPositionHash(x,y,z))) ^
-        Mix64(gamma * static_cast<uint64_t>(1 + face));
-    int32_t mixed = Mix32(seed + gamma * static_cast<uint64_t>(1 + rule.randomLoops));
-    uint32_t r = static_cast<uint32_t>(mixed) & UINT32_C(0x7fffffff);
-
-    if (rule.weights.empty()) return static_cast<int>(r % rule.tiles.size());
-    std::vector<int> weights(rule.tiles.size(), 1);
-    size_t copied = std::min(weights.size(), rule.weights.size());
-    int sumCopied = 0;
-    for (size_t i = 0; i < copied; ++i) { weights[i] = std::max(1, rule.weights[i]); sumCopied += weights[i]; }
-    int fill = copied ? std::max(1, sumCopied / static_cast<int>(copied)) : 1;
-    for (size_t i = copied; i < weights.size(); ++i) weights[i] = fill;
-    int sum = 0; for (int w : weights) sum += w;
-    int target = static_cast<int>(r % static_cast<uint32_t>(sum));
-    for (size_t i = 0; i < weights.size(); ++i) {
-        if (target < weights[i]) return static_cast<int>(i);
-        target -= weights[i];
-    }
-    return static_cast<int>(weights.size() - 1);
+    // Continuity 3.0.0-beta.5: Mth.getSeed + MathUtil.mix，再按 Math.abs 选 tile。
+    const int32_t mixed = ContinuityRandomMix(x, y, z, face, rule.randomLoops);
+    return ContinuityRandomIndex(mixed, static_cast<int>(rule.tiles.size()), rule.weights);
 }
 
 static bool IsTopConnected(FaceType ft, const std::string& blockName,
