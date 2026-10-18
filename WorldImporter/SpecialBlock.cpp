@@ -154,6 +154,8 @@ namespace {
             }
             else if (type == "usemtl") values >> currentMaterial;
             else if (type == "f") {
+                // Forge's OBJ loader skips faces with no material (e.g. Blender "Bounding" helpers).
+                if (currentMaterial.empty()) continue;
                 vector<pair<int, int>> corners;
                 string corner;
                 while (values >> corner) {
@@ -718,6 +720,37 @@ namespace {
         return result;
     }
 
+    // Harvester / roller: casing (blockstate) + BE-rendered parts at rest (angle 0).
+    // HarvesterRenderer: blade rotateCentered(horizontalAngle(facing)).
+    // RollerRenderer: frame rotateCentered(horizontalAngle+180); wheel (obj) Ry90 about
+    // origin, T(0,-.5,.5), rotateCentered(horizontalAngle), T(normal*1.0625), T(0,-.25,0).
+    ModelData GenerateCreateHarvesterRoller(const string& id, const string& blockName,
+        const unordered_map<string, string>& states) {
+        ModelData result = LoadBlockstateModel(blockName);
+        string facing = states.contains("facing") ? states.at("facing") : "south";
+        const float angle = -FacingY(facing); // AngleHelper.horizontalAngle
+        if (id == "mechanical_harvester") {
+            ModelData blade = LoadCreateModel("block/mechanical_harvester/blade", 260);
+            Rotate(blade, 0.0f, angle, 0.0f);
+            Append(result, std::move(blade));
+            return result;
+        }
+        ModelData frame = LoadCreateModel("block/mechanical_roller/frame", 261);
+        Rotate(frame, 0.0f, angle + 180.0f, 0.0f);
+        Append(result, std::move(frame));
+        ModelData wheel = LoadCreateObjModel("block/mechanical_roller/wheel", 262);
+        if (!wheel.vertices.empty()) {
+            RotateModelOrigin(wheel, 0.0f, 90.0f, 0.0f);
+            TranslateModel(wheel, 0.0f, -0.5f, 0.5f);
+            Rotate(wheel, 0.0f, angle, 0.0f);
+            float nx = facing == "east" ? 1.0f : facing == "west" ? -1.0f : 0.0f;
+            float nz = facing == "south" ? 1.0f : facing == "north" ? -1.0f : 0.0f;
+            TranslateModel(wheel, nx * 1.0625f, -0.25f, nz * 1.0625f);
+            Append(result, std::move(wheel));
+        }
+        return result;
+    }
+
     // mechanical_mixer: casing JSON + shaftless cog + pole + head at rest (offset 0, angle 0).
     ModelData GenerateCreateMixer(const string& blockName) {
         ModelData result = LoadBlockstateModel(blockName);
@@ -1265,6 +1298,10 @@ bool SpecialBlock::TryGenerateCreateBlockModel(const string& blockName,
     if (baseName == "create:fluid_pipe" || baseName == "create:glass_fluid_pipe" ||
         baseName == "create:encased_fluid_pipe") {
         outModel = GenerateCreateFluidPipe(blockName, ParseBlockStates(blockName), x, y, z);
+        return !outModel.vertices.empty();
+    }
+    if (baseName == "create:mechanical_harvester" || baseName == "create:mechanical_roller") {
+        outModel = GenerateCreateHarvesterRoller(baseName.substr(7), blockName, ParseBlockStates(blockName));
         return !outModel.vertices.empty();
     }
     if (baseName == "create:mechanical_mixer") {
