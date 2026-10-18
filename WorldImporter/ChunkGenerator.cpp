@@ -8,6 +8,7 @@
 #include "biome.h"
 #include "CreateSpoutCannonPulley.h"
 #include "model.h"
+#include "CreateBellCrafter.h"
 #include "blocktint.h"
 #include "fluid.h"
 #include "LODManager.h"
@@ -455,6 +456,9 @@ void ChunkGenerator::ProcessBlockForModel(ModelData& chunkModel, int x, int y, i
 
     // 剔除被遮挡的面
     std::vector<int> validFaceIndices;
+    // Create haunted/peculiar bell bodies and mechanical crafter cog/lid/belt/arrow (DO_NOT_CULL).
+    if (ns == "create")
+        AppendCreateBellCrafter("create:" + blockName, x, y, z, blockEntityNbt, blockModel);
     validFaceIndices.reserve(blockModel.faces.size());
 
     // CTM 连接的同类方块之间应剔除内部面(玻璃等非固体方块不在 solids 表中,
