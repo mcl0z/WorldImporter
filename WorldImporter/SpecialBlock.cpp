@@ -1337,7 +1337,9 @@ ModelData SpecialBlock::GenerateChestModel(const string& blockName) {
 
     ModelData model;
     Material material;
+    // 左右半箱贴图不同, 材质名必须区分, 否则按名字去重后都会用到同一张贴图
     material.name = ns + ":" + blockID;
+    if (type == "left" || type == "right") material.name += "#" + type + "~" + tex;
     material.texturePath = savedTexturePath;
     material.tintIndex = -1;
     model.materials = { material };
