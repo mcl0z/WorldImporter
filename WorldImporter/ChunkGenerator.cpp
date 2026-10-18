@@ -1,5 +1,6 @@
 // ChunkGenerator.cpp
 #include "ChunkGenerator.h"
+#include "BeaconBeam.h"
 #include "RegionModelExporter.h"
 #include "locutil.h"
 #include "objExporter.h"
@@ -628,6 +629,18 @@ void ChunkGenerator::ProcessBlockForModel(ModelData& chunkModel, int x, int y, i
         blockModel.faces[i] = blockModel.faces[validFaceIndices[i]];
     }
     blockModel.faces.resize(validFaceIndices.size());
+
+    // Beacon beam is extra geometry on the finished block model. Faces are
+    // already culled and compacted; offset/merge below moves the beam with
+    // the beacon. specialHandled stays unset.
+    if (ns == "minecraft") {
+        std::string beaconName = blockName;
+        const size_t beaconBracket = beaconName.find('[');
+        if (beaconBracket != std::string::npos) beaconName.resize(beaconBracket);
+        if (beaconName == "beacon") {
+            AppendBeaconBeam(blockModel, blockEntityNbt, x, y, z);
+        }
+    }
 
     ApplyPositionOffset(blockModel, x, y, z);
 
