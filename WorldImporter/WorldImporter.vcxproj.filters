@@ -116,6 +116,9 @@
     <ClCompile Include="biome.cpp">
       <Filter>源文件\World</Filter>
     </ClCompile>
+    <ClCompile Include="BeaconBeam.cpp">
+      <Filter>源文件\Blocks</Filter>
+    </ClCompile>
     <ClCompile Include="blocktint.cpp">
       <Filter>源文件\World</Filter>
     </ClCompile>
