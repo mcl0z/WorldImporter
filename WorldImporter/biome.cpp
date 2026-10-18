@@ -387,6 +387,17 @@ BiomeColors Biome::ParseBiomeColors(const nlohmann::json& biomeJson) {
         }
 
         colors.grass = ParseColorWithFallback("grass_color", "grass");
+
+        // grass_color_modifier (vanilla GrassColorModifier): swamp 用固定色(取噪声高值一侧),
+        // dark_forest 与 0x28340A 取平均。没有 grass_color 覆盖时才生效。
+        if (effects.contains("grass_color_modifier") && effects["grass_color_modifier"].is_string()) {
+            const std::string mod = effects["grass_color_modifier"].get<std::string>();
+            if (mod == "swamp") {
+                colors.grass = 0x6A7039;
+            } else if (mod == "dark_forest") {
+                colors.grass = ((colors.grass & 0xFEFEFE) + 0x28340A) >> 1;
+            }
+        }
     }
 
     return colors;
@@ -664,7 +675,9 @@ void Biome::GenerateBiomeMap(int minX, int minZ, int maxX, int maxZ) {
             int mapZ = z - globalMinZ;
 
             if (mapX >= 0 && mapX < mapWidth && mapZ >= 0 && mapZ < mapHeight) {
-                int currentY = GetHeightMapY(x, z, "MOTION_BLOCKING");
+                // 高度图存的是 (最高方块Y + 1) - 世界最低Y, 需换算成世界Y再取表面方块所在群系
+                int hm = GetHeightMapY(x, z, "MOTION_BLOCKING");
+                int currentY = hm > 0 ? hm - 1 + minSectionY * 16 : hm;
                 int biomeId = GetBiomeId(x, currentY, z);
                 // 将生物群系ID写入全局地图的对应位置
                 g_biomeMap[mapZ][mapX] = biomeId;

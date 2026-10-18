@@ -118,6 +118,7 @@ TintKind LookupVanillaKind(std::string_view baseName) {
 
         // 水
         {"water", TintKind::Water},
+        {"water_cauldron", TintKind::Water},
 
         // 状态相关（下面 ResolveTint 里单独算颜色）
         {"redstone_wire", TintKind::Fixed},
