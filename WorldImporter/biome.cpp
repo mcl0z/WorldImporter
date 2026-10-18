@@ -664,7 +664,9 @@ void Biome::GenerateBiomeMap(int minX, int minZ, int maxX, int maxZ) {
             int mapZ = z - globalMinZ;
 
             if (mapX >= 0 && mapX < mapWidth && mapZ >= 0 && mapZ < mapHeight) {
-                int currentY = GetHeightMapY(x, z, "MOTION_BLOCKING");
+                // 高度图存的是 (最高方块Y + 1) - 世界最低Y, 需换算成世界Y再取表面方块所在群系
+                int hm = GetHeightMapY(x, z, "MOTION_BLOCKING");
+                int currentY = hm > 0 ? hm - 1 + minSectionY * 16 : hm;
                 int biomeId = GetBiomeId(x, currentY, z);
                 // 将生物群系ID写入全局地图的对应位置
                 g_biomeMap[mapZ][mapX] = biomeId;
