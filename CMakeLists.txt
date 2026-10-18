@@ -28,6 +28,15 @@ wi_apply_defaults(WorldImporter)
 wi_apply_defaults(WorldImporterCore)
 
 include(CTest)
+
+if (BUILD_TESTING AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/WorldImporter/tests/render_layer_tests.cpp")
+    add_executable(render_layer_tests WorldImporter/tests/render_layer_tests.cpp)
+    target_link_libraries(render_layer_tests PRIVATE WorldImporterCore)
+    wi_apply_defaults(render_layer_tests)
+    add_test(NAME render_layer COMMAND render_layer_tests)
+    set_tests_properties(render_layer PROPERTIES TIMEOUT 30)
+endif()
+
 option(WI_BUILD_CTM_TESTS "Build CTM texture baking regression tests" ON)
 
 if (BUILD_TESTING AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/WorldImporter/tests/ctm_orient_tests.cpp")
