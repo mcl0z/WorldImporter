@@ -107,6 +107,9 @@
     <ClCompile Include="model.cpp">
       <Filter>源文件\Core\Model</Filter>
     </ClCompile>
+    <ClCompile Include="plantoffset.cpp">
+      <Filter>源文件\Core\Model</Filter>
+    </ClCompile>
     <ClCompile Include="texture.cpp">
       <Filter>源文件\Core\Model</Filter>
     </ClCompile>
@@ -246,6 +249,9 @@
       <Filter>头文件\Core\Model</Filter>
     </ClInclude>
     <ClInclude Include="model.h">
+      <Filter>头文件\Core\Model</Filter>
+    </ClInclude>
+    <ClInclude Include="plantoffset.h">
       <Filter>头文件\Core\Model</Filter>
     </ClInclude>
     <ClInclude Include="blockstate.h">
