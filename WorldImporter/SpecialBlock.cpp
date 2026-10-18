@@ -458,7 +458,7 @@ namespace {
         bool enabled = states.contains("enabled") && states.at("enabled") == "true";
         float pointerRot = enabled ? -90.0f : 0.0f;
         float pitch = facing == "up" ? 0.0f : facing == "down" ? 180.0f : 90.0f;
-        float yaw = FacingY(facing); // AngleHelper.horizontalAngle / Direction.toYRot
+        float yaw = -FacingY(facing); // AngleHelper.horizontalAngle (X-axis facings negated)
         ModelData pointer = LoadCreateModel("block/fluid_valve/pointer", 291);
         Rotate(pointer, 0.0f, pointerOffset + pointerRot, 0.0f);
         Rotate(pointer, pitch, 0.0f, 0.0f);
@@ -479,7 +479,7 @@ namespace {
             for (size_t i = 1; i < head.vertices.size(); i += 3) head.vertices[i] += offset;
         }
         Rotate(head, pitch, 0.0f, 0.0f);
-        Rotate(head, 0.0f, FacingY(facing), 0.0f);
+        Rotate(head, 0.0f, -FacingY(facing), 0.0f);
         Append(result, std::move(head));
         return result;
     }
@@ -491,11 +491,11 @@ namespace {
         string prefix = id == "netherite_backtank" ? "block/netherite_backtank" : "block/copper_backtank";
         ModelData shaft = LoadCreateModel(prefix + "/block_shaft_input", 293);
         // Shaft stub on top; KineticBlockEntityRenderer orients with rotateToFace(horizontal facing).
-        Rotate(shaft, 0.0f, FacingY(facing), 0.0f);
+        Rotate(shaft, 0.0f, -FacingY(facing), 0.0f);
         Append(result, std::move(shaft));
         ModelData cogs = LoadCreateModel(prefix + "/block_cogs", 294);
         // Rest angle 0: pivot translates cancel; only Ry(180+horizontalAngle).
-        Rotate(cogs, 0.0f, 180.0f + FacingY(facing), 0.0f);
+        Rotate(cogs, 0.0f, 180.0f - FacingY(facing), 0.0f);
         Append(result, std::move(cogs));
         return result;
     }
@@ -509,7 +509,7 @@ namespace {
             size == "small" ? "block/steam_whistle/small_mouth" : "block/steam_whistle/medium_mouth";
         ModelData mouth = LoadCreateModel(mouthPath, 295);
         // offset 0: center → Ry(hA) → uncenter → T(0,0,0)
-        Rotate(mouth, 0.0f, FacingY(facing), 0.0f);
+        Rotate(mouth, 0.0f, -FacingY(facing), 0.0f);
         Append(result, std::move(mouth));
         return result;
     }
