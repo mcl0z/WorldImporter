@@ -8,6 +8,7 @@
 #include "Occlusion.h"      // GetBlockOcclusion (overlay 隐藏边判定)
 #include "texture.h"        // MaterialType
 #include "fileutils.h"      // string_to_wstring / wstring_to_string
+#include "CtmModGrid.h"     // ConnectedTexturesMod 网格 random/pattern
 #include "include/stb_image.h"
 #include "include/stb_image_write.h"
 
@@ -2285,8 +2286,8 @@ static float ComputeOverlayBaseOffset(const ModelData& model, const Face& srcFac
 // ========= mcmeta 网格 CTM (proxy / pattern / random / pillar) =========
 // Yuushya 等资源包在 .png.mcmeta 里用网格贴图描述变体:
 //   proxy   : 基础贴图代理到另一张贴图的 CTM 布局
-//   pattern : width x height 网格, 按世界坐标取格(同 repeat)
-//   random  : 按位置哈希取格
+//   pattern : CTM Patterned, 按面方向和方块坐标取格
+//   random  : CTM Random, Mth.getSeed + 面序号 驱动 java.util.Random
 //   pillar  : 按面方向取行(顶/中/底)
 // 整张网格导出为一张 atlas 材质, 面 UV 映射进对应格子。
 struct McmetaGridRule {
@@ -2351,13 +2352,25 @@ static bool ParseMcmetaGridRule(const std::string& ns, const std::string& textur
     const nlohmann::json empty = nlohmann::json::object();
     const nlohmann::json& extra = layout->contains("extra") && (*layout)["extra"].is_object()
         ? (*layout)["extra"] : empty;
-    const int ew = extra.value("width", 0), eh = extra.value("height", 0);
-    const int es = extra.value("size", 0);
-    if (ew > 0 && eh > 0) { cols = ew; rows = eh; }
-    else if (es > 0) { cols = es; rows = std::max(1, h / std::max(1, w / es)); }
-    else if (kind == 'l') { cols = 1; rows = std::max(1, h / std::max(1, w)); }
-    else if (w > h) { cols = std::max(1, w / h); rows = 1; }
-    else { cols = 1; rows = std::max(1, h / std::max(1, w)); }
+    if (kind == 'l') {
+        // pillar 仍按原规则(缺省时用图片比例推行数)
+        const int ew = extra.value("width", 0), eh = extra.value("height", 0);
+        const int es = extra.value("size", 0);
+        if (ew > 0 && eh > 0) { cols = ew; rows = eh; }
+        else if (es > 0) { cols = es; rows = std::max(1, h / std::max(1, w / es)); }
+        else { cols = 1; rows = std::max(1, h / std::max(1, w)); }
+    } else {
+        // pattern/random: CTM TextureMap。有 width 且有 height 就用它们,
+        // 否则 size 同时作为宽和高, 都没有则 2x2。不按图片尺寸猜格子。
+        if (extra.contains("width") && extra.contains("height")) {
+            cols = extra.value("width", 0);
+            rows = extra.value("height", 0);
+        } else if (extra.contains("size")) {
+            cols = rows = extra.value("size", 0);
+        } else {
+            cols = rows = 2;
+        }
+    }
     if (cols <= 0 || rows <= 0) return false;
 
     out.texNs = gridNs; out.texPath = gridPath;
@@ -2421,18 +2434,16 @@ static CtmTexInfo GetOrCreateMcmetaGridTexInfo(const McmetaGridRule& rule) {
 
 static void SelectMcmetaGridCell(const McmetaGridRule& rule, FaceType ft,
     int x, int y, int z, int& col, int& row) {
+    // 行 0 是网格图顶部, 与 RemapFaceUvToAtlas 一致(OBJ 的 v 朝上, 用 rows-1-row)。
+    // FaceOrdinal 把 FaceType 映到 Direction: DOWN0 UP1 NORTH2 SOUTH3 WEST4 EAST5。
+    const int side = FaceOrdinal(ft);
     switch (rule.kind) {
-    case 'p': {
-        int idx = SelectRepeatTile(ft, x, y, z, rule.cols, rule.rows, 0);
-        col = idx % rule.cols; row = idx / rule.cols;
+    case 'p':
+        CtmModGridPatternCell(x, y, z, side, rule.cols, rule.rows, col, row);
         break;
-    }
-    case 'r': {
-        uint32_t r = static_cast<uint32_t>(McPositionHash(x, y, z)) & UINT32_C(0x7fffffff);
-        int idx = static_cast<int>(r % static_cast<uint32_t>(rule.cols * rule.rows));
-        col = idx % rule.cols; row = idx / rule.cols;
+    case 'r':
+        CtmModGridRandomCell(x, y, z, side, rule.cols, rule.rows, col, row);
         break;
-    }
     case 'l':
     default: {
         col = 0;
