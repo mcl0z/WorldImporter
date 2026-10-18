@@ -951,6 +951,85 @@ namespace {
         TranslateModel(part, 0.5f, 0.5f, 0.5f);
     }
 
+    // speedometer / stressometer (GaugeRenderer): ShaftRenderer shaft + dial (rest, progress 0)
+    // and head on every horizontal face that GaugeBlock.shouldRenderHeadOnFace allows.
+    ModelData GenerateCreateGauge(const string& id, const string& blockName,
+        const unordered_map<string, string>& states) {
+        ModelData result = LoadBlockstateModel(blockName);
+        const string facing = states.contains("facing") ? states.at("facing") : "north";
+        const bool alongFirst = states.contains("axis_along_first") && states.at("axis_along_first") == "true";
+        const string facingAxis = facing == "east" || facing == "west" ? "x" : facing == "up" || facing == "down" ? "y" : "z";
+        const string axis = facingAxis == "x" ? (alongFirst ? "y" : "z") :
+            facingAxis == "y" ? (alongFirst ? "x" : "z") : (alongFirst ? "x" : "y");
+        ModelData shaft = LoadCreateModel("block/shaft", 295);
+        RotateKineticAxis(shaft, axis);
+        Append(result, std::move(shaft));
+        static const unordered_map<string, string> opposite = {
+            {"north","south"},{"south","north"},{"east","west"},{"west","east"},{"up","down"},{"down","up"}};
+        static const struct { const char* name; const char* axis; float yRot; } faces[] = {
+            {"south", "z", 0.0f}, {"west", "x", 90.0f}, {"north", "z", 180.0f}, {"east", "x", 270.0f}};
+        for (const auto& face : faces) {
+            if (face.name == opposite.at(facing) || axis == face.axis) continue;
+            if (axis == "y" && face.name != facing) continue;
+            for (const char* part : { "block/gauge/dial", id == "speedometer" ? "block/gauge/speedometer/head" :
+                    "block/gauge/stressometer/head" }) {
+                ModelData piece = LoadCreateModel(part, 296);
+                Rotate(piece, 0.0f, -face.yRot - 90.0f, 0.0f); // rotateBufferTowards
+                Append(result, std::move(piece));
+            }
+        }
+        return result;
+    }
+
+    // analog_lever (AnalogLeverRenderer): handle tilted by State/15*90 deg + indicator.
+    ModelData GenerateCreateAnalogLever(const string& blockName,
+        const unordered_map<string, string>& states, const NbtTagPtr& nbt) {
+        ModelData result = LoadBlockstateModel(blockName);
+        const string face = states.contains("face") ? states.at("face") : "floor";
+        const string facing = states.contains("facing") ? states.at("facing") : "north";
+        const float rX = face == "floor" ? 0.0f : face == "wall" ? 90.0f : 180.0f;
+        const float rY = facing == "west" ? -90.0f : facing == "north" ? 180.0f : facing == "east" ? -270.0f : 0.0f;
+        int state = 0;
+        if (nbt && nbt->type == TagType::COMPOUND) {
+            auto tag = getChildByName(nbt, "State");
+            if (tag && tag->type == TagType::INT) state = bytesToInt(tag->payload);
+        }
+        ModelData handle = LoadCreateModel("block/analog_lever/handle", 297);
+        TranslateModel(handle, -0.5f, -0.0625f, -0.5f);
+        RotateModelOrigin(handle, state / 15.0f * 90.0f, 0.0f, 0.0f);
+        TranslateModel(handle, 0.5f, 0.0625f, 0.5f);
+        ModelData indicator = LoadCreateModel("block/analog_lever/indicator", 298);
+        for (ModelData* part : { &handle, &indicator }) {
+            Rotate(*part, rX, 0.0f, 0.0f);
+            Rotate(*part, 0.0f, rY, 0.0f);
+            Append(result, std::move(*part));
+        }
+        DisableCulling(result);
+        return result;
+    }
+
+    // cuckoo_clock (CuckooClockRenderer): back SHAFT_HALF, hands and closed doors at rest.
+    ModelData GenerateCreateCuckooClock(const string& blockName,
+        const unordered_map<string, string>& states) {
+        ModelData result = LoadBlockstateModel(blockName);
+        const string facing = states.contains("facing") ? states.at("facing") : "north";
+        static const unordered_map<string, string> opposite = {
+            {"north","south"},{"south","north"},{"east","west"},{"west","east"}};
+        static const unordered_map<string, string> counterClockWise = {
+            {"north","west"},{"west","south"},{"south","east"},{"east","north"}};
+        Append(result, MakeShaftHalfFacing(opposite.contains(facing) ? opposite.at(facing) : "south"));
+        // Partials face west; renderer uses horizontalAngle(facing.getCounterClockWise()).
+        const string cw = counterClockWise.contains(facing) ? counterClockWise.at(facing) : "west";
+        const float yRot = cw == "west" ? -90.0f : cw == "north" ? 180.0f : cw == "east" ? -270.0f : 0.0f;
+        for (const char* part : { "block/cuckoo_clock/hour_hand", "block/cuckoo_clock/minute_hand",
+                "block/cuckoo_clock/left_door", "block/cuckoo_clock/right_door" }) {
+            ModelData piece = LoadCreateModel(part, 299);
+            Rotate(piece, 0.0f, yRot, 0.0f);
+            Append(result, std::move(piece));
+        }
+        return result;
+    }
+
     // mechanical_arm: base plate (blockstate) + ARM_COG + full arm at resting pose.
     ModelData GenerateCreateMechanicalArm(const string& blockName,
         const unordered_map<string, string>& states) {
@@ -1190,6 +1269,18 @@ bool SpecialBlock::TryGenerateCreateBlockModel(const string& blockName,
     }
     if (baseName == "create:mechanical_mixer") {
         outModel = GenerateCreateMixer(blockName);
+        return !outModel.vertices.empty();
+    }
+    if (baseName == "create:speedometer" || baseName == "create:stressometer") {
+        outModel = GenerateCreateGauge(baseName.substr(7), blockName, ParseBlockStates(blockName));
+        return !outModel.vertices.empty();
+    }
+    if (baseName == "create:analog_lever") {
+        outModel = GenerateCreateAnalogLever(blockName, ParseBlockStates(blockName), blockEntityNbt);
+        return !outModel.vertices.empty();
+    }
+    if (baseName == "create:cuckoo_clock" || baseName == "create:mysterious_cuckoo_clock") {
+        outModel = GenerateCreateCuckooClock(blockName, ParseBlockStates(blockName));
         return !outModel.vertices.empty();
     }
     if (baseName == "create:mechanical_press") {
