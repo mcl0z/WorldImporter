@@ -667,6 +667,94 @@ namespace {
         return result;
     }
 
+    // Centred right-handed rotation (PoseStack rotateX/Y/ZDegrees, Direction.EAST/UP/SOUTH).
+    void PoseRotate(ModelData& model, char axis, float degrees) {
+        if (model.vertices.empty() || fmodf(degrees, 360.0f) == 0.0f) return;
+        const float rad = degrees * (float)M_PI / 180.0f;
+        const float c = roundf(cosf(rad) * 1e6f) / 1e6f, s = roundf(sinf(rad) * 1e6f) / 1e6f;
+        for (size_t i = 0; i + 2 < model.vertices.size(); i += 3) {
+            float vx = model.vertices[i] - 0.5f, vy = model.vertices[i + 1] - 0.5f, vz = model.vertices[i + 2] - 0.5f;
+            float nx = vx, ny = vy, nz = vz;
+            if (axis == 'x') { ny = vy * c - vz * s; nz = vy * s + vz * c; }
+            else if (axis == 'y') { nx = vx * c + vz * s; nz = -vx * s + vz * c; }
+            else { nx = vx * c - vy * s; ny = vx * s + vy * c; }
+            model.vertices[i] = nx + 0.5f; model.vertices[i + 1] = ny + 0.5f; model.vertices[i + 2] = nz + 0.5f;
+        }
+        DisableCulling(model);
+    }
+
+    // AngleHelper.horizontalAngle / verticalAngle.
+    float PoseHorizontalAngle(const string& d) {
+        return d == "west" ? -90.0f : d == "north" ? 180.0f : d == "east" ? -270.0f : 0.0f;
+    }
+    float PoseVerticalAngle(const string& d) { return d == "up" ? -90.0f : d == "down" ? 90.0f : 0.0f; }
+    char DirectionAxis(const string& d) {
+        return d == "east" || d == "west" ? 'x' : d == "up" || d == "down" ? 'y' : 'z';
+    }
+    string OppositeDirection(const string& d) {
+        static const unordered_map<string, string> opposite = {
+            {"north","south"},{"south","north"},{"east","west"},{"west","east"},{"up","down"},{"down","up"}};
+        return opposite.contains(d) ? opposite.at(d) : d;
+    }
+
+    // CachedBuffers.partialFacing / rotateToFace: center, rotateY(horizontal), rotateX(vertical).
+    ModelData LoadPartialFacing(const string& path, const string& facing, int index) {
+        ModelData part = LoadCreateModel(path, index);
+        PoseRotate(part, 'x', PoseVerticalAngle(facing));
+        PoseRotate(part, 'y', PoseHorizontalAngle(facing));
+        return part;
+    }
+
+    // KineticBlockEntityVisual.rotationOffset (non large cog).
+    float KineticRestAngle(char axis, int x, int y, int z) {
+        int sum = (axis == 'x' ? 0 : x) + (axis == 'y' ? 0 : y) + (axis == 'z' ? 0 : z);
+        return sum % 2 == 0 ? 22.5f : 0.0f;
+    }
+
+    // mechanical_drill: casing + DRILL_HEAD (DrillRenderer, partialFacing + kinetic rest angle).
+    ModelData GenerateCreateDrill(const string& blockName, const unordered_map<string, string>& states,
+        int x, int y, int z) {
+        ModelData result = LoadBlockstateModel(blockName);
+        const string facing = states.contains("facing") ? states.at("facing") : "north";
+        ModelData head = LoadPartialFacing("block/mechanical_drill/head", facing, 280);
+        const char axis = DirectionAxis(facing);
+        PoseRotate(head, axis, KineticRestAngle(axis, x, y, z));
+        Append(result, std::move(head));
+        return result;
+    }
+
+    // mechanical_saw: casing + inactive blade (SawRenderer.renderBlade) + shaft (renderShaft).
+    ModelData GenerateCreateSaw(const string& blockName, const unordered_map<string, string>& states) {
+        ModelData result = LoadBlockstateModel(blockName);
+        const string facing = states.contains("facing") ? states.at("facing") : "up";
+        const bool alongFirst = states.contains("axis_along_first") && states.at("axis_along_first") == "true";
+        const bool horizontal = DirectionAxis(facing) != 'y';
+        ModelData blade = LoadPartialFacing(horizontal ? "block/mechanical_saw/blade_horizontal_inactive" :
+            "block/mechanical_saw/blade_vertical_inactive", facing, 281);
+        if (!horizontal && alongFirst) PoseRotate(blade, 'y', 90.0f);
+        Append(result, std::move(blade));
+        if (horizontal) Append(result, LoadPartialFacing("block/shaft_half", OppositeDirection(facing), 284));
+        else {
+            ModelData shaft = LoadCreateModel("block/shaft", 282);
+            RotateKineticAxis(shaft, alongFirst ? "x" : "z"); // DirectionalAxisKineticBlock, facing Y
+            Append(result, std::move(shaft));
+        }
+        return result;
+    }
+
+    // mechanical / windmill / clockwork bearing: casing + SHAFT_HALF (back) + top (BearingRenderer).
+    ModelData GenerateCreateBearing(const string& id, const string& blockName,
+        const unordered_map<string, string>& states) {
+        ModelData result = LoadBlockstateModel(blockName);
+        const string facing = states.contains("facing") ? states.at("facing") : "up";
+        Append(result, LoadPartialFacing("block/shaft_half", OppositeDirection(facing), 284));
+        ModelData top = LoadCreateModel(id == "windmill_bearing" ? "block/bearing/top_wooden" : "block/bearing/top", 283);
+        PoseRotate(top, 'x', -90.0f - PoseVerticalAngle(facing));
+        if (DirectionAxis(facing) != 'y') PoseRotate(top, 'y', PoseHorizontalAngle(OppositeDirection(facing)));
+        Append(result, std::move(top));
+        return result;
+    }
+
     // deployer: casing (blockstate) + shaft + pole + hand_pointing at offset 0.
     ModelData GenerateCreateDeployer(const string& blockName,
         const unordered_map<string, string>& states) {
@@ -868,6 +956,19 @@ bool SpecialBlock::TryGenerateCreateBlockModel(const string& blockName,
     }
     if (baseName == "create:encased_fan") {
         outModel = GenerateCreateEncasedFan(blockName, ParseBlockStates(blockName));
+        return !outModel.vertices.empty();
+    }
+    if (baseName == "create:mechanical_drill") {
+        outModel = GenerateCreateDrill(blockName, ParseBlockStates(blockName), x, y, z);
+        return !outModel.vertices.empty();
+    }
+    if (baseName == "create:mechanical_saw") {
+        outModel = GenerateCreateSaw(blockName, ParseBlockStates(blockName));
+        return !outModel.vertices.empty();
+    }
+    if (baseName == "create:mechanical_bearing" || baseName == "create:windmill_bearing" ||
+        baseName == "create:clockwork_bearing") {
+        outModel = GenerateCreateBearing(baseName.substr(7), blockName, ParseBlockStates(blockName));
         return !outModel.vertices.empty();
     }
     if (baseName == "create:deployer") {
