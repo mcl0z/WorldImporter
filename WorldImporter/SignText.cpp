@@ -9,6 +9,8 @@
 #include "texture.h"
 
 #include <Windows.h>
+#undef min
+#undef max
 
 #include <algorithm>
 #include <array>
