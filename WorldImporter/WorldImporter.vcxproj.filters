@@ -214,6 +214,9 @@
     <ClCompile Include="chunk.cpp">
       <Filter>源文件\World</Filter>
     </ClCompile>
+    <ClCompile Include="CreateBogey.cpp">
+      <Filter>源文件\Blocks</Filter>
+    </ClCompile>
     <ClCompile Include="ChunkLoader.cpp">
       <Filter>源文件\Core\Loader</Filter>
     </ClCompile>
@@ -355,6 +358,9 @@
     </ClInclude>
     <ClInclude Include="chunk.h">
       <Filter>头文件\World</Filter>
+    </ClInclude>
+    <ClInclude Include="CreateBogey.h">
+      <Filter>头文件\Blocks</Filter>
     </ClInclude>
     <ClInclude Include="ChunkLoader.h">
       <Filter>头文件\Core\Loader</Filter>
