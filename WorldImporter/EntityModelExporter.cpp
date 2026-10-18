@@ -64,6 +64,7 @@ struct Ctx {
     std::map<std::string, int> skippedItems;                    // 无法渲染的物品 (特殊渲染器等)
     std::map<std::string, TintResult> tints;                    // 材质名 -> 非固定色 (并入 tint.json)
     std::map<std::string, std::string> tintedTex;               // rel+color -> 烘焙后的 png
+    std::map<std::string, std::string> paletteTex;              // mask|key|pal -> 烘焙后的 png
 
     // 贴图写到 textures/<ns>/<path>.png, 返回相对路径; 不存在返回 ""
     std::string Texture(const std::string& ns, const std::string& path) {
@@ -125,6 +126,56 @@ struct Ctx {
         }
         tintedTex.emplace(cacheKey, out);
         return out;
+    }
+    // 纹饰调色板置换 (1.21 ABGR / 26.x ARGB 在字节序上都是 RGBA):
+    // 键图像 alpha!=0 的不透明 RGB 映射到目标色; 源 alpha==0 保持; 输出 alpha = srcA * dstA / 255。
+    std::string PaletteSwapped(const std::string& maskPath, const std::string& keyPath, const std::string& palPath) {
+        const std::string cacheKey = maskPath + "|" + keyPath + "|" + palPath;
+        if (auto it = paletteTex.find(cacheKey); it != paletteTex.end()) return it->second;
+        auto fail = [&]() { paletteTex.emplace(cacheKey, ""); return std::string(); };
+        std::vector<unsigned char> src, keyPx, palPx;
+        int sw = 0, sh = 0, kw = 0, kh = 0, pw = 0, ph = 0;
+        if (!LoadTexturePixels("minecraft", maskPath, src, sw, sh) || sw <= 0 || sh <= 0) return fail();
+        if (!LoadTexturePixels("minecraft", keyPath, keyPx, kw, kh)) return fail();
+        if (!LoadTexturePixels("minecraft", palPath, palPx, pw, ph)) return fail();
+        const size_t kn = static_cast<size_t>(kw) * static_cast<size_t>(kh);
+        const size_t pn = static_cast<size_t>(pw) * static_cast<size_t>(ph);
+        if (kn == 0 || kn != pn || keyPx.size() < kn * 4 || palPx.size() < pn * 4) return fail();
+        std::unordered_map<uint32_t, uint32_t> remap;
+        for (size_t i = 0; i < kn; ++i) {
+            const unsigned char* k = keyPx.data() + i * 4;
+            if (k[3] == 0) continue;
+            const uint32_t rgb = (static_cast<uint32_t>(k[0]) << 16) | (static_cast<uint32_t>(k[1]) << 8) | k[2];
+            const unsigned char* t = palPx.data() + i * 4;
+            remap[rgb] = (static_cast<uint32_t>(t[0]) << 24) | (static_cast<uint32_t>(t[1]) << 16) |
+                         (static_cast<uint32_t>(t[2]) << 8) | t[3];
+        }
+        const size_t count = static_cast<size_t>(sw) * static_cast<size_t>(sh);
+        if (src.size() < count * 4) return fail();
+        for (size_t i = 0; i < count; ++i) {
+            unsigned char* p = src.data() + i * 4;
+            if (p[3] == 0) continue;
+            const uint32_t rgb = (static_cast<uint32_t>(p[0]) << 16) | (static_cast<uint32_t>(p[1]) << 8) | p[2];
+            auto it = remap.find(rgb);
+            if (it == remap.end()) continue;
+            const uint32_t t = it->second;
+            const int ta = static_cast<int>(t & 255);
+            p[0] = static_cast<unsigned char>((t >> 24) & 255);
+            p[1] = static_cast<unsigned char>((t >> 16) & 255);
+            p[2] = static_cast<unsigned char>((t >> 8) & 255);
+            p[3] = static_cast<unsigned char>(static_cast<int>(p[3]) * ta / 255);
+        }
+        std::string full = "textures";
+        if (!SaveTextureToFile("minecraft", maskPath, full)) return fail();
+        std::string safe = palPath;
+        for (char& c : safe) if (c == '/') c = '_';
+        const std::filesystem::path dest = std::filesystem::path(full).parent_path() /
+                                            (std::filesystem::path(full).stem().string() + "_pal_" + safe + ".png");
+        if (!stbi_write_png(dest.string().c_str(), sw, sh, 4, src.data(), sw * 4)) return fail();
+        std::string rel = "textures/minecraft/" + maskPath + ".png";
+        rel.insert(rel.size() - 4, "_pal_" + safe);
+        paletteTex.emplace(cacheKey, rel);
+        return rel;
     }
     int Material(const std::string& name, const std::string& texture) {
         auto it = materialIndex.find(name);
@@ -313,9 +364,11 @@ ArmorInfo ArmorOf(const ItemStackInfo& item) {
 // 网格 (ModelData + 自带材质) 并入实体对象。固定色烘焙进贴图; 其它 tint 记入 ctx.tints。
 void AppendMesh(Ctx& ctx, OutObject& obj, const ModelData& m);
 
-// 盔甲层材质: 基础层 + 叠加层 (皮革: 染色基础层 + 不染色 overlay)
+// 盔甲层材质: 基础层 + 叠加层 (皮革: 染色基础层 + 不染色 overlay)。
+// nameSuffix / extra 用于纹饰: 材质名加上后缀, 纹饰和染色叠加放进同一次 RegisterOverlaySequence。
 struct ArmorTexLayer { std::string texNs, texPath; int color = -1; };
-int ArmorMaterial(Ctx& ctx, const std::vector<ArmorTexLayer>& layers) {
+int ArmorMaterial(Ctx& ctx, const std::vector<ArmorTexLayer>& layers, const std::string& nameSuffix = {},
+                  const std::vector<OverlayLayerInfo>& extra = {}) {
     if (layers.empty()) return -1;
     auto nameOf = [&](const ArmorTexLayer& l) {
         TintResult t;
@@ -325,6 +378,7 @@ int ArmorMaterial(Ctx& ctx, const std::vector<ArmorTexLayer>& layers) {
     std::string baseTex = ctx.Texture(layers[0].texNs, layers[0].texPath);
     if (baseTex.empty()) return -1;
     auto [baseName, baseTint] = nameOf(layers[0]);
+    baseName += nameSuffix;
     if (baseTint.kind == TintKind::Fixed) baseTex = ctx.TintedTexture(baseTex, baseTint.color);
     else if (baseTint.on()) ctx.tints[baseName] = baseTint;
     int mat = ctx.Material(baseName, baseTex);
@@ -339,8 +393,59 @@ int ArmorMaterial(Ctx& ctx, const std::vector<ArmorTexLayer>& layers) {
         else { info.texturePath = t; info.tint = tint; }
         over.push_back(info);
     }
+    for (const auto& e : extra) over.push_back(e);
     if (!over.empty()) RegisterOverlaySequence(baseName, over);
     return mat;
+}
+
+// 纹饰调色板后缀。1.21: 盔甲材料与纹饰材料相同则用 <mat>_darker。26.x: equipment trim_overrides。
+std::string TrimPaletteId(const Ctx& ctx, const ArmorInfo& armor, const ItemStackInfo& item) {
+    const std::string mat = SplitId(item.trimMaterial).second;
+    if (mat.empty()) return {};
+    if (!ctx.modern) {
+        if (armor.legacyName == mat &&
+            (mat == "iron" || mat == "gold" || mat == "diamond" || mat == "netherite"))
+            return mat + "_darker";
+        return mat;
+    }
+    std::string pal = "trim/" + mat;
+    auto [ns, path] = SplitId(armor.asset);
+    nlohmann::json def = ItemRender::AssetJson(ns, "equipment/" + path + ".json");
+    if (def.is_object() && def.contains("trim_overrides") && def["trim_overrides"].is_array()) {
+        for (const auto& o : def["trim_overrides"]) {
+            if (!o.is_object() || !o.contains("when") || !o["when"].is_object()) continue;
+            if (!o["when"].contains("material") || !o["when"]["material"].is_string()) continue;
+            const std::string w = o["when"]["material"].get<std::string>();
+            if (w != item.trimMaterial && SplitId(w).second != mat) continue;
+            if (o.contains("palette") && o["palette"].is_string())
+                pal = SplitId(o["palette"].get<std::string>()).second;
+            break;
+        }
+    }
+    return pal;
+}
+// 把图案蒙版按调色板烘焙成与盔甲同 UV 的叠加层。失败则不加纹饰 (盔甲本身照常)。
+bool MakeTrimOverlay(Ctx& ctx, const ArmorInfo& armor, const ItemStackInfo& item, bool leggings,
+                     const ArmorTexLayer& armorLayer, std::string& suffix, OverlayLayerInfo& info) {
+    const std::string pattern = SplitId(item.trimPattern).second;
+    const std::string pal = TrimPaletteId(ctx, armor, item);
+    if (pattern.empty() || pal.empty()) return false;
+    const std::string mask = ctx.modern
+        ? std::string("trims/entity/") + (leggings ? "humanoid_leggings/" : "humanoid/") + pattern
+        : std::string("trims/models/armor/") + pattern + (leggings ? "_leggings" : "");
+    const std::string keyPath = ctx.modern ? "palettes/trim_base" : "trims/color_palettes/trim_palette";
+    const std::string palPath = ctx.modern ? "palettes/" + pal : "trims/color_palettes/" + pal;
+    if (!TextureExists("minecraft", mask) || !TextureExists("minecraft", keyPath) || !TextureExists("minecraft", palPath))
+        return false;
+    if (!SameCachedPngSize(armorLayer.texNs, armorLayer.texPath, "minecraft", mask)) return false;
+    const std::string baked = ctx.PaletteSwapped(mask, keyPath, palPath);
+    if (baked.empty()) return false;
+    std::string safePal = pal;
+    for (char& c : safePal) if (c == '/') c = '_';
+    info.name = "minecraft:" + mask + "~" + safePal;
+    info.texturePath = baked;
+    suffix = "~trim_" + pattern + "_" + safePal;
+    return true;
 }
 
 // 项圈: 基础贴图材质 + 染色项圈叠加层。整模再画一遍项圈贴图 (大半透明) 在 Blender 里是黑剪影。
@@ -463,7 +568,15 @@ void RenderArmor(Ctx& ctx, OutObject& obj, const std::string& kind, const Entity
             default: break;
             }
         }
-        int mat = ArmorMaterial(ctx, layers);
+        std::string trimSuffix;
+        std::vector<OverlayLayerInfo> trimOver;
+        const bool babyHumanoid = ctx.modern && baby && !armorStand;
+        if (!babyHumanoid && !layers.empty() && !item->trimPattern.empty()) {
+            OverlayLayerInfo info;
+            if (MakeTrimOverlay(ctx, a, *item, slot == Slot::Legs, layers[0], trimSuffix, info))
+                trimOver.push_back(info);
+        }
+        int mat = ArmorMaterial(ctx, layers, trimSuffix, trimOver);
         if (mat < 0) continue;
         am.Emit(obj.mesh, base, [mat](int) { return mat; }, pre);
     }
@@ -529,13 +642,39 @@ bool IsSkullItem(const std::string& id) {
     return false;
 }
 
+// CustomHeadLayer 的头颅分支 (不是 ItemDisplay::Head)。
+// 1.21: S(1.1875,-1.1875,-1.1875) * 村民 T(0,0.0625,0); renderSkull 的翻转和 yaw 在 EmitSkullModel。
+// 26.x: T(0, skullYOffset, 0) * S(1.1875), 无翻转。村民 skullYOffset = -0.07421875。
+void RenderWornSkull(Ctx& ctx, OutObject& obj, const EntityModel& model, const ItemStackInfo& item,
+                     const EntityAffine& base, bool legacyYoung, bool villagerLike) {
+    using A = EntityAffine;
+    int head = model.Find("head");
+    if (head < 0) return;
+    A m = base;
+    if (!ctx.modern && legacyYoung) m = m * A::T(0.0, 0.03125, 0.0) * A::S(0.7) * A::T(0.0, 1.0, 0.0);
+    m = model.PartTransform(head, m);
+    if (!ctx.modern) {
+        m = m * A::S(1.1875, -1.1875, -1.1875);
+        if (villagerLike) m = m * A::T(0.0, 0.0625, 0.0);
+    } else {
+        const double skullY = villagerLike ? -0.07421875 : 0.0;
+        m = m * A::T(0.0, skullY, 0.0) * A::S(1.1875);
+    }
+    ModelData mesh;
+    if (!ItemRender::EmitSkullModel(item.id, m, ctx.modern, mesh)) { ctx.skippedItems[item.id]++; return; }
+    AppendMesh(ctx, obj, mesh);
+}
+
 // CustomHeadLayer: 头部槽里非头盔的物品 (南瓜/方块/任意物品), HEAD 显示上下文
 void RenderHeadItem(Ctx& ctx, OutObject& obj, const EntityModel& model, const Equipment& eq, const EntityAffine& base,
                     bool legacyYoung, bool villagerLike, double modernYOffset) {
     using A = EntityAffine;
     const ItemStackInfo& item = eq.head;
     if (item.empty() || ArmorOf(item).slot == Slot::Head) return;
-    if (IsSkullItem(item.id)) { ctx.skippedItems[item.id]++; return; }  // 头颅: SkullBlockRenderer, 尚未支持
+    if (IsSkullItem(item.id)) {
+        RenderWornSkull(ctx, obj, model, item, base, legacyYoung, villagerLike);
+        return;
+    }
     int head = model.Find("head");
     if (head < 0) return;
     A m = base;
@@ -1017,8 +1156,35 @@ void RenderMooshroom(Ctx& ctx, const NbtTagPtr& e) {
     const std::string modern = "entity/cow/mooshroom_" + color;
     if (ctx.modern && baby && TextureExists("minecraft", modern + "_baby")) tex = modern + "_baby";
     else if (TextureExists("minecraft", modern)) tex = modern;
+    const std::string fam = ctx.modern ? "modern" : "legacy";
     const std::string layer = FarmLayer(ctx, "cow", "temperate", baby);
-    RenderQuadruped(ctx, e, "minecraft:mooshroom", layer, tex, 1.4, kAgeCow);
+    EntityModel model(fam, layer);
+    if (!model.Valid()) return;
+    Placement pl = ReadPlacement(e);
+    ApplyHeadLook(model, pl);
+    EntityAffine base = LivingBase(pl, 1.4 * (baby ? 0.5 : 1.0), 1.0);
+    TopPre pre;
+    if (!ctx.modern && baby) pre = LegacyAgeablePre(kAgeCow);
+    OutObject& obj = ctx.NewObject("minecraft:mooshroom");
+    EmitTextured(ctx, obj, model, base, pre, "minecraft:" + tex, ctx.Texture("minecraft", tex));
+    // MushroomCowMushroomLayer: 成年, 实体 pose 上两朵背菇 + head.translateAndRotate 上的头菇。
+    // ItemDisplay::None 自带 T(-0.5), 即原版 renderSingleBlock 前的 translate(-0.5)。
+    if (baby) return;
+    using A = EntityAffine;
+    ItemStackInfo block;
+    block.id = (color == "brown") ? "minecraft:brown_mushroom_block" : "minecraft:red_mushroom_block";
+    block.count = 1;
+    const double d = kPi / 180.0;
+    const A flip = A::S(-1.0, -1.0, 1.0);
+    AppendItem(ctx, obj, block, ItemDisplay::None, false,
+               base * A::T(0.2, -0.35, 0.5) * A::RY(-48.0 * d) * flip);
+    AppendItem(ctx, obj, block, ItemDisplay::None, false,
+               base * A::T(0.2, -0.35, 0.5) * A::RY(42.0 * d) * A::T(0.1, 0.0, -0.6) * A::RY(-48.0 * d) * flip);
+    int head = model.Find("head");
+    if (head >= 0) {
+        AppendItem(ctx, obj, block, ItemDisplay::None, false,
+                   model.PartTransform(head, base) * A::T(0.0, -0.7, -0.2) * A::RY(-78.0 * d) * flip);
+    }
 }
 
 void RenderSheep(Ctx& ctx, const NbtTagPtr& e) {

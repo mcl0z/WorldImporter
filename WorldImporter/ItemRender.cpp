@@ -3,13 +3,18 @@
 #include "GlobalCache.h"
 #include "blocktint.h"
 #include "texture.h"
+#include "include/stb_image_write.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
+#include <cstdint>
+#include <filesystem>
 #include <iostream>
 #include <map>
 #include <mutex>
 #include <shared_mutex>
+#include <sstream>
 #include <unordered_map>
 
 ModelData ProcessModelData(const nlohmann::json& modelJson, const std::string& blockName);  // model.cpp
@@ -348,6 +353,270 @@ bool HasItemDefinitions() {
 std::mutex g_buildMutex;
 std::unordered_map<std::string, std::pair<bool, ModelData>> g_buildCache;
 std::unordered_map<std::string, double> g_scaleCache;
+
+// ---------------- 盾牌 / 三叉戟 / 头颅 ----------------
+int DyeFromName(std::string s) {
+    if (s.rfind("minecraft:", 0) == 0) s = s.substr(10);
+    static const char* kNames[] = {
+        "white", "orange", "magenta", "light_blue", "yellow", "lime", "pink", "gray",
+        "light_gray", "cyan", "purple", "blue", "brown", "green", "red", "black" };
+    for (int i = 0; i < 16; ++i) if (s == kNames[i]) return i;
+    if (s == "grey") return 7;
+    if (s == "light_grey") return 8;
+    return -1;
+}
+int DyeFromTag(const NbtTagPtr& t) {
+    if (!t) return -1;
+    if (t->type == TagType::STRING) return DyeFromName(getStringTag(t));
+    double v;
+    if (Num(t, v)) {
+        int i = static_cast<int>(v);
+        if (i >= 0 && i < 16) return i;
+    }
+    return -1;
+}
+// 组件里的 id 既可能是字符串, 也可能是 {id:...} 持有者
+std::string IdString(const NbtTagPtr& parent, const char* name) {
+    auto t = getChildByName(parent, name);
+    if (!t) return {};
+    if (t->type == TagType::STRING) return getStringTag(t);
+    if (t->type == TagType::COMPOUND) {
+        std::string id = Str(t, "id");
+        if (id.empty()) id = Str(t, "name");
+        return id;
+    }
+    return {};
+}
+// 1.20.4 及更早的 BannerPattern hash 短码 -> 贴图名。未知短码原样返回, 贴图缺失时跳过该层。
+std::string PatternAsset(std::string s) {
+    if (s.rfind("minecraft:", 0) == 0) s = s.substr(10);
+    if (s.empty()) return {};
+    static const std::unordered_map<std::string, std::string> kShort = {
+        {"b", "base"}, {"bl", "square_bottom_left"}, {"br", "square_bottom_right"},
+        {"tl", "square_top_left"}, {"tr", "square_top_right"},
+        {"bs", "stripe_bottom"}, {"ts", "stripe_top"}, {"ls", "stripe_left"}, {"rs", "stripe_right"},
+        {"cs", "stripe_center"}, {"ms", "stripe_middle"}, {"drs", "stripe_downright"}, {"dls", "stripe_downleft"},
+        {"ss", "small_stripes"}, {"cr", "cross"}, {"sc", "straight_cross"},
+        {"bt", "triangle_bottom"}, {"tt", "triangle_top"}, {"bts", "triangles_bottom"}, {"tts", "triangles_top"},
+        {"ld", "diagonal_left"}, {"rd", "diagonal_right"}, {"lud", "diagonal_up_left"}, {"rud", "diagonal_up_right"},
+        {"mc", "circle"}, {"mr", "rhombus"}, {"vh", "half_vertical"}, {"hh", "half_horizontal"},
+        {"vhr", "half_vertical_right"}, {"hhb", "half_horizontal_bottom"},
+        {"bo", "border"}, {"cbo", "curly_border"}, {"cre", "creeper"},
+        {"gra", "gradient"}, {"gru", "gradient_up"}, {"bri", "bricks"},
+        {"sku", "skull"}, {"flo", "flower"}, {"moj", "mojang"}, {"glb", "globe"}, {"pig", "piglin"},
+        {"flow", "flow"}, {"gus", "guster"} };
+    auto it = kShort.find(s);
+    if (it != kShort.end()) return it->second;
+    for (char c : s) if (!(std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '/')) return {};
+    return s;
+}
+void ReadPatternList(const NbtTagPtr& list, std::vector<BannerPatternLayer>& out) {
+    if (!list || list->type != TagType::LIST) return;
+    for (const auto& layer : list->children) {
+        if (out.size() >= 16) break;
+        std::string pat = IdString(layer, "pattern");
+        if (pat.empty()) pat = IdString(layer, "Pattern");
+        pat = PatternAsset(pat);
+        int dye = DyeFromTag(getChildByName(layer, "color"));
+        if (dye < 0) dye = DyeFromTag(getChildByName(layer, "Color"));
+        if (pat.empty() || dye < 0) continue;
+        out.push_back({ pat, dye });
+    }
+}
+
+bool TextureIndexed(const std::string& path) {
+    std::shared_lock<std::shared_mutex> lock(GlobalCache::cacheMutex);
+    return GlobalCache::textureIndex.count("textures:minecraft:" + path) > 0;
+}
+// 写出贴图并返回 jar 导出后的绝对路径 (SaveTextureToFile 把第三个参数改成完整文件路径)。
+std::string ExportTextureFull(const std::string& path) {
+    std::string dir = "textures";
+    if (!SaveTextureToFile("minecraft", path, dir)) return {};
+    return dir;
+}
+std::string RelativeTexture(const std::string& path) {
+    return "textures/minecraft/" + path + ".png";
+}
+std::string FirstTexture(std::initializer_list<const char*> paths) {
+    for (const char* p : paths) if (TextureIndexed(p)) return p;
+    return paths.size() ? *paths.begin() : std::string();
+}
+// DyeColor.getTextureDiffuseColor (与 EntityModelExporter::DyeRgb 同一张表)
+int DyeDiffuse(int id) {
+    static const int k[] = {
+        0xF9FFFF, 0xF9801D, 0xC74EBD, 0x3AB3DA, 0xFED83D, 0x80C71F, 0xF38BAA, 0x474F52,
+        0x9D9D97, 0x169C9C, 0x8932B8, 0x3C44AA, 0x835432, 0x5E7C16, 0xB02E26, 0x1D1D21 };
+    if (id < 0 || id > 15) id = 0;
+    return k[id];
+}
+void TintMask(std::vector<unsigned char>& px, int rgb) {
+    const int dr = (rgb >> 16) & 255, dg = (rgb >> 8) & 255, db = rgb & 255;
+    for (size_t i = 0; i + 3 < px.size(); i += 4) {
+        px[i] = static_cast<unsigned char>(px[i] * dr / 255);
+        px[i + 1] = static_cast<unsigned char>(px[i + 1] * dg / 255);
+        px[i + 2] = static_cast<unsigned char>(px[i + 2] * db / 255);
+    }
+}
+// entityNoOutline 叠到已画好的底图上: src-over, 源颜色已乘过染料。
+void CompositeOver(std::vector<unsigned char>& dst, const std::vector<unsigned char>& src) {
+    const size_t n = std::min(dst.size(), src.size()) / 4;
+    for (size_t i = 0; i < n; ++i) {
+        const unsigned char* s = src.data() + i * 4;
+        unsigned char* d = dst.data() + i * 4;
+        const int sa = s[3];
+        if (sa == 0) continue;
+        const int inv = 255 - sa;
+        for (int c = 0; c < 3; ++c)
+            d[c] = static_cast<unsigned char>((s[c] * sa + d[c] * inv) / 255);
+        d[3] = static_cast<unsigned char>(sa + d[3] * inv / 255);
+    }
+}
+std::string ShieldCacheHex(const std::string& key) {
+    uint64_t h = 14695981039346656037ull;
+    for (unsigned char c : key) { h ^= c; h *= 1099511628211ull; }
+    std::ostringstream o;
+    o << std::hex << h;
+    return o.str();
+}
+
+std::mutex g_bakeMutex;
+std::unordered_map<std::string, std::string> g_shieldBake;  // key -> relative png
+
+// 底图 shield_base + entity/shield/base(底色) + 每层 entity/shield/<pattern>。失败返回空。
+std::string BakeShieldPlate(const std::string& basePath, int baseDye, const std::vector<BannerPatternLayer>& patterns) {
+    std::string key = basePath + "|" + std::to_string(baseDye);
+    for (const auto& p : patterns) key += "," + p.asset + ":" + std::to_string(p.dye);
+    {
+        std::lock_guard<std::mutex> lock(g_bakeMutex);
+        auto it = g_shieldBake.find(key);
+        if (it != g_shieldBake.end()) return it->second;
+    }
+    std::vector<unsigned char> base;
+    int bw = 0, bh = 0;
+    if (!LoadTexturePixels("minecraft", basePath, base, bw, bh) || bw <= 0 || bh <= 0) return {};
+    auto addLayer = [&](const std::string& maskPath, int dye) {
+        if (!TextureIndexed(maskPath)) return;
+        std::vector<unsigned char> mask;
+        int mw = 0, mh = 0;
+        if (!LoadTexturePixels("minecraft", maskPath, mask, mw, mh) || mw != bw || mh != bh) return;
+        TintMask(mask, DyeDiffuse(dye));
+        CompositeOver(base, mask);
+    };
+    addLayer("entity/shield/base", baseDye);
+    for (const auto& p : patterns) addLayer("entity/shield/" + p.asset, p.dye);
+
+    const std::string fullBase = ExportTextureFull(basePath);
+    if (fullBase.empty()) return {};
+    const std::string file = "shield_" + ShieldCacheHex(key) + ".png";
+    const std::filesystem::path out = std::filesystem::path(fullBase).parent_path() / file;
+    std::error_code ec;
+    std::filesystem::create_directories(out.parent_path(), ec);
+    if (!stbi_write_png(out.string().c_str(), bw, bh, 4, base.data(), bw * 4)) return {};
+    std::string rel = RelativeTexture(basePath);
+    const auto slash = rel.find_last_of('/');
+    if (slash != std::string::npos) rel = rel.substr(0, slash + 1) + file;
+    else rel = file;
+    std::lock_guard<std::mutex> lock(g_bakeMutex);
+    g_shieldBake[key] = rel;
+    return rel;
+}
+
+struct SkullDesc { const char* layer; const char* texture; bool dragon; bool piglin; };
+bool LookupSkull(const std::string& id, SkullDesc& d) {
+    if (id == "minecraft:skeleton_skull") d = { "minecraft:skeleton_skull#main", "entity/skeleton/skeleton", false, false };
+    else if (id == "minecraft:wither_skeleton_skull") d = { "minecraft:wither_skeleton_skull#main", "entity/skeleton/wither_skeleton", false, false };
+    else if (id == "minecraft:zombie_head") d = { "minecraft:zombie_head#main", "entity/zombie/zombie", false, false };
+    else if (id == "minecraft:creeper_head") d = { "minecraft:creeper_head#main", "entity/creeper/creeper", false, false };
+    else if (id == "minecraft:player_head") d = { "minecraft:player_head#main", "", false, false };
+    else if (id == "minecraft:dragon_head") d = { "minecraft:dragon_skull#main", "entity/enderdragon/dragon", true, false };
+    else if (id == "minecraft:piglin_head") d = { "minecraft:piglin_head#main", "entity/piglin/piglin", false, true };
+    else return false;
+    return true;
+}
+std::string PlayerTexture() {
+    if (TextureIndexed("entity/player/wide/steve")) return "entity/player/wide/steve";
+    if (TextureIndexed("entity/steve")) return "entity/steve";
+    return "entity/player/wide/steve";
+}
+void AddMaterial(ModelData& mesh, const std::string& name, const std::string& rel) {
+    Material mat;
+    mat.name = name;
+    mat.texturePath = rel;
+    mesh.materials.push_back(mat);
+}
+int MaterialIndex(ModelData& mesh, const std::string& name, const std::string& rel) {
+    for (size_t i = 0; i < mesh.materials.size(); ++i)
+        if (mesh.materials[i].texturePath == rel && mesh.materials[i].name == name) return static_cast<int>(i);
+    AddMaterial(mesh, name, rel);
+    return static_cast<int>(mesh.materials.size()) - 1;
+}
+
+bool BuildShield(const ItemStackInfo& item, ItemDisplay display, bool leftHand, ModelData& out, double* scaleY) {
+    ResolvedModel r = ResolveModel("minecraft", "item/shield");
+    if (!r.ok) return false;
+    const bool modern = HasItemDefinitions();
+    const std::string fam = modern ? "modern" : "legacy";
+    EntityModel model(fam, "minecraft:shield#main");
+    if (!model.Valid()) return false;
+    const bool hasPatterns = item.bannerBase >= 0 || !item.bannerPatterns.empty();
+    const char* baseModern = hasPatterns ? "entity/shield/shield_base" : "entity/shield/shield_base_nopattern";
+    const char* baseLegacy = hasPatterns ? "entity/shield_base" : "entity/shield_base_nopattern";
+    const std::string basePath = modern ? FirstTexture({ baseModern, baseLegacy }) : FirstTexture({ baseLegacy, baseModern });
+    const std::string baseFull = ExportTextureFull(basePath);
+    if (baseFull.empty()) return false;
+    const std::string baseRel = RelativeTexture(basePath);
+    std::string plateRel = baseRel;
+    std::string plateName = "minecraft:" + basePath;
+    if (hasPatterns) {
+        const int baseDye = item.bannerBase >= 0 ? item.bannerBase : 0;  // 有图案但没底色: 白色
+        std::string baked = BakeShieldPlate(basePath, baseDye, item.bannerPatterns);
+        if (!baked.empty()) {
+            plateRel = baked;
+            plateName = "minecraft:" + basePath + "~" + ShieldCacheHex(baked);
+        }
+    }
+    const int plateMat = MaterialIndex(out, plateName, plateRel);
+    const int handleMat = MaterialIndex(out, "minecraft:" + basePath, baseRel);
+    EntityAffine world = DisplayTransform(r, display, leftHand, scaleY) * EntityAffine::S(1.0, -1.0, -1.0);
+    model.Emit(out, world, [&](int part) {
+        const std::string& n = model.Name(part);
+        if (n == "plate") return plateMat;
+        if (n == "handle") return handleMat;
+        return -1;
+    });
+    return !out.faces.empty();
+}
+bool BuildTrident(const ItemStackInfo& item, ItemDisplay display, bool leftHand, ModelData& out, double* scaleY) {
+    (void)item;
+    if (display == ItemDisplay::Gui || display == ItemDisplay::Ground || display == ItemDisplay::Fixed) return false;
+    ResolvedModel r = ResolveModel("minecraft", "item/trident_in_hand");
+    if (!r.ok) return false;
+    const bool modern = HasItemDefinitions();
+    EntityModel model(modern ? "modern" : "legacy", "minecraft:trident#main");
+    if (!model.Valid()) return false;
+    const std::string rel = RelativeTexture("entity/trident");
+    if (ExportTextureFull("entity/trident").empty()) return false;
+    const int mat = MaterialIndex(out, "minecraft:entity/trident", rel);
+    EntityAffine world = DisplayTransform(r, display, leftHand, scaleY) * EntityAffine::S(1.0, -1.0, -1.0);
+    model.Emit(out, world, [mat](int) { return mat; });
+    return !out.faces.empty();
+}
+bool BuildSkullItem(const ItemStackInfo& item, ItemDisplay display, bool leftHand, ModelData& out, double* scaleY) {
+    const std::string modelPath = (item.id == "minecraft:dragon_head") ? "item/dragon_head" : "item/template_skull";
+    ResolvedModel r = ResolveModel("minecraft", modelPath);
+    if (!r.ok) return false;
+    EntityAffine world = DisplayTransform(r, display, leftHand, scaleY) * EntityAffine::T(0.5, 0.0, 0.5);
+    return ItemRender::EmitSkullModel(item.id, world, HasItemDefinitions(), out);
+}
+bool BuildSpecial(const ItemStackInfo& item, ItemDisplay display, bool leftHand, ModelData& out, double* scaleY) {
+    auto [ns, path] = SplitId(item.id);
+    if (ns != "minecraft") return false;
+    if (path == "shield") return BuildShield(item, display, leftHand, out, scaleY);
+    if (path == "trident") return BuildTrident(item, display, leftHand, out, scaleY);
+    SkullDesc d;
+    if (LookupSkull(item.id, d)) return BuildSkullItem(item, display, leftHand, out, scaleY);
+    return false;
+}
 }  // namespace
 
 namespace ItemRender {
@@ -383,22 +652,71 @@ ItemStackInfo ParseItemStack(const NbtTagPtr& tag) {
     if (s.id.find(':') == std::string::npos) s.id = "minecraft:" + s.id;
     if (getChildByName(tag, "Count")) s.count = static_cast<int>(NumOr(tag, "Count", 1));   // <=1.20.4
     else s.count = static_cast<int>(NumOr(tag, "count", 1));                                // 1.20.5+ (缺省 1)
+    auto takeTrim = [&](const NbtTagPtr& trim) {
+        if (!trim) return;
+        std::string m = IdString(trim, "material");
+        std::string p = IdString(trim, "pattern");
+        if (!m.empty()) s.trimMaterial = m;
+        if (!p.empty()) s.trimPattern = p;
+    };
+    NbtTagPtr blockEntity;
     if (auto legacy = getChildByName(tag, "tag")) {                                         // <=1.20.4
         if (auto display = getChildByName(legacy, "display")) {
             double c; if (Num(getChildByName(display, "color"), c)) s.dyeColor = static_cast<int>(c) & 0xFFFFFF;
         }
-        if (auto trim = getChildByName(legacy, "Trim")) s.trimMaterial = Str(trim, "material");
+        takeTrim(getChildByName(legacy, "Trim"));
+        blockEntity = getChildByName(legacy, "BlockEntityTag");
     }
+    if (!blockEntity) blockEntity = getChildByName(tag, "BlockEntityTag");
+    bool sawBase = false, sawPatterns = false;
     if (auto comps = getChildByName(tag, "components")) {                                    // 1.20.5+
         if (auto dye = getChildByName(comps, "minecraft:dyed_color")) {
             double c;
             if (Num(dye, c)) s.dyeColor = static_cast<int>(c) & 0xFFFFFF;                    // 1.21.5+: int
             else if (Num(getChildByName(dye, "rgb"), c)) s.dyeColor = static_cast<int>(c) & 0xFFFFFF;
         }
-        if (auto trim = getChildByName(comps, "minecraft:trim")) s.trimMaterial = Str(trim, "material");
+        takeTrim(getChildByName(comps, "minecraft:trim"));
         if (auto eq = getChildByName(comps, "minecraft:equippable")) s.equipAsset = Str(eq, "asset_id");
+        if (auto base = getChildByName(comps, "minecraft:base_color")) {
+            sawBase = true;
+            s.bannerBase = DyeFromTag(base);
+        }
+        if (auto pats = getChildByName(comps, "minecraft:banner_patterns")) {
+            sawPatterns = true;
+            ReadPatternList(pats, s.bannerPatterns);
+        }
+    }
+    if (blockEntity) {
+        if (!sawBase) {
+            if (auto base = getChildByName(blockEntity, "Base")) s.bannerBase = DyeFromTag(base);
+        }
+        if (!sawPatterns) ReadPatternList(getChildByName(blockEntity, "Patterns"), s.bannerPatterns);
     }
     return s;
+}
+
+bool EmitSkullModel(const std::string& itemId, const EntityAffine& world, bool modern, ModelData& out) {
+    SkullDesc d;
+    if (!LookupSkull(itemId, d)) return false;
+    const std::string texPath = d.texture[0] ? d.texture : PlayerTexture();
+    if (ExportTextureFull(texPath).empty()) return false;
+    EntityModel model(modern ? "modern" : "legacy", d.layer);
+    if (!model.Valid()) return false;
+    // setupAnim(animation=0). 1.21 renderSkull 把 yaw 设成 180°; 26.x 物品/佩戴都是 0。
+    if (!modern) model.SetRot("head", 0.0f, static_cast<float>(kPi), 0.0f);
+    if (d.dragon) model.SetRot("jaw", 0.2f, 0.0f, 0.0f);
+    if (d.piglin) {
+        model.SetRot("left_ear", 0.0f, 0.0f, -0.7f);
+        model.SetRot("right_ear", 0.0f, 0.0f, 0.7f);
+    }
+    EntityAffine m = world;
+    if (!modern) {
+        m = m * EntityAffine::S(-1.0, -1.0, 1.0);
+        if (d.dragon) m = m * EntityAffine::T(0.0, -0.374375, 0.0) * EntityAffine::S(0.75);
+    }
+    const int mat = MaterialIndex(out, "minecraft:" + texPath, RelativeTexture(texPath));
+    model.Emit(out, m, [mat](int) { return mat; });
+    return !out.faces.empty();
 }
 
 void Transform(ModelData& mesh, const EntityAffine& a) {
@@ -418,8 +736,13 @@ void Transform(ModelData& mesh, const EntityAffine& a) {
 
 bool Build(const ItemStackInfo& item, ItemDisplay display, bool leftHand, ModelData& out, double* groundScaleY) {
     if (item.empty()) return false;
+    std::string bannerKey;
+    if (item.bannerBase >= 0 || !item.bannerPatterns.empty()) {
+        bannerKey = "|ban:" + std::to_string(item.bannerBase);
+        for (const auto& p : item.bannerPatterns) bannerKey += "," + p.asset + ":" + std::to_string(p.dye);
+    }
     const std::string key = item.id + "|" + DisplayName(display) + (leftHand ? "|L|" : "|R|") +
-                            std::to_string(item.dyeColor) + "|" + item.trimMaterial;
+                            std::to_string(item.dyeColor) + "|" + item.trimMaterial + bannerKey;
     {
         std::lock_guard<std::mutex> lock(g_buildMutex);
         auto it = g_buildCache.find(key);
@@ -444,13 +767,14 @@ bool Build(const ItemStackInfo& item, ItemDisplay display, bool leftHand, ModelD
         std::string p = "item/" + path;
         bool inHand = display != ItemDisplay::Gui && display != ItemDisplay::Ground && display != ItemDisplay::Fixed;
         if (ns == "minecraft" && path == "spyglass" && inHand) p = "item/spyglass_in_hand";
-        if (ns == "minecraft" && path == "trident" && inHand) p = "item/trident_in_hand";  // builtin/entity -> 跳过
+        if (ns == "minecraft" && path == "trident" && inHand) p = "item/trident_in_hand";  // builtin/entity, 下面走 3D
         refs.push_back({ ns, p, LegacyTints(item.id, item) });
     }
     ModelData m;
     double scaleY = 1.0;
     bool ok = false;
     for (const auto& r : refs) ok = BuildRef(r, display, leftHand, m, &scaleY) || ok;
+    if (!ok) ok = BuildSpecial(item, display, leftHand, m, &scaleY);
     std::lock_guard<std::mutex> lock(g_buildMutex);
     g_buildCache[key] = { ok, m };
     g_scaleCache[key] = scaleY;
