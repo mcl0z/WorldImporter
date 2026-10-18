@@ -23,12 +23,12 @@
 #include <chrono>
 #include <iostream>
 #include <thread>
+#include "CreateBogey.h"
 #include <atomic>
 #include "ModelDeduplicator.h"
 #include "ChunkGroupAllocator.h"
 #include <utility>
 #include "hashutils.h"
-#include "CreateBogey.h"
 #include "ChunkLoader.h"
 #include "SpecialBlock.h"
 #include "CableMesher.h"
