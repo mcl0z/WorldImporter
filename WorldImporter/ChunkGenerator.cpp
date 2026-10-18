@@ -28,6 +28,7 @@
 #include "ChunkGroupAllocator.h"
 #include <utility>
 #include "hashutils.h"
+#include "CreateBogey.h"
 #include "ChunkLoader.h"
 #include "SpecialBlock.h"
 #include "CableMesher.h"
@@ -584,6 +585,15 @@ void ChunkGenerator::ProcessBlockForModel(ModelData& chunkModel, int x, int y, i
                 face.vertexIndices[k] = newIndex;
             }
         }
+    }
+
+    // Create bogey frame, wheels, shafts and drive (wheelAngle 0, DO_NOT_CULL).
+    // Appended after the cull walk, so the new face indices must be recorded.
+    if (ns == "create") {
+        const size_t bogeyMeshBegin = blockModel.faces.size();
+        AppendCreateBogey("create:" + blockName, blockEntityNbt, blockModel);
+        for (size_t bogeyFace = bogeyMeshBegin; bogeyFace < blockModel.faces.size(); ++bogeyFace)
+            validFaceIndices.push_back(static_cast<int>(bogeyFace));
     }
 
     // ---- 共面叠加层(草侧这类)解析: 底层存活时删除叠加面, 并把
