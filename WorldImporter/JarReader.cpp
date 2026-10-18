@@ -296,6 +296,17 @@ void JarReader::cacheAllResources(
                 continue;
             }
 
+            // 物品模型定义 assets/<ns>/items/*.json (1.21.4+) 与装备资源 assets/<ns>/equipment/*.json
+            // (1.21.4+): 实体导出渲染手持物品/盔甲时按需解析, 以文本存进 modelAssets("#items/..")。
+            if ((filePath.compare(nsEnd, 7, "/items/") == 0 || filePath.compare(nsEnd, 11, "/equipment/") == 0) &&
+                filePath.ends_with(".json")) {
+                std::string cacheKey = namespaceName + ":#" + filePath.substr(nsEnd + 1);
+                if (!modelAssetCache.contains(cacheKey)) {
+                    modelAssetCache.emplace(cacheKey, readText());
+                }
+                continue;
+            }
+
             // Cache OBJ/MTL model assets used by custom NeoForge model loaders.
             size_t modelsPos = filePath.find("/models/", nsEnd);
             if (modelsPos != std::string::npos &&
