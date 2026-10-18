@@ -21,6 +21,7 @@ std::unordered_map<std::string,std::unordered_map<std::string,std::vector<Multip
 // 将互斥锁类型更改为 std::shared_mutex
 std::shared_mutex blockstateCachesMutex;
 std::atomic<bool> blockstateCachesFrozen{false};
+thread_local std::optional<int> g_activeChunkDataVersion;
 
 // --------------------------------------------------------------------------------
 // 条件匹配函数
@@ -292,9 +293,11 @@ ModelData GetRandomModelFromCache(const std::string& namespaceName, const std::s
                 return models[0].model;
             }
             if (mode == VariantSeedMode::Game && posSeed.has_value()) {
-                // 与游戏一致：用该方块的渲染种子重播种，再抽一次 nextInt(总权重)。
-                // 坐标相同 → 结果相同，所以导出可复现且与游戏逐格一致。
+                // 坐标相同则结果相同。1.21.5+ 抽 nextInt；更早版本用 nextLong 取余。
                 LegacyRandom rng(*posSeed);
+                if (UseLegacyVariantPick()) {
+                    return TakeWeightedModel(models, LegacyWeightedIndex(rng, totalWeight));
+                }
                 if (const ModelData* picked = PickByIndex(models, rng.nextInt(totalWeight))) {
                     return *picked;
                 }
@@ -326,22 +329,43 @@ ModelData GetRandomModelFromCache(const std::string& namespaceName, const std::s
 
         ModelData merged;
         if (config.variantSeedMode == VariantSeedMode::Game && posSeed.has_value()) {
-            // 与游戏一致：同一个随机流按分组顺序【逐组】抽取。
-            // 原版里只有 apply 写成数组的分组是 WeightedVariants（会消耗随机数），
+            // 只有 apply 写成数组的分组是 WeightedVariants（会消耗随机数），
             // 对象形式是 SingleVariant（不消耗）——消费序列错一位，后面所有组都会错位。
             LegacyRandom rng(*posSeed);
-            for (const auto& group : partList) {
-                if (group.models.empty()) continue;
-                const ModelData* picked = &group.models.front().model;
-                if (group.weighted) {
+            if (UseLegacyVariantPick()) {
+                // 1.18.2..1.21.4：先 nextLong 得到 l，每个加权部件用新的 Random(l)。
+                const long long partSeed = rng.nextLong();
+                for (const auto& group : partList) {
+                    if (group.models.empty()) continue;
+                    if (!group.weighted) {
+                        merged = MergeModelData(merged, group.models.front().model);
+                        continue;
+                    }
                     const int total = TotalWeight(group.models);
-                    if (total > 0) {
-                        if (const ModelData* byIndex = PickByIndex(group.models, rng.nextInt(total))) {
-                            picked = byIndex;
+                    if (total <= 0) continue;
+                    LegacyRandom part(partSeed);
+                    const int slot = SelectWeightedSlot(
+                        LegacyWeightedIndex(part, total),
+                        static_cast<int>(group.models.size()),
+                        [&](int i) { return group.models[static_cast<size_t>(i)].weight; });
+                    if (slot < 0) continue; // 该部件没有面
+                    merged = MergeModelData(merged, group.models[static_cast<size_t>(slot)].model);
+                }
+            } else {
+                // 1.21.5+：同一个随机流按分组顺序逐组 nextInt。
+                for (const auto& group : partList) {
+                    if (group.models.empty()) continue;
+                    const ModelData* picked = &group.models.front().model;
+                    if (group.weighted) {
+                        const int total = TotalWeight(group.models);
+                        if (total > 0) {
+                            if (const ModelData* byIndex = PickByIndex(group.models, rng.nextInt(total))) {
+                                picked = byIndex;
+                            }
                         }
                     }
+                    merged = MergeModelData(merged, *picked);
                 }
-                merged = MergeModelData(merged, *picked);
             }
         } else {
             // First / 无坐标 / Random：沿用"一个索引套用到所有组"的旧结构

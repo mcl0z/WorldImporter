@@ -12,6 +12,7 @@
 #include <tuple>
 #include <unordered_map>
 #include <shared_mutex>
+#include <optional>
 #include <unordered_set>
 #include <vector>
 
@@ -459,6 +460,9 @@ extern std::atomic<bool> globalPaletteFrozen;
 static const std::vector<std::string> mapTypes = {"MOTION_BLOCKING", "MOTION_BLOCKING_NO_LEAVES",   "OCEAN_FLOOR", "WORLD_SURFACE"};
 
 void LoadAndCacheBlockData(int chunkX, int chunkZ);
+
+// 区块 NBT 根上的 DataVersion。没有该标签时返回 nullopt（变体挑选按 1.21.5+）。
+std::optional<int> GetChunkDataVersion(int chunkX, int chunkZ);
 
 void UpdateSkyLightNeighborFlags();
 

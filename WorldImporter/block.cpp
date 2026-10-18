@@ -52,6 +52,24 @@ std::shared_mutex heightMapCacheMutex;
 std::unordered_map<std::pair<int, int>, std::vector<std::shared_ptr<EntityBlock>>, pair_hash> EntityBlockCache(1024);
 std::unordered_map<std::pair<int, int>, std::unordered_map<std::string, std::vector<int>>, pair_hash> heightMapCache(1024);
 
+// 只在加载阶段写、模型阶段读。缺标签则表里没有该项。
+static std::unordered_map<std::pair<int, int>, int, pair_hash> chunkDataVersion;
+
+std::optional<int> GetChunkDataVersion(int chunkX, int chunkZ) {
+    std::shared_lock<std::shared_mutex> read_lock(sectionCacheMutex);
+    auto it = chunkDataVersion.find({chunkX, chunkZ});
+    if (it == chunkDataVersion.end()) return std::nullopt;
+    return it->second;
+}
+
+static void NoteChunkDataVersion(int chunkX, int chunkZ, const NbtTagPtr& root) {
+    chunkDataVersion.erase({chunkX, chunkZ});
+    auto dv = getChildByName(root, "DataVersion");
+    if (dv && dv->type == TagType::INT && dv->payload.size() >= 4) {
+        chunkDataVersion[{chunkX, chunkZ}] = bytesToInt(dv->payload);
+    }
+}
+
 std::vector<Block> globalBlockPalette;
 // 全局方块名->调色板索引映射(全局唯一一份,与 globalBlockPalette 由同一把锁保护)。
 std::unordered_map<std::string, int> globalBlockMap;
@@ -294,6 +312,7 @@ void ClearSectionCacheForChunk(int chunkX, int chunkZ) {
     if (removed_count > 0) {
         //std::cout << "Debug: Cleared " << removed_count << " sectionCache entries for chunk (" << chunkX << ", " << chunkZ << ")" << std::endl;
     }
+    chunkDataVersion.erase({chunkX, chunkZ});
 }
 
 // --- 新增辅助函数 ---
@@ -670,11 +689,13 @@ void LoadAndCacheBlockData(int chunkX, int chunkZ) {
         // 如果数据为空，表示区块文件不存在或读取失败，直接跳过并缓存空条目
         if (chunkData.empty()) {
             std::cerr << "警告: 无法加载区块 (" << chunkX << "," << chunkZ << ")，已跳过。" << std::endl;
+            chunkDataVersion.erase({chunkX, chunkZ});
             sectionCache[key] = SectionCacheEntry();
             return;
         }
         size_t index = 0;
         auto tag = readTag(chunkData, index);
+        NoteChunkDataVersion(chunkX, chunkZ, tag);
 
         auto yPosTag = getChildByName(tag, "yPos");
         if (yPosTag && yPosTag->type == TagType::INT) {

@@ -32,6 +32,14 @@ struct MultipartGroup {
     bool weighted = false;
 };
 
+// 1.18.2..1.21.4 的 WeightedRandom.getWeightedItem。选不中返回空模型（没有面）。
+inline ModelData TakeWeightedModel(const std::vector<WeightedModelData>& models, std::int32_t index) {
+    const int slot = SelectWeightedSlot(index, static_cast<int>(models.size()),
+        [&](int i) { return models[static_cast<size_t>(i)].weight; });
+    if (slot < 0) return ModelData();
+    return models[static_cast<size_t>(slot)].model;
+}
+
 // 全局缓存,键为 namespace,值为 blockId 到 ModelData 的映射
 extern  std::unordered_map<std::string, std::unordered_map<std::string, ModelData>> BlockModelCache;
 
@@ -62,6 +70,7 @@ nlohmann::json GetBlockstateJson(const std::string& namespaceName,const std::str
 
 // posSeed 为 nullopt 表示调用点拿不到方块坐标（实体方块 / create / LOD 等路径）。
 // 此时 Game 模式退回"取第一个变体"，保证结果依然可复现。
+// Game 且有坐标时，算法看 g_activeChunkDataVersion（< 4325 为旧挑选）。
 ModelData GetRandomModelFromCache(const std::string& namespaceName, const std::string& blockId,
                                   std::optional<long long> posSeed = std::nullopt);
 
