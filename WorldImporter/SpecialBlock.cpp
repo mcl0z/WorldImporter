@@ -611,27 +611,9 @@ namespace {
         ModelData result = LoadCreateObjModel(jsonPath, 140);
         if (result.vertices.empty()) return result;
         if (id == "blaze_burner") {
-            // Property is "blaze" (HeatLevel): none|smouldering|fading|kindled|seething.
-            string heat = states.contains("blaze") ? states.at("blaze") : "none";
-            if (heat != "none") {
-                string blazePath = "block/blaze_burner/blaze/inert";
-                bool seething = heat == "seething";
-                bool fadingPlus = heat == "fading" || heat == "kindled" || seething;
-                if (seething) blazePath = "block/blaze_burner/blaze/super";
-                else if (heat == "kindled") blazePath = "block/blaze_burner/blaze/idle";
-                else if (heat == "fading") blazePath = "block/blaze_burner/blaze/idle";
-                Append(result, LoadCreateModel(blazePath, 141));
-                if (fadingPlus) {
-                    string rods = seething ? "block/blaze_burner/superheated_rods_small"
-                                           : "block/blaze_burner/rods_small";
-                    string rods2 = seething ? "block/blaze_burner/superheated_rods_large"
-                                            : "block/blaze_burner/rods_large";
-                    Append(result, LoadCreateObjModel(rods, 142));
-                    Append(result, LoadCreateObjModel(rods2, 143));
-                    // Static flame (no UV scroll) at resting pose.
-                    Append(result, LoadCreateObjModel("block/blaze_burner/flame", 144));
-                }
-            }
+            // Cage / brazier only. Head, rods, flame, goggles and train hat are
+            // appended by AppendCreateBlazePackager in the static renderer pose.
+            (void)states;
             return result;
         }
         string axis = states.contains("axis") ? states.at("axis") : "y";

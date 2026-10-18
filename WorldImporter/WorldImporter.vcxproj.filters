@@ -170,6 +170,9 @@
     <ClCompile Include="LODManager.cpp">
       <Filter>源文件\Blocks</Filter>
     </ClCompile>
+    <ClCompile Include="CreateBlazePackager.cpp">
+      <Filter>源文件\Blocks</Filter>
+    </ClCompile>
     <ClCompile Include="config.cpp">
       <Filter>源文件\Core\Reader</Filter>
     </ClCompile>
@@ -285,6 +288,9 @@
       <Filter>头文件\Core\Reader</Filter>
     </ClInclude>
     <ClInclude Include="LODManager.h">
+      <Filter>头文件\Blocks</Filter>
+    </ClInclude>
+    <ClInclude Include="CreateBlazePackager.h">
       <Filter>头文件\Blocks</Filter>
     </ClInclude>
     <ClInclude Include="ChunkGroupAllocator.h">

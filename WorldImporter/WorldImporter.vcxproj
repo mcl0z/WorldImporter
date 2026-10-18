@@ -185,6 +185,7 @@
     <ClCompile Include="CreateFrogportPsi.cpp" />
     <ClCompile Include="main.cpp" />
     <ClCompile Include="model.cpp" />
+    <ClCompile Include="CreateBlazePackager.cpp" />
     <ClCompile Include="ModelDeduplicator.cpp" />
     <ClCompile Include="nbtutils.cpp" />
     <ClCompile Include="CreateDepotItems.cpp" />
@@ -240,6 +241,7 @@
     <ClInclude Include="LODManager.h" />
     <ClInclude Include="CreateFrogportPsi.h" />
     <ClInclude Include="model.h" />
+    <ClInclude Include="CreateBlazePackager.h" />
     <ClInclude Include="ModelDeduplicator.h" />
     <ClInclude Include="nbtutils.h" />
     <ClInclude Include="CreateDepotItems.h" />
