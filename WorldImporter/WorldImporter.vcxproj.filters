@@ -113,6 +113,9 @@
     <ClCompile Include="blockstate.cpp">
       <Filter>源文件\Core\Model</Filter>
     </ClCompile>
+    <ClCompile Include="BookModel.cpp">
+      <Filter>源文件\Blocks</Filter>
+    </ClCompile>
     <ClCompile Include="CTM.cpp">
       <Filter>源文件\Core\Model</Filter>
     </ClCompile>

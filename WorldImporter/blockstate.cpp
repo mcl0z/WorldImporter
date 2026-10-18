@@ -2,6 +2,7 @@
 #include "blockposseed.h"
 #include "fileutils.h"
 #include "objExporter.h"
+#include "BookModel.h"
 #include <regex>
 #include <random>
 #include <numeric>
@@ -599,6 +600,8 @@ void ProcessBlockstate(const std::string& namespaceName, const std::vector<std::
 
                             mergedModel = ProcessModelJson(modelNamespace, modelId, rotationX, rotationY, uvlock, 0, blockstateName);
                             RenameBlockMaterials(mergedModel, namespaceName, baseBlockId);
+                            // 讲台有书和附魔台的书由方块实体绘制，补进方块模型
+                            AppendBlockEntityBook(namespaceName, blockId, mergedModel);
                             {
                                 std::unique_lock<std::shared_mutex> lock(blockstateCachesMutex); // 使用 unique_lock 进行写操作
                                 BlockModelCache[namespaceName][blockId] = mergedModel;
