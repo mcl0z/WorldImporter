@@ -160,6 +160,7 @@
     <ClCompile Include="init.cpp" />
     <ClCompile Include="locutil.cpp" />
     <ClCompile Include="decompressor.cpp" />
+    <ClCompile Include="CreateSpoutCannonPulley.cpp" />
     <ClCompile Include="EntityBlock.cpp" />
     <ClCompile Include="EntityExporter.cpp" />
     <ClCompile Include="EntityModel.cpp" />
@@ -207,6 +208,7 @@
     <ClInclude Include="locutil.h" />
     <ClInclude Include="logutil.h" />
     <ClInclude Include="decompressor.h" />
+    <ClInclude Include="CreateSpoutCannonPulley.h" />
     <ClInclude Include="EntityBlock.h" />
     <ClInclude Include="EntityExporter.h" />
     <ClInclude Include="EntityModel.h" />
