@@ -143,6 +143,9 @@
     <ClCompile Include="SkullModel.cpp">
       <Filter>源文件\Blocks</Filter>
     </ClCompile>
+    <ClCompile Include="PlayerSkin.cpp">
+      <Filter>源文件\Blocks</Filter>
+    </ClCompile>
     <ClCompile Include="SpecialBlock.cpp">
       <Filter>源文件\Blocks</Filter>
     </ClCompile>
@@ -198,6 +201,9 @@
       <Filter>头文件\Blocks</Filter>
     </ClInclude>
     <ClInclude Include="SpecialBlock.h">
+      <Filter>头文件\Blocks</Filter>
+    </ClInclude>
+    <ClInclude Include="PlayerSkin.h">
       <Filter>头文件\Blocks</Filter>
     </ClInclude>
     <ClInclude Include="EntityBlock.h">

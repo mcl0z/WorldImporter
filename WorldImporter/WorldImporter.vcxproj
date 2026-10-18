@@ -162,6 +162,7 @@
     <ClCompile Include="MemoryMonitor.cpp" />
     <ClCompile Include="RegionCache.cpp" />
     <ClCompile Include="SkullModel.cpp" />
+    <ClCompile Include="PlayerSkin.cpp" />
     <ClCompile Include="SpecialBlock.cpp" />
     <ClCompile Include="fileutils.cpp" />
     <ClCompile Include="Fluid.cpp" />
@@ -202,6 +203,7 @@
     <ClInclude Include="RegionCache.h" />
     <ClInclude Include="EntityCube.h" />
     <ClInclude Include="SkullModel.h" />
+    <ClInclude Include="PlayerSkin.h" />
     <ClInclude Include="SpecialBlock.h" />
     <ClInclude Include="fileutils.h" />
     <ClInclude Include="GlobalCache.h" />

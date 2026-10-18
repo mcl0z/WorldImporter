@@ -81,6 +81,7 @@ Config LoadConfig(const std::string& configFile) {
         config.variantSeedMode = VariantSeedMode::First;
     }
     config.importEntities = j.value("importEntities", config.importEntities);
+    config.downloadPlayerSkins = j.value("downloadPlayerSkins", config.downloadPlayerSkins);
     
     // 读取LOD1级别使用原始模型的方块列表
     /*格式：
