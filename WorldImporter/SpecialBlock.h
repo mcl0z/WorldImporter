@@ -10,6 +10,9 @@
 class SpecialBlock {
 public:
     static ModelData GenerateSpecialBlockModel(const std::string& blockName);
+    // Forge/NeoForge/porting_lib OBJ loader models (loader "*:obj" + "model").
+    static bool IsObjModelJson(const nlohmann::json& modelJson);
+    static ModelData GenerateObjModel(const nlohmann::json& modelJson);
     static bool TryGenerateCreateBlockModel(const std::string& blockName,
         int x, int y, int z, const NbtTagPtr& blockEntityNbt, ModelData& outModel);
 
