@@ -58,6 +58,7 @@ void yuushyaTests() {
     expectLayer("yuushya", "not_in_register", BlockRenderLayer::Cutout, "unknown name");
     // yuushya modelling 的展示方块，即使 register 写了别的层也是 cutout
     expectLayer("yuushya", "showblock", BlockRenderLayer::Cutout, "showblock");
+
 }
 
 void materialNameTests() {
@@ -68,6 +69,12 @@ void materialNameTests() {
             "plain material name");
     require(BlockIdFromMaterialName("minecraft:oak_door[half=upper]") == "minecraft:oak_door",
             "property suffix");
+    require(BlockIdFromMaterialName("yuushya:showblock#minecraft:gray_stained_glass")
+                == "yuushya:showblock",
+            "showblock prefix id");
+    require(BlockIdFromMaterialName("yuushya:showblock#minecraft:glass@ctm/x")
+                == "yuushya:showblock",
+            "showblock prefix strips @ after #");
 }
 } // namespace
 
