@@ -175,6 +175,7 @@
     <ClCompile Include="GlobalCache.cpp" />
     <ClCompile Include="JarReader.cpp" />
     <ClCompile Include="LODManager.cpp" />
+    <ClCompile Include="CreateFrogportPsi.cpp" />
     <ClCompile Include="main.cpp" />
     <ClCompile Include="model.cpp" />
     <ClCompile Include="ModelDeduplicator.cpp" />
@@ -222,6 +223,7 @@
     <ClInclude Include="GlobalCache.h" />
     <ClInclude Include="JarReader.h" />
     <ClInclude Include="LODManager.h" />
+    <ClInclude Include="CreateFrogportPsi.h" />
     <ClInclude Include="model.h" />
     <ClInclude Include="ModelDeduplicator.h" />
     <ClInclude Include="nbtutils.h" />
