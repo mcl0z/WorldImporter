@@ -137,6 +137,34 @@ modern minecraft:cat#collar
 modern minecraft:cat_baby#collar
 modern minecraft:horse#main
 modern minecraft:horse_baby#main
+# horse family armor/saddles, pig saddle, strider (legacy + 26.x)
+legacy minecraft:horse_armor#main
+legacy minecraft:donkey#main
+legacy minecraft:mule#main
+legacy minecraft:skeleton_horse#main
+legacy minecraft:zombie_horse#main
+legacy minecraft:pig#saddle
+legacy minecraft:strider#main
+legacy minecraft:strider#saddle
+modern minecraft:horse#saddle
+modern minecraft:horse_armor#main
+modern minecraft:donkey#main
+modern minecraft:donkey#saddle
+modern minecraft:donkey_baby#main
+modern minecraft:mule#main
+modern minecraft:mule#saddle
+modern minecraft:mule_baby#main
+modern minecraft:skeleton_horse#main
+modern minecraft:skeleton_horse#saddle
+modern minecraft:skeleton_horse_baby#main
+modern minecraft:zombie_horse#main
+modern minecraft:zombie_horse#saddle
+modern minecraft:zombie_horse_baby#main
+modern minecraft:undead_horse_armor#main
+modern minecraft:pig#saddle
+modern minecraft:strider#main
+modern minecraft:strider#saddle
+modern minecraft:strider_baby#main
 # spiders, enderman, golems, llama, fox, bee, and the later passive/slime set
 legacy minecraft:spider#main
 legacy minecraft:cave_spider#main
@@ -184,3 +212,11 @@ modern minecraft:turtle_baby#main
 modern minecraft:parrot#main
 modern minecraft:slime#main
 modern minecraft:slime#outer
+# 26.x climate variants. Cold pig and cold chicken babies reuse pig_baby / chicken_baby.
+# Warm/cold cow babies are their own layers (same BabyCowModel mesh as cow_baby).
+modern minecraft:cold_pig#main
+modern minecraft:cold_cow#main
+modern minecraft:cold_cow_baby#main
+modern minecraft:warm_cow#main
+modern minecraft:warm_cow_baby#main
+modern minecraft:cold_chicken#main
