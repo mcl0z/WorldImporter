@@ -143,6 +143,7 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="biome.cpp" />
+    <ClCompile Include="biome_zoom.cpp" />
     <ClCompile Include="blocktint.cpp" />
     <ClCompile Include="BbsModelSupport.cpp" />
     <ClCompile Include="block.cpp" />
