@@ -39,6 +39,7 @@
 #include "hashutils.h"
 #include "PlayerSkin.h"
 #include "ChunkLoader.h"
+#include "CreatePostboxControls.h"
 #include "SpecialBlock.h"
 #include "CreateTankFluid.h"
 #include "CableMesher.h"
@@ -582,6 +583,15 @@ void ChunkGenerator::ProcessBlockForModel(ModelData& chunkModel, int x, int y, i
             }
             validFaceIndices.push_back(faceIdx);
         }
+    }
+
+    // Create postbox flag and contraption-controls button/indicator (static, DO_NOT_CULL).
+    // Appended after the cull walk, so record the new face indices or the compact drops them.
+    if (ns == "create") {
+        const size_t postboxFaceBegin = blockModel.faces.size();
+        AppendCreatePostboxControls("create:" + blockName, blockModel);
+        for (size_t faceIdx = postboxFaceBegin; faceIdx < blockModel.faces.size(); ++faceIdx)
+            validFaceIndices.push_back(static_cast<int>(faceIdx));
     }
 
     // ---- 薄片贴边外推: 极薄元素(如装饰贴片)贴在方块界面上的那一面，与相邻方块
