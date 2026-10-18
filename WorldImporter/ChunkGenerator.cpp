@@ -3,6 +3,7 @@
 #include "RegionModelExporter.h"
 #include "locutil.h"
 #include "objExporter.h"
+#include "CreateBlazePackager.h"
 #include "include/stb_image.h"
 #include "biome.h"
 #include "model.h"
@@ -469,6 +470,9 @@ void ChunkGenerator::ProcessBlockForModel(ModelData& chunkModel, int x, int y, i
     // 剔除被遮挡的面
     std::vector<int> validFaceIndices;
     validFaceIndices.reserve(blockModel.faces.size());
+    // Create blaze burner and packager/repackager partials (DO_NOT_CULL).
+    if (ns == "create")
+        AppendCreateBlazePackager("create:" + blockName, x, y, z, blockEntityNbt, blockModel);
 
     // CTM 连接的同类方块之间应剔除内部面(玻璃等非固体方块不在 solids 表中,
     // 默认会被当作 air 而保留内部面,导致缝隙)

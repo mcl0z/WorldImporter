@@ -169,6 +169,7 @@
     <ClCompile Include="LODManager.cpp" />
     <ClCompile Include="main.cpp" />
     <ClCompile Include="model.cpp" />
+    <ClCompile Include="CreateBlazePackager.cpp" />
     <ClCompile Include="ModelDeduplicator.cpp" />
     <ClCompile Include="nbtutils.cpp" />
     <ClCompile Include="ObjExporter.cpp" />
@@ -205,6 +206,7 @@
     <ClInclude Include="JarReader.h" />
     <ClInclude Include="LODManager.h" />
     <ClInclude Include="model.h" />
+    <ClInclude Include="CreateBlazePackager.h" />
     <ClInclude Include="ModelDeduplicator.h" />
     <ClInclude Include="nbtutils.h" />
     <ClInclude Include="ObjExporter.h" />
