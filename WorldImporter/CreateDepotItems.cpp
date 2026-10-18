@@ -171,6 +171,62 @@ namespace {
         }
     }
 
+    // BeltRenderer.renderItem (static: speed 0 -> Pos/Offset as stored; all stack copies drawn,
+    // upright items without the camera-facing yaw).
+    void RenderBeltItem(ModelData& model, const NbtTagPtr& tis, const int dir[3], const string& facing,
+        const string& slope, int length) {
+        auto stack = Child(tis, "Item");
+        ItemStackInfo item = ItemRender::ParseItemStack(stack);
+        if (item.empty()) return;
+        ModelData mesh;
+        if (!ItemRender::Build(item, ItemDisplay::Fixed, false, mesh)) return;
+        const int verticality = slope == "downward" ? -1 : slope == "upward" ? 1 : 0;
+        const bool slopeAlongX = dir[0] != 0;
+        const bool positive = dir[0] + dir[2] > 0;
+        float offset = Float(tis, "Pos", 0.0f);
+        float side = Float(tis, "Offset", 0.0f);
+        const int angle = Int(tis, "Angle", 0);
+        float vertical = offset < 0.5f ? 0.0f : verticality * (min(offset, length - 0.5f) - 0.5f);
+        const bool onSlope = slope != "horizontal" && offset >= 0.5f && offset <= length - 0.5f;
+        const bool tiltForward = ((slope == "downward") ^ positive) == (dir[2] != 0);
+        const float slopeAngle = onSlope ? (tiltForward ? -45.0f : 45.0f) : 0.0f;
+
+        EntityAffine ms = EntityAffine::T(0.5 - 0.5 * dir[0], 0.9375, 0.5 - 0.5 * dir[2]);
+        ms = ms * EntityAffine::T(dir[0] * offset, vertical, dir[2] * offset);
+        const bool alongX = dir[2] != 0; // facing.getClockWise().getAxis() == X
+        if (!alongX) side = -side;
+        ms = ms * EntityAffine::T(alongX ? side : 0.0, 0.0, alongX ? 0.0 : side);
+
+        int count = 0;
+        for (int c = item.count; c > 1; c >>= 1) ++count;
+        count /= 2;
+        const bool upright = IsUpright(item.id);
+        const bool blockItem = IsGui3d(item.id);
+        const bool box = IsPackage(item.id);
+        JavaRandom r(angle);
+        if (!upright && slopeAngle != 0.0f)
+            ms = ms * (slopeAlongX ? EntityAffine::RZDeg(slopeAngle) : EntityAffine::RX(slopeAngle * M_PI / 180.0));
+        if (onSlope) ms = ms * EntityAffine::T(0.0, 0.125, 0.0);
+        if (upright) ms = ms * EntityAffine::T(0.0, 0.09375, 0.0625);
+        for (int i = 0; i <= count; ++i) {
+            EntityAffine p = ms * EntityAffine::RYDeg(angle);
+            if (!blockItem && !upright) p = p * EntityAffine::T(0.0, -0.09375, 0.0) * EntityAffine::RX(M_PI / 2.0);
+            if (blockItem && !box) {
+                float ox = r.NextFloat() * 0.0625f * i;
+                float oz = r.NextFloat() * 0.0625f * i;
+                p = p * EntityAffine::T(ox, 0.0, oz);
+            }
+            p = box ? p * EntityAffine::T(0.0, 0.25, 0.0) * EntityAffine::S(1.5) : p * EntityAffine::S(0.5);
+            Emit(model, mesh, p);
+            if (!upright) {
+                if (!blockItem) ms = ms * EntityAffine::RYDeg(10.0);
+                ms = ms * EntityAffine::T(0.0, blockItem ? 0.015625 : 0.0625, 0.0);
+            } else {
+                ms = ms * EntityAffine::T(0.0, 0.0, -0.0625);
+            }
+        }
+    }
+
     string StateValue(const string& blockName, const string& key) {
         size_t p = blockName.find(key + "=");
         if (p == string::npos) return "";
@@ -183,6 +239,22 @@ namespace {
 void AppendCreateDepotItems(const string& blockName, const NbtTagPtr& nbt, ModelData& model) {
     if (!nbt) return;
     string base = blockName.substr(0, blockName.find('['));
+    if (base == "create:belt") {
+        // BeltRenderer.renderItems: only the controller draws, items of the whole belt.
+        auto isController = Child(nbt, "IsController");
+        if (!isController || isController->type != TagType::BYTE || bytesToByte(isController->payload) == 0) return;
+        const int length = Int(nbt, "Length", 0);
+        auto items = Child(Child(nbt, "Inventory"), "Items");
+        if (length <= 0 || !items || items->type != TagType::LIST || items->children.empty()) return;
+        const string facing = StateValue(blockName, "facing");
+        const string slope = StateValue(blockName, "slope");
+        if (slope == "vertical" || slope == "sideways") return; // these belts carry no items
+        int dir[3] = {0, 0, 0};
+        if (facing == "east") dir[0] = 1; else if (facing == "west") dir[0] = -1;
+        else if (facing == "south") dir[2] = 1; else if (facing == "north") dir[2] = -1; else return;
+        for (const auto& tis : items->children) RenderBeltItem(model, tis, dir, facing, slope, length);
+        return;
+    }
     if (base == "create:depot") {
         RenderItemsOf(model, nbt, EntityAffine());
     } else if (base == "create:weighted_ejector") {
