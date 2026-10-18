@@ -154,6 +154,14 @@ if (BUILD_TESTING AND NOT EXISTS "${WI_TESTS_DIR}")
     message(STATUS "tests/ 不存在: 跳过测试目标（要跑测试请恢复 tests/，或显式传 -DBUILD_TESTING=OFF）")
 endif()
 
+if (BUILD_TESTING AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/WorldImporter/tests/showblock_random_tests.cpp")
+    add_executable(showblock_random_tests WorldImporter/tests/showblock_random_tests.cpp)
+    target_link_libraries(showblock_random_tests PRIVATE WorldImporterCore)
+    wi_apply_defaults(showblock_random_tests)
+    add_test(NAME showblock_random COMMAND showblock_random_tests)
+    set_tests_properties(showblock_random PROPERTIES TIMEOUT 30)
+endif()
+
 if (BUILD_TESTING AND EXISTS "${WI_TESTS_DIR}")
     # 跑法（构建目录内）：
     #   ctest                        全部用例
