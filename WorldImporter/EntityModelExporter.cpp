@@ -15,6 +15,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <filesystem>
 #include <initializer_list>
 #include <fstream>
@@ -361,6 +362,20 @@ ArmorInfo ArmorOf(const ItemStackInfo& item) {
     return a;
 }
 
+// Blender 材质名最长 63 字节, 超长会被截断, overlay.json / tint.json 就对不上。
+// 超长时保留前 54 字节 + "~" + 全名 FNV-1a 的 8 位十六进制; 不超长原样返回。
+std::string BlenderSafeName(const std::string& n) {
+    if (n.size() <= 63) return n;
+    uint32_t h = 2166136261u;
+    for (unsigned char c : n) { h ^= c; h *= 16777619u; }
+    char buf[10];
+    std::snprintf(buf, sizeof(buf), "~%08X", h);
+    return n.substr(0, 54) + buf;
+}
+void RegisterEntityOverlay(const std::string& baseName, const std::vector<OverlayLayerInfo>& overlays) {
+    RegisterOverlaySequence(BlenderSafeName(baseName), overlays);
+}
+
 // 网格 (ModelData + 自带材质) 并入实体对象。固定色烘焙进贴图; 其它 tint 记入 ctx.tints。
 void AppendMesh(Ctx& ctx, OutObject& obj, const ModelData& m);
 
@@ -394,7 +409,7 @@ int ArmorMaterial(Ctx& ctx, const std::vector<ArmorTexLayer>& layers, const std:
         over.push_back(info);
     }
     for (const auto& e : extra) over.push_back(e);
-    if (!over.empty()) RegisterOverlaySequence(baseName, over);
+    if (!over.empty()) RegisterEntityOverlay(baseName, over);
     return mat;
 }
 
@@ -450,12 +465,13 @@ bool MakeTrimOverlay(Ctx& ctx, const ArmorInfo& armor, const ItemStackInfo& item
 
 // 项圈: 基础贴图材质 + 染色项圈叠加层。整模再画一遍项圈贴图 (大半透明) 在 Blender 里是黑剪影。
 int CollaredMaterial(Ctx& ctx, const std::string& baseMatName, const std::string& baseTex,
-                     const std::string& collarNs, const std::string& collarPath, int collarRgb) {
+                     const std::string& collarNs, const std::string& collarPath, int collarRgb,
+                     const char* tag = "collar") {
     if (baseTex.empty()) return -1;
     std::ostringstream hex;
     hex << std::uppercase << std::hex << std::setw(6) << std::setfill('0')
         << (static_cast<unsigned>(collarRgb) & 0xFFFFFFu);
-    const std::string name = baseMatName + "~collar_" + hex.str();
+    const std::string name = baseMatName + "~" + tag + "_" + hex.str();
     int mat = ctx.Material(name, baseTex);
     std::string ctex = ctx.Texture(collarNs, collarPath);
     if (!ctex.empty()) {
@@ -465,7 +481,7 @@ int CollaredMaterial(Ctx& ctx, const std::string& baseMatName, const std::string
         OverlayLayerInfo info;
         info.name = "minecraft:" + collarPath + TintSuffix(t);
         info.texturePath = ctx.TintedTexture(ctex, t.color);
-        RegisterOverlaySequence(name, { info });
+        RegisterEntityOverlay(name, { info });
     }
     return mat;
 }
@@ -510,7 +526,7 @@ std::string BodyWithOverlays(Ctx& ctx, std::string baseMat, const std::string& b
     }
     if (overs.empty()) return baseMat;
     baseMat += suffix;
-    RegisterOverlaySequence(baseMat, overs);
+    RegisterEntityOverlay(baseMat, overs);
     return baseMat;
 }
 
@@ -774,12 +790,12 @@ void RenderVillagerLike(Ctx& ctx, const NbtTagPtr& e, bool zombie) {
     if (typeNs != "minecraft") key = typeNs + "_" + key;
     std::string bodyName = matPrefix + key;
     int bodyMat = ctx.Material(bodyName, baseTex);
-    RegisterOverlaySequence(bodyName, layersBody);
+    RegisterEntityOverlay(bodyName, layersBody);
     int headMat = bodyMat;
     if (!typeHatVisible) {
         std::string headName = bodyName + "_nohat";
         headMat = ctx.Material(headName, baseTex);
-        RegisterOverlaySequence(headName, layersHead);
+        RegisterEntityOverlay(headName, layersHead);
     }
 
     OutObject& obj = ctx.NewObject("minecraft:" + kind);
@@ -1241,33 +1257,32 @@ void RenderSheep(Ctx& ctx, const NbtTagPtr& e) {
     EntityAffine base = LivingBase(pl, 1.3 * (baby ? 0.5 : 1.0), 1.0);
     TopPre pre = (!ctx.modern && baby) ? LegacyAgeablePre(kAgeSheep) : nullptr;
     OutObject& obj = ctx.NewObject("minecraft:sheep");
-    EmitTextured(ctx, obj, model, base, pre, "minecraft:" + bodyTex, ctx.Texture("minecraft", bodyTex));
     // jeb_: 26.x getWoolColor = ColorLerper.getLerpedColor(SHEEP, ageInTicks)。
     // 导出没有渲染 tick, 取 ageInTicks = 0: floor(0)/25 = 0, 插值系数 0, 即 DyeColor[0]=白 的 0xE6E6E6。
     // 1.21 的 jeb_ 还加了实体 id, 静态导出不稳定, 仍用羊毛自身颜色。
     const bool jeb = ctx.modern && PlainCustomName(Str(e, "CustomName"), "jeb_");
     const int rgb = jeb ? 0xE6E6E6 : SheepWoolRgb(color);
     const bool white = std::clamp(color, 0, 15) == 0;
-    static const char* kPose[] = { "head", "body", "right_front_leg", "left_front_leg", "right_hind_leg", "left_hind_leg" };
-    auto copyFur = [&](EntityModel& fur) {
-        fur.CopyPoseFrom(model, { kPose[0], kPose[1], kPose[2], kPose[3], kPose[4], kPose[5] }, true);
-    };
-    // SheepWoolUndercoatLayer: 未隐形、非幼体、且 (jeb_ 或颜色不是白)。剪过毛也画, 画在羊毛下面。
-    if (ctx.modern && !baby && NumOr(e, "Invisible", 0) == 0 && (jeb || !white)) {
-        EntityModel coat(fam, "minecraft:sheep#wool_undercoat");
-        if (coat.Valid()) {
-            copyFur(coat);
-            EmitDyedLayer(ctx, obj, coat, base, pre, "entity/sheep/sheep_wool_undercoat", static_cast<uint32_t>(rgb));
-        }
+    // 26.x 的 sheep#wool_undercoat 和 sheep_baby#wool 与身体几何/UV 完全相同 (共面),
+    // 整模再画一遍在 Blender 里是黑剪影, 所以做成身体材质的染色叠加层 (同项圈)。
+    // SheepWoolUndercoatLayer: 未隐形、非幼体、且 (jeb_ 或颜色不是白)。剪过毛也画。
+    const std::string bodyFile = ctx.Texture("minecraft", bodyTex);
+    std::string coplanar;
+    const char* tag = nullptr;
+    if (ctx.modern && !baby && (jeb || !white)) { coplanar = "entity/sheep/sheep_wool_undercoat"; tag = "undercoat"; }
+    else if (ctx.modern && baby && !sheared) { coplanar = "entity/sheep/sheep_wool_baby"; tag = "wool"; }
+    if (!coplanar.empty() && !bodyFile.empty()) {
+        int mat = CollaredMaterial(ctx, "minecraft:" + bodyTex, bodyFile, "minecraft", coplanar, rgb, tag);
+        model.Emit(obj.mesh, base, [mat](int) { return mat; }, pre);
+    } else {
+        EmitTextured(ctx, obj, model, base, pre, "minecraft:" + bodyTex, bodyFile);
     }
-    if (!sheared) {
-        std::string furId = std::string("minecraft:sheep") + (ctx.modern && baby ? "_baby" : "") +
-                            (ctx.modern ? "#wool" : "#fur");
-        std::string woolTex = ctx.modern ? (baby ? "entity/sheep/sheep_wool_baby" : "entity/sheep/sheep_wool")
-                                         : "entity/sheep/sheep_fur";
+    if (!sheared && !(ctx.modern && baby)) {
+        std::string furId = std::string("minecraft:sheep") + (ctx.modern ? "#wool" : "#fur");
+        std::string woolTex = ctx.modern ? "entity/sheep/sheep_wool" : "entity/sheep/sheep_fur";
         EntityModel fur(fam, furId);
         if (fur.Valid()) {
-            copyFur(fur);
+            fur.CopyPoseFrom(model, { "head", "body", "right_front_leg", "left_front_leg", "right_hind_leg", "left_hind_leg" }, true);
             EmitDyedLayer(ctx, obj, fur, base, pre, woolTex, static_cast<uint32_t>(rgb));
         }
     }
@@ -1590,7 +1605,7 @@ void RenderEquine(Ctx& ctx, const NbtTagPtr& e, EquineKind kind) {
                 OverlayLayerInfo info;
                 info.name = "minecraft:" + markPath;
                 info.texturePath = markTex;
-                RegisterOverlaySequence(bodyMat, { info });
+                RegisterEntityOverlay(bodyMat, { info });
             }
         }
     }
@@ -2531,7 +2546,7 @@ void WriteFiles(const Ctx& ctx, const std::string& name) {
     const std::string dir = getExecutableDir();
     std::ofstream mtl(Utf8Path(dir + name + ".mtl"), std::ios::binary);
     for (const auto& m : ctx.materials) {
-        mtl << "newmtl " << m.name << "\n"
+        mtl << "newmtl " << BlenderSafeName(m.name) << "\n"
             << "Ns 90.000000\nKd 1.000000 1.000000 1.000000\nKs 0.000000 0.000000 0.000000\n"
             << "Ke 0.000000 0.000000 0.000000\nNi 1.500000\nillum 1\n"
             << "map_Kd " << m.texture << "\n\n";
@@ -2551,7 +2566,7 @@ void WriteFiles(const Ctx& ctx, const std::string& name) {
             obj << "vt " << md.uvCoordinates[i] << ' ' << md.uvCoordinates[i + 1] << "\n";
         int cur = -1;
         for (const auto& f : md.faces) {
-            if (f.materialIndex != cur) { cur = f.materialIndex; obj << "usemtl " << ctx.materials[cur].name << "\n"; }
+            if (f.materialIndex != cur) { cur = f.materialIndex; obj << "usemtl " << BlenderSafeName(ctx.materials[cur].name) << "\n"; }
             obj << "f";
             for (int k = 0; k < 4; ++k)
                 obj << ' ' << (vBase + f.vertexIndices[k]) << '/' << (tBase + f.uvIndices[k]);
@@ -2657,7 +2672,9 @@ size_t Export(const std::string& name) {
         return 0;
     }
     WriteFiles(ctx, name);
-    MergeTintJson(ctx.tints);
+    std::map<std::string, TintResult> safeTints;
+    for (const auto& [k, v] : ctx.tints) safeTints[BlenderSafeName(k)] = v;
+    MergeTintJson(safeTints);
     CreateOverlayJsonFile();  // 区域导出已写过一次; 补上实体叠加层后重写
     std::cout << "[EntityModels] " << ctx.objects.size() << " entities (" << (ctx.modern ? "modern" : "legacy")
               << " models), " << ctx.materials.size() << " materials ->" << name << ".obj:";

@@ -239,5 +239,3 @@ modern minecraft:creeper_head#main
 modern minecraft:player_head#main
 modern minecraft:dragon_skull#main
 modern minecraft:piglin_head#main
-# 26.x SheepWoolUndercoatLayer (adult only; SheepFurModel on minecraft:sheep#wool_undercoat)
-modern minecraft:sheep#wool_undercoat
