@@ -28,6 +28,7 @@
 #include <cmath>
 #include <sstream>
 #include <regex>
+#include "CreateCurvedTrack.h"
 #include <tuple>
 #include <future>
 #include <chrono>
@@ -679,6 +680,16 @@ void ChunkGenerator::ProcessBlockForModel(ModelData& chunkModel, int x, int y, i
             RegisterOverlaySequence(entry.first, entry.second);
         }
         blockModel.overlayPairs.clear();
+    }
+
+    // Bezier track curves are baked from the track block entity and extend
+    // outside this block. Append them after neighbor culling and keep every
+    // new face: they are DO_NOT_CULL and must survive the compact below.
+    if (ns == "create") {
+        const size_t curveFacesBegin = blockModel.faces.size();
+        AppendCreateCurvedTrack("create:" + blockName, blockEntityNbt, blockModel);
+        for (size_t faceIndex = curveFacesBegin; faceIndex < blockModel.faces.size(); ++faceIndex)
+            validFaceIndices.push_back(static_cast<int>(faceIndex));
     }
 
     // Hidden blocks contribute no geometry. Previously their unused vertices,
