@@ -128,6 +128,9 @@
     <ClCompile Include="RegionModelExporter.cpp">
       <Filter>源文件\Exporter</Filter>
     </ClCompile>
+    <ClCompile Include="SignText.cpp">
+      <Filter>源文件\Blocks</Filter>
+    </ClCompile>
     <ClCompile Include="ObjExporter.cpp">
       <Filter>源文件\Exporter</Filter>
     </ClCompile>
@@ -229,6 +232,9 @@
     </ClInclude>
     <ClInclude Include="RegionModelExporter.h">
       <Filter>头文件\Exporter</Filter>
+    </ClInclude>
+    <ClInclude Include="SignText.h">
+      <Filter>头文件\Blocks</Filter>
     </ClInclude>
     <ClInclude Include="hashutils.h">
       <Filter>头文件\Utils</Filter>
