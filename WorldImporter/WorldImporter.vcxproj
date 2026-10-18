@@ -192,6 +192,7 @@
     <ClCompile Include="RegionModelExporter.cpp" />
     <ClCompile Include="SignText.cpp" />
     <ClCompile Include="TaskMonitor.cpp" />
+    <ClCompile Include="CreateChainConveyor.cpp" />
     <ClCompile Include="texture.cpp" />
   </ItemGroup>
   <ItemGroup>
@@ -248,6 +249,7 @@
     <ClInclude Include="RegionModelExporter.h" />
     <ClInclude Include="SignText.h" />
     <ClInclude Include="TaskMonitor.h" />
+    <ClInclude Include="CreateChainConveyor.h" />
     <ClInclude Include="texture.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
