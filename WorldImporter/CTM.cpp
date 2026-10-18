@@ -4,6 +4,7 @@
 #include "ModCT.h"
 #include "block.h"          // GetBlockId / GetBlockById / Block
 #include "blockstate.h"     // GetRandomModelFromCache (connect=tile)
+#include "CtmOrient.h"
 #include "model.h"          // ModelData / Face / Material / FaceType
 #include "blocktint.h"      // TintResult / ResolveTint / TintSuffix
 #include "Occlusion.h"      // GetBlockOcclusion (overlay 隐藏边判定)
@@ -1064,7 +1065,7 @@ static FaceType InferDirectionFromFace(const ModelData& model, const Face& face)
 // 表与 Continuity 的 DirectionMaps.map[face][0] 完全一致
 // (UP: l=W d=S r=E u=N; DOWN: l=E d=N r=W u=S; 侧面: 贴图左右即站在该面外看的方向)。
 // overlay 面按此表选 tile, 并配合 AssignCanonicalFaceUv 的规范 UV 生成, 与游戏一致;
-// 非 overlay 方法沿用基础面自身 UV 帧(游戏 orientation 默认 NONE, 连接位用固定表)。
+// ctm/compact/horizontal/vertical 使用 DirectionMaps[face][orientation](默认 orient=texture, Continuity)。
 struct FaceLayout {
     std::array<int,3> up, down, left, right;
     std::array<int,3> upLeft, upRight, downLeft, downRight;
@@ -2721,8 +2722,31 @@ void ApplyCtmToBlockModel(ModelData& model,
         t_textureNs = matNs;
         t_textureName = textureName;
         t_currentFullName = ns + ":" + blockName;
+        // ctm/compact/horizontal/vertical 才取方向; overlay 及其它方法仍用几何 L。
+        auto orientedLayout = [&]() -> FaceLayout {
+            const int faceOrd = FaceOrdinal(ft);
+            int orientation = 0;
+            const int mode = CtmOrientMode(rule->orient);
+            if (mode == kCtmOrientStateAxis)
+                orientation = CtmStateAxisOrientation(blockName, faceOrd);
+            else if (mode == kCtmOrientTexture)
+                orientation = GetTextureOrientation(model, face, ft);
+            const CtmFaceDirs dirs = CtmDirectionMap(faceOrd, orientation);
+            FaceLayout out{};
+            out.up = dirs.up;
+            out.down = dirs.down;
+            out.left = dirs.left;
+            out.right = dirs.right;
+            out.upLeft = dirs.upLeft;
+            out.upRight = dirs.upRight;
+            out.downLeft = dirs.downLeft;
+            out.downRight = dirs.downRight;
+            out.quadrantMap = {0, 1, 2, 3};
+            return out;
+        };
         switch (rule ? rule->method : CtmMethod::None) {
         case CtmMethod::CtmCompact: {
+            FaceLayout L = orientedLayout();
             int ctmIndex = kCtmTileMap[GetCtmConnectionMask(L, x, y, z, curBaseName)];
             auto replacement = rule->ctmOverrides.find(ctmIndex);
             if (replacement != rule->ctmOverrides.end())
@@ -2733,6 +2757,7 @@ void ApplyCtmToBlockModel(ModelData& model,
             break;
         }
         case CtmMethod::Horizontal: {
+            FaceLayout L = orientedLayout();
             int sel = SelectHorizontalTile(L, x, y, z, curBaseName);
             if (sel < (int)rule->tiles.size()) {
                 info = useTile(*rule, sel);
@@ -2741,6 +2766,7 @@ void ApplyCtmToBlockModel(ModelData& model,
             break;
         }
         case CtmMethod::Vertical: {
+            FaceLayout L = orientedLayout();
             int sel = SelectVerticalTile(L, x, y, z, curBaseName);
             if (sel < (int)rule->tiles.size()) {
                 info = useTile(*rule, sel);
@@ -2749,6 +2775,7 @@ void ApplyCtmToBlockModel(ModelData& model,
             break;
         }
         case CtmMethod::Ctm: {
+            FaceLayout L = orientedLayout();
             int sel = SelectCtmTile(L, x, y, z, curBaseName);
             if (sel < (int)rule->tiles.size()) {
                 info = useTile(*rule, sel);
