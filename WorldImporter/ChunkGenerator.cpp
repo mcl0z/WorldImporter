@@ -45,6 +45,7 @@
 #include "CreatePostboxControls.h"
 #include "SpecialBlock.h"
 #include "CreateTankFluid.h"
+#include "CampfireItems.h"
 #include "CableMesher.h"
 #include "CreateChainConveyor.h"
 #include "BbsModelSupport.h"
@@ -759,6 +760,9 @@ void ChunkGenerator::ProcessBlockForModel(ModelData& chunkModel, int x, int y, i
             AppendBeaconBeam(blockModel, blockEntityNbt, x, y, z);
         }
     }
+    // Campfire / soul_campfire cooking items (CampfireRenderer).
+    if (blockEntityNbt && ns == "minecraft")
+        AppendCampfireItems(blockModel, blockEntityNbt, ns + ":" + blockName, x, y, z);
 
     ApplyPositionOffset(blockModel, x, y, z);
 

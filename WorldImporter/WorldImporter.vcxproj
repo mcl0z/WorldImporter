@@ -178,6 +178,8 @@
     <ClCompile Include="PlayerSkin.cpp" />
     <ClCompile Include="SpecialBlock.cpp" />
     <ClCompile Include="CopperGolemStatue.cpp" />
+    <ClCompile Include="ItemRender.cpp" />
+    <ClCompile Include="CampfireItems.cpp" />
     <ClCompile Include="fileutils.cpp" />
     <ClCompile Include="EndPortalModel.cpp" />
     <ClCompile Include="Fluid.cpp" />
@@ -246,6 +248,10 @@
     <ClInclude Include="PlayerSkin.h" />
     <ClInclude Include="SpecialBlock.h" />
     <ClInclude Include="CopperGolemStatue.h" />
+    <ClInclude Include="EntityModel.h" />
+    <ClInclude Include="EntityNbt.h" />
+    <ClInclude Include="ItemRender.h" />
+    <ClInclude Include="CampfireItems.h" />
     <ClInclude Include="fileutils.h" />
     <ClInclude Include="EndPortalModel.h" />
     <ClInclude Include="GlobalCache.h" />

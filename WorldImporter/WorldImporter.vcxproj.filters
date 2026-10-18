@@ -177,6 +177,11 @@
     </ClCompile>
     <ClCompile Include="PlayerSkin.cpp">
       <Filter>源文件\Blocks</Filter>
+    <ClCompile Include="CampfireItems.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="ItemRender.cpp">
+      <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="SpecialBlock.cpp">
       <Filter>源文件\Blocks</Filter>
@@ -259,6 +264,17 @@
     <ClInclude Include="PlayerSkin.h">
     <ClInclude Include="CreateBellCrafter.h">
       <Filter>头文件\Blocks</Filter>
+    <ClInclude Include="CampfireItems.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="ItemRender.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="EntityNbt.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="EntityModel.h">
+      <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="SpecialBlock.h">
       <Filter>头文件\Blocks</Filter>
