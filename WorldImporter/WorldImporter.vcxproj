@@ -143,6 +143,7 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="biome.cpp" />
+    <ClCompile Include="BeaconBeam.cpp" />
     <ClCompile Include="blocktint.cpp" />
     <ClCompile Include="BbsModelSupport.cpp" />
     <ClCompile Include="block.cpp" />
@@ -192,6 +193,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="biome.h" />
+    <ClInclude Include="BeaconBeam.h" />
     <ClInclude Include="blocktint.h" />
     <ClInclude Include="BbsModelSupport.h" />
     <ClInclude Include="block.h" />
