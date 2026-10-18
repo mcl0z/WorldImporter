@@ -23,9 +23,9 @@ struct VersionConfig {
 };
 
 // 加权变体的挑选方式。
-//   Game  : 与原版一致 —— 用方块坐标算出渲染种子(Mth.getSeed)，再用
-//           LegacyRandomSource 抽一次 nextInt(总权重)。同一坐标永远同一变体，
-//           因此导出可复现，且与游戏里看到的图案逐格一致。
+//   Game  : 与原版一致。DataVersion < 4325（1.21.5 之前）用
+//           abs((int)nextLong()) % 总权重；否则或缺 DataVersion 时用 nextInt。
+//           同一坐标永远同一变体。
 //   First : 永远取第一个变体(关掉防重复贴图的观感)。
 //   Random: 旧行为 —— std::random_device 播种的真随机，每次导出结果都不同。
 enum class VariantSeedMode { Game, First, Random };
