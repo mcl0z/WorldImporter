@@ -6,6 +6,7 @@
 #include "include/stb_image.h"
 #include "biome.h"
 #include "model.h"
+#include "CreateBellCrafter.h"
 #include "blocktint.h"
 #include "fluid.h"
 #include "LODManager.h"
@@ -642,6 +643,10 @@ void ChunkGenerator::ProcessBlockForModel(ModelData& chunkModel, int x, int y, i
         blockModel.faces[i] = blockModel.faces[validFaceIndices[i]];
     }
     blockModel.faces.resize(validFaceIndices.size());
+
+    // Create haunted/peculiar bell bodies and mechanical crafter cog/lid/belt/arrow.
+    if (ns == "create")
+        AppendCreateBellCrafter("create:" + blockName, x, y, z, blockEntityNbt, blockModel);
 
     ApplyPositionOffset(blockModel, x, y, z);
 
