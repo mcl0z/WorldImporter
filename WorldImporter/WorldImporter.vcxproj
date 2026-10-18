@@ -180,6 +180,7 @@
     <ClCompile Include="fileutils.cpp" />
     <ClCompile Include="EndPortalModel.cpp" />
     <ClCompile Include="Fluid.cpp" />
+    <ClCompile Include="CreateTrackMarkers.cpp" />
     <ClCompile Include="GlobalCache.cpp" />
     <ClCompile Include="CreateSlidingDoor.cpp" />
     <ClCompile Include="JarReader.cpp" />
@@ -221,6 +222,7 @@
     <ClInclude Include="HangingSignModel.h" />
     <ClInclude Include="config.h" />
     <ClInclude Include="Fluid.h" />
+    <ClInclude Include="CreateTrackMarkers.h" />
     <ClInclude Include="init.h" />
     <ClInclude Include="locutil.h" />
     <ClInclude Include="logutil.h" />

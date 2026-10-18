@@ -133,6 +133,9 @@
     <ClCompile Include="blocktint.cpp">
       <Filter>源文件\World</Filter>
     </ClCompile>
+    <ClCompile Include="CreateTrackMarkers.cpp">
+      <Filter>源文件\Blocks</Filter>
+    </ClCompile>
     <ClCompile Include="block.cpp">
       <Filter>源文件\World</Filter>
     </ClCompile>
@@ -283,6 +286,9 @@
     </ClInclude>
     <ClInclude Include="blocktint.h">
       <Filter>头文件\World</Filter>
+    </ClInclude>
+    <ClInclude Include="CreateTrackMarkers.h">
+      <Filter>头文件\Blocks</Filter>
     </ClInclude>
     <ClInclude Include="block.h">
       <Filter>头文件\World</Filter>
