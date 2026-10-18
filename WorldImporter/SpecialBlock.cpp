@@ -939,6 +939,10 @@ ModelData SpecialBlock::GenerateSpecialBlockModel(const string& blockName) {
     {
         ModelData be = GenerateBlockEntityModel(blockName);
         if (!be.faces.empty()) return be;
+    // 告示牌(旧版本没有方块模型, 26.x 自带模型不会走到这里)
+    {
+        ModelData sign = GenerateSignModel(blockName);
+        if (!sign.faces.empty()) return sign;
     }
 
     // 其他类型方块的生成逻辑
@@ -1311,6 +1315,9 @@ ModelData SpecialBlock::GenerateBedModel(const string& blockName) {
 // 箱子: 按原版 ChestModel (1.15+ 贴图布局, 64x64) 生成 bottom/lid/lock 三个盒子。
 // 原版箱子渲染不翻转 y, 盒子坐标即方块像素坐标; 默认朝南, 按 facing 旋转。
 ModelData SpecialBlock::GenerateChestModel(const string& blockName) {
+// 告示牌: 按原版 SignRenderer + SignModel 生成(实体贴图 entity/signs/<木材>.png, 64x32)。
+// 实体模型空间 y、z 朝下/朝北, 渲染时 scale(2/3, -2/3, -2/3) 后再旋转平移到方块里。
+ModelData SpecialBlock::GenerateSignModel(const string& blockName) {
     string ns = "minecraft", processed = blockName;
     size_t colonPos = processed.find(':');
     if (colonPos != string::npos) { ns = processed.substr(0, colonPos); processed = processed.substr(colonPos + 1); }
@@ -1331,6 +1338,15 @@ ModelData SpecialBlock::GenerateChestModel(const string& blockName) {
     else return ModelData();
 
     string facing = "north", type = "single";
+    if (blockID.find("hanging") != string::npos) return ModelData();
+    bool wall = false;
+    string wood;
+    auto endsWith = [&](const string& suf) { return blockID.size() > suf.size() && blockID.compare(blockID.size() - suf.size(), suf.size(), suf) == 0; };
+    if (endsWith("_wall_sign")) { wall = true; wood = blockID.substr(0, blockID.size() - 10); }
+    else if (endsWith("_sign")) { wood = blockID.substr(0, blockID.size() - 5); }
+    else return ModelData();
+
+    int rotation = 0; string facing = "south";
     if (bracketPos != string::npos) {
         string statePart = processed.substr(bracketPos + 1, processed.size() - bracketPos - 2);
         stringstream ss(statePart); string pair;
@@ -1345,6 +1361,12 @@ ModelData SpecialBlock::GenerateChestModel(const string& blockName) {
     if (type == "left" || type == "right") tex += "_" + type;
 
     string texPath = "entity/chest/" + tex;
+            if (k == "rotation") { try { rotation = stoi(v); } catch (...) {} }
+            else if (k == "facing") facing = v;
+        }
+    }
+
+    string texPath = "entity/signs/" + wood;
     string textureFileDir = "textures";
     if (!SaveTextureToFile(ns, texPath, textureFileDir)) return ModelData();
     string savedTexturePath = "textures/" + ns + "/" + texPath + ".png";
@@ -1355,6 +1377,7 @@ ModelData SpecialBlock::GenerateChestModel(const string& blockName) {
     // 左右半箱贴图不同, 材质名必须区分, 否则按名字去重后都会用到同一张贴图
     material.name = ns + ":" + blockID;
     if (type == "left" || type == "right") material.name += "#" + type + "~" + tex;
+    material.name = ns + ":" + blockID;
     material.texturePath = savedTexturePath;
     material.tintIndex = -1;
     model.materials = { material };
@@ -1463,6 +1486,57 @@ namespace {
                 for (int k = 0; k < 3; ++k) model.vertices.push_back(W[i][k]);
                 model.uvCoordinates.push_back(uv[i][0] / texW);
                 model.uvCoordinates.push_back(1.0f - uv[i][1] / texH);
+    float yRot;
+    if (wall) {
+        float f = 0;
+        if (facing == "west") f = 90; else if (facing == "north") f = 180; else if (facing == "east") f = 270;
+        yRot = -f;
+    } else {
+        yRot = -rotation * 22.5f;
+    }
+    const float rad = yRot * 3.14159265358979f / 180.0f, c = cos(rad), sn = sin(rad), k = 2.0f / 3.0f / 16.0f;
+    auto xf = [&](float px, float py, float pz, float out[3]) {
+        float x = px * k, y = -py * k, z = -pz * k;
+        if (wall) { y -= 0.3125f; z -= 0.4375f; }
+        out[0] = x * c + z * sn + 0.5f;
+        out[1] = y + 0.5f;
+        out[2] = -x * sn + z * c + 0.5f;
+    };
+    const float TW = 64.0f, TH = 32.0f;
+    auto addBox = [&](float x, float y, float z, float dx, float dy, float dz, float u, float v) {
+        float x2 = x + dx, y2 = y + dy, z2 = z + dz;
+        float P[8][3] = { {x,y,z},{x2,y,z},{x2,y2,z},{x,y2,z},{x,y,z2},{x2,y,z2},{x2,y2,z2},{x,y2,z2} };
+        float W[8][3];
+        for (int i = 0; i < 8; ++i) xf(P[i][0], P[i][1], P[i][2], W[i]);
+        float C[3] = { 0, 0, 0 };
+        for (int i = 0; i < 8; ++i) for (int a = 0; a < 3; ++a) C[a] += W[i][a] / 8.0f;
+        float f4 = u + dz, f5 = u + dz + dx, f6 = u + dz + dx + dx, f10 = u + dz + dx + dz, f11 = u + dz + dx + dz + dx;
+        float f7 = v, f8 = v + dz, f9 = v + dz + dy;
+        struct Q { int a, b, c, d; float u1, v1, u2, v2; };
+        Q qs[6] = {
+            {5, 1, 2, 6, f5, f8, f10, f9}, {0, 4, 7, 3, u, f8, f4, f9},
+            {5, 4, 0, 1, f4, f7, f5, f8},  {2, 3, 7, 6, f5, f8, f6, f7},
+            {1, 0, 3, 2, f4, f8, f5, f9},  {4, 5, 6, 7, f10, f8, f11, f9},
+        };
+        for (const Q& q : qs) {
+            int idx[4] = { q.a, q.b, q.c, q.d };
+            float uv[4][2] = { {q.u2, q.v1}, {q.u1, q.v1}, {q.u1, q.v2}, {q.u2, q.v2} };
+            // 绕序: 让法线朝外(远离盒子中心)
+            float e1[3], e2[3], n[3], fc[3] = { 0, 0, 0 };
+            for (int a = 0; a < 3; ++a) {
+                e1[a] = W[idx[1]][a] - W[idx[0]][a]; e2[a] = W[idx[2]][a] - W[idx[0]][a];
+                for (int i = 0; i < 4; ++i) fc[a] += W[idx[i]][a] / 4.0f;
+            }
+            n[0] = e1[1] * e2[2] - e1[2] * e2[1]; n[1] = e1[2] * e2[0] - e1[0] * e2[2]; n[2] = e1[0] * e2[1] - e1[1] * e2[0];
+            float d = n[0] * (fc[0] - C[0]) + n[1] * (fc[1] - C[1]) + n[2] * (fc[2] - C[2]);
+            int order[4] = { 0, 1, 2, 3 };
+            if (d < 0) { order[0] = 3; order[1] = 2; order[2] = 1; order[3] = 0; }
+            int vs = (int)model.vertices.size() / 3, us = (int)model.uvCoordinates.size() / 2;
+            for (int j = 0; j < 4; ++j) {
+                int i = order[j];
+                for (int a = 0; a < 3; ++a) model.vertices.push_back(W[idx[i]][a]);
+                model.uvCoordinates.push_back(uv[i][0] / TW);
+                model.uvCoordinates.push_back(1.0f - uv[i][1] / TH);
             }
             Face face;
             face.vertexIndices = { vs, vs + 1, vs + 2, vs + 3 };
@@ -1587,4 +1661,7 @@ ModelData SpecialBlock::GenerateBlockEntityModel(const string& blockName) {
         return model;
     }
     return ModelData();
+    addBox(-12, -14, -1, 24, 12, 2, 0, 0);       // 牌面
+    if (!wall) addBox(-1, -2, -1, 2, 14, 2, 0, 14); // 立杆
+    return model;
 }
