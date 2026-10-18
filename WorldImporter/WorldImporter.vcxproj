@@ -153,6 +153,7 @@
     <ClCompile Include="ChunkGroupAllocator.cpp" />
     <ClCompile Include="ChunkLoader.cpp" />
     <ClCompile Include="CTM.cpp" />
+    <ClCompile Include="CreateBoilerGauge.cpp" />
     <ClCompile Include="CreateCT.cpp" />
     <ClCompile Include="CreateTankFluid.cpp" />
     <ClCompile Include="config.cpp" />
@@ -190,6 +191,7 @@
     <ClInclude Include="blockstate.h" />
     <ClInclude Include="chunk.h" />
     <ClInclude Include="CTM.h" />
+    <ClInclude Include="CreateBoilerGauge.h" />
     <ClInclude Include="CreateCT.h" />
     <ClInclude Include="CreateTankFluid.h" />
     <ClInclude Include="ChunkGenerator.h" />

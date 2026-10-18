@@ -34,6 +34,7 @@
 #include "CreateTankFluid.h"
 #include "CableMesher.h"
 #include "BbsModelSupport.h"
+#include "CreateBoilerGauge.h"
 using namespace std;
 using namespace std::chrono;
 
@@ -421,6 +422,8 @@ void ChunkGenerator::ProcessBlockForModel(ModelData& chunkModel, int x, int y, i
 
     // 解析 tint 并按需拆分材质（必须在 CTM 之后、面剔除之前）
     ApplyTintToBlockModel(blockModel, currentBlock.name);
+    if (ns == "create" && blockEntityNbt)
+        AppendCreateBoilerGauge("create:" + blockName, x, y, z, blockEntityNbt, blockModel);
 
     // 剔除被遮挡的面
     std::vector<int> validFaceIndices;
