@@ -13,6 +13,7 @@
 #include "CreateBellCrafter.h"
 #include "blocktint.h"
 #include "fluid.h"
+#include "CreateTrackMarkers.h"
 #include "LODManager.h"
 #include "CreateSlidingDoor.h"
 #include "CTM.h"
@@ -523,6 +524,9 @@ void ChunkGenerator::ProcessBlockForModel(ModelData& chunkModel, int x, int y, i
         Block nb = GetBlockById(nid);
         return nb.GetNameAndNameSpaceWithoutState() == curBaseName;
     };
+    // Create station flag, signal lamp and track overlays (static, DO_NOT_CULL).
+    if (ns == "create")
+        AppendCreateTrackMarkers("create:" + blockName, x, y, z, blockEntityNbt, blockModel);
     // 玻璃类方块（含模组命名如 stained_glass / framed_glass / *_pane）
     const bool selfGlassLike =
         curBaseName.find("glass") != std::string::npos ||
