@@ -431,6 +431,89 @@ namespace {
         return result;
     }
 
+    // Fluid valve: casing (blockstate) + Kinetic shaft on rotation axis + FLUID_VALVE_POINTER.
+    // Sticker: casing + STICKER_HEAD (offset from extended). Backtank: shaft_input + cogs at rest.
+    // Steam whistle: casing + size mouth at offset 0.
+    string DirectionalAxisRotation(const string& facing, bool alongFirst) {
+        if (facing == "east" || facing == "west") return alongFirst ? "y" : "z";
+        if (facing == "up" || facing == "down") return alongFirst ? "x" : "z";
+        return alongFirst ? "x" : "y";
+    }
+
+    ModelData GenerateCreateFluidValve(const string& blockName,
+        const unordered_map<string, string>& states) {
+        ModelData result = LoadBlockstateModel(blockName);
+        string facing = states.contains("facing") ? states.at("facing") : "up";
+        bool alongFirst = states.contains("axis_along_first") && states.at("axis_along_first") == "true";
+        string axis = DirectionalAxisRotation(facing, alongFirst);
+        ModelData shaft = LoadCreateModel("block/shaft", 290);
+        RotateKineticAxis(shaft, axis);
+        Append(result, std::move(shaft));
+        string facingAxis = (facing == "east" || facing == "west") ? "x" :
+            (facing == "up" || facing == "down") ? "y" : "z";
+        string pipeAxis = "xyz";
+        pipeAxis.erase(pipeAxis.find(facingAxis), 1);
+        pipeAxis.erase(pipeAxis.find(axis), 1); // remaining axis
+        int pointerOffset = ((pipeAxis != "y" && axis == "x") || pipeAxis == "y") ? 90 : 0;
+        bool enabled = states.contains("enabled") && states.at("enabled") == "true";
+        float pointerRot = enabled ? -90.0f : 0.0f;
+        float pitch = facing == "up" ? 0.0f : facing == "down" ? 180.0f : 90.0f;
+        float yaw = FacingY(facing); // AngleHelper.horizontalAngle / Direction.toYRot
+        ModelData pointer = LoadCreateModel("block/fluid_valve/pointer", 291);
+        Rotate(pointer, 0.0f, pointerOffset + pointerRot, 0.0f);
+        Rotate(pointer, pitch, 0.0f, 0.0f);
+        Rotate(pointer, 0.0f, yaw, 0.0f);
+        Append(result, std::move(pointer));
+        return result;
+    }
+
+    ModelData GenerateCreateSticker(const string& blockName,
+        const unordered_map<string, string>& states) {
+        ModelData result = LoadBlockstateModel(blockName);
+        string facing = states.contains("facing") ? states.at("facing") : "up";
+        bool extended = states.contains("extended") && states.at("extended") == "true";
+        float offset = extended ? 4.0f / 16.0f : 0.0f; // offset*offset at 0 or 1
+        float pitch = facing == "up" ? 0.0f : facing == "down" ? 180.0f : 90.0f;
+        ModelData head = LoadCreateModel("block/sticker/head", 292);
+        if (offset != 0.0f) {
+            for (size_t i = 1; i < head.vertices.size(); i += 3) head.vertices[i] += offset;
+        }
+        Rotate(head, pitch, 0.0f, 0.0f);
+        Rotate(head, 0.0f, FacingY(facing), 0.0f);
+        Append(result, std::move(head));
+        return result;
+    }
+
+    ModelData GenerateCreateBacktank(const string& id, const string& blockName,
+        const unordered_map<string, string>& states) {
+        ModelData result = LoadBlockstateModel(blockName);
+        string facing = states.contains("facing") ? states.at("facing") : "north";
+        string prefix = id == "netherite_backtank" ? "block/netherite_backtank" : "block/copper_backtank";
+        ModelData shaft = LoadCreateModel(prefix + "/block_shaft_input", 293);
+        // Shaft stub on top; KineticBlockEntityRenderer orients with rotateToFace(horizontal facing).
+        Rotate(shaft, 0.0f, FacingY(facing), 0.0f);
+        Append(result, std::move(shaft));
+        ModelData cogs = LoadCreateModel(prefix + "/block_cogs", 294);
+        // Rest angle 0: pivot translates cancel; only Ry(180+horizontalAngle).
+        Rotate(cogs, 0.0f, 180.0f + FacingY(facing), 0.0f);
+        Append(result, std::move(cogs));
+        return result;
+    }
+
+    ModelData GenerateCreateSteamWhistle(const string& blockName,
+        const unordered_map<string, string>& states) {
+        ModelData result = LoadBlockstateModel(blockName);
+        string facing = states.contains("facing") ? states.at("facing") : "north";
+        string size = states.contains("size") ? states.at("size") : "medium";
+        string mouthPath = size == "large" ? "block/steam_whistle/large_mouth" :
+            size == "small" ? "block/steam_whistle/small_mouth" : "block/steam_whistle/medium_mouth";
+        ModelData mouth = LoadCreateModel(mouthPath, 295);
+        // offset 0: center → Ry(hA) → uncenter → T(0,0,0)
+        Rotate(mouth, 0.0f, FacingY(facing), 0.0f);
+        Append(result, std::move(mouth));
+        return result;
+    }
+
     // Flywheel / crushing_wheel / blaze cage use porting_lib:obj (same as water wheels).
     // Blaze also gets inert/idle blaze + rods (+ static flame) from heat property "blaze".
     ModelData GenerateCreateObjKinetic(const string& id, const string& blockName,
@@ -845,6 +928,22 @@ bool SpecialBlock::TryGenerateCreateBlockModel(const string& blockName,
     if (baseName == "create:clutch" || baseName == "create:gearshift" ||
         baseName == "create:sequenced_gearshift") {
         outModel = GenerateCreateSplitShaft(blockName, ParseBlockStates(blockName));
+        return !outModel.vertices.empty();
+    }
+    if (baseName == "create:fluid_valve") {
+        outModel = GenerateCreateFluidValve(blockName, ParseBlockStates(blockName));
+        return !outModel.vertices.empty();
+    }
+    if (baseName == "create:sticker") {
+        outModel = GenerateCreateSticker(blockName, ParseBlockStates(blockName));
+        return !outModel.vertices.empty();
+    }
+    if (baseName == "create:copper_backtank" || baseName == "create:netherite_backtank") {
+        outModel = GenerateCreateBacktank(baseName.substr(7), blockName, ParseBlockStates(blockName));
+        return !outModel.vertices.empty();
+    }
+    if (baseName == "create:steam_whistle") {
+        outModel = GenerateCreateSteamWhistle(blockName, ParseBlockStates(blockName));
         return !outModel.vertices.empty();
     }
     if (baseName == "create:flywheel" || baseName == "create:crushing_wheel" ||
