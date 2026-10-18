@@ -329,33 +329,72 @@ namespace {
         return result;
     }
 
-    ModelData GenerateCreateBelt(const unordered_map<string, string>& states, const NbtTagPtr& nbt) {
+    // Right-handed rotation about the block centre, same as Minecraft's
+    // PoseStack rotateX/Y/ZDegrees (Axis.XP/YP/ZP) used by Create renderers.
+    void McRotate(ModelData& model, char axis, float degrees) {
+        if (model.vertices.empty() || fmodf(degrees, 360.0f) == 0.0f) return;
+        const float rad = degrees * (float)M_PI / 180.0f;
+        const float c = roundf(cosf(rad) * 1e6f) / 1e6f, s = roundf(sinf(rad) * 1e6f) / 1e6f;
+        for (size_t i = 0; i + 2 < model.vertices.size(); i += 3) {
+            float x = model.vertices[i] - 0.5f, y = model.vertices[i + 1] - 0.5f, z = model.vertices[i + 2] - 0.5f;
+            float nx = x, ny = y, nz = z;
+            if (axis == 'x') { ny = y * c - z * s; nz = y * s + z * c; }
+            else if (axis == 'y') { nx = x * c + z * s; nz = -x * s + z * c; }
+            else { nx = x * c - y * s; ny = x * s + y * c; }
+            model.vertices[i] = nx + 0.5f;
+            model.vertices[i + 1] = ny + 0.5f;
+            model.vertices[i + 2] = nz + 0.5f;
+        }
+        DisableCulling(model);
+    }
+
+    // AngleHelper.horizontalAngle: toYRot, negated on the X axis.
+    float HorizontalAngle(const string& facing) {
+        if (facing == "west") return -90.0f;
+        if (facing == "north") return 180.0f;
+        if (facing == "east") return -270.0f;
+        return 0.0f;
+    }
+
+    void ReplaceTexturePath(ModelData& model, const string& oldPath, const string& newPath) {
+        string saveRoot = "textures";
+        if (!SaveTextureToFile("create", newPath, saveRoot)) return;
+        string savedPath = "textures/create/" + newPath + ".png";
+        RegisterTexture("create", newPath, savedPath);
+        const string oldSaved = "textures/create/" + oldPath + ".png";
+        for (auto& material : model.materials) {
+            if (material.texturePath != oldSaved && material.name != "create:" + oldPath) continue;
+            material.name = "create:" + newPath;
+            material.texturePath = savedPath;
+            material.type = DetectMaterialType("create", newPath, material.aspectRatio);
+        }
+    }
+
+    // Port of BeltRenderer (belt + pulley partials) and BeltModel (casing from the
+    // blockstate model, andesite sprite shift, covers).
+    ModelData GenerateCreateBelt(const string& blockName, const unordered_map<string, string>& states,
+        const NbtTagPtr& nbt) {
         const string facing = states.contains("facing") ? states.at("facing") : "south";
         const string slope = states.contains("slope") ? states.at("slope") : "horizontal";
         const string part = states.contains("part") ? states.at("part") : "middle";
         const bool casing = states.contains("casing") && states.at("casing") == "true";
-        const bool diagonal = slope == "upward" || slope == "downward";
-        const bool sideways = slope == "sideways";
-        const bool vertical = slope == "vertical";
-        const bool downward = slope == "downward";
+        const bool downward = slope == "downward", upward = slope == "upward";
+        const bool diagonal = downward || upward;
+        const bool sideways = slope == "sideways", vertical = slope == "vertical";
         const bool alongX = facing == "east" || facing == "west";
-        const bool alongZ = !alongX;
+        const bool positive = facing == "east" || facing == "south";
 
-        string beltPart = part == "pulley" ? "middle" : part;
-        string beltPath = diagonal ? "block/belt/diagonal_" + beltPart : "block/belt/" + beltPart;
+        bool start = part == "start", end = part == "end";
+        if (downward || (vertical && positive)) swap(start, end);
+        string piece = start ? "start" : end ? "end" : "middle";
+
         ModelData result;
-        Append(result, LoadCreateModel(beltPath, 110));
-        if (!diagonal) Append(result, LoadCreateModel(beltPath + "_bottom", 111));
-
-        float rx = ((!diagonal && slope != "horizontal") ? 90.0f : 0.0f)
-            + (downward ? 180.0f : 0.0f) + (sideways ? 90.0f : 0.0f)
-            + (vertical && alongZ ? 180.0f : 0.0f);
-        float ry = FacingY(facing)
-            + (((diagonal != alongX) && !downward) ? 180.0f : 0.0f)
-            + (sideways && alongZ ? 180.0f : 0.0f)
-            + (vertical && alongX ? 90.0f : 0.0f);
-        float rz = (sideways ? 90.0f : 0.0f) + (vertical && alongX ? 90.0f : 0.0f);
-        Rotate(result, rx, ry, rz);
+        Append(result, LoadCreateModel(diagonal ? "block/belt/diagonal_" + piece : "block/belt/" + piece, 110));
+        if (!diagonal) Append(result, LoadCreateModel("block/belt/" + piece + "_bottom", 111));
+        // center().rotateY(a).rotateZ(b).rotateX(c).uncenter(): X first, then Z, then Y.
+        McRotate(result, 'x', (!diagonal && slope != "horizontal") ? 90.0f : 0.0f);
+        McRotate(result, 'z', sideways ? 90.0f : 0.0f);
+        McRotate(result, 'y', HorizontalAngle(facing) + (upward ? 180.0f : 0.0f) + (sideways ? 270.0f : 0.0f));
 
         string dye = NbtString(nbt, "Dye");
         transform(dye.begin(), dye.end(), dye.begin(), [](unsigned char c) { return static_cast<char>(tolower(c)); });
@@ -366,35 +405,23 @@ namespace {
         }
 
         if (part != "middle") {
+            // dir = sideways ? UP : facing.getClockWise(); center, [Y90 | X90], X90, uncenter.
             ModelData pulley = LoadCreateModel("block/belt_pulley", 112);
-            if (sideways) Rotate(pulley, 180.0f, 0.0f, 0.0f);
-            else if (alongX) Rotate(pulley, 90.0f, 90.0f, 0.0f);
-            else Rotate(pulley, 90.0f, 0.0f, 0.0f);
+            McRotate(pulley, 'x', 90.0f);
+            if (sideways) McRotate(pulley, 'x', 90.0f);
+            else if (!alongX) McRotate(pulley, 'y', 90.0f); // clockwise of N/S is on the X axis
             Append(result, std::move(pulley));
         }
 
         if (casing) {
-            string casingPart = part;
-            bool negativeFacing = facing == "north" || facing == "west";
-            if (part != "pulley" && ((vertical && negativeFacing) || downward || (sideways && negativeFacing))) {
-                if (casingPart == "start") casingPart = "end";
-                else if (casingPart == "end") casingPart = "start";
-            }
-            string shape = diagonal ? "diagonal" : (vertical ? "sideways" : "horizontal");
-            ModelData casingModel = LoadCreateModel("block/belt_casing/" + shape + "_" + casingPart, 113);
-            float casingX = vertical ? 90.0f : (sideways && negativeFacing ? 180.0f : 0.0f);
-            float casingY = FacingY(facing) + (slope == "upward" ? 180.0f : 0.0f)
-                + (vertical ? 90.0f : 0.0f);
-            Rotate(casingModel, casingX, casingY, 0.0f);
+            ModelData casingModel = LoadBlockstateModel(blockName);
             string casingType = NbtString(nbt, "Casing");
-            if (casingType == "ANDESITE" || casingType == "andesite") {
-                ReplaceTexture(casingModel, "block/belt/brass_belt_casing", "block/belt/andesite_belt_casing");
-            }
+            transform(casingType.begin(), casingType.end(), casingType.begin(), [](unsigned char c) { return static_cast<char>(toupper(c)); });
+            if (casingType == "ANDESITE")
+                ReplaceTexturePath(casingModel, "block/belt/brass_belt_casing", "block/belt/andesite_belt_casing");
             Append(result, std::move(casingModel));
-
             if (NbtBool(nbt, "Covered")) {
-                bool brass = casingType == "BRASS" || casingType == "brass";
-                string cover = "block/belt_cover/" + string(brass ? "brass" : "andesite")
+                string cover = "block/belt_cover/" + string(casingType == "ANDESITE" ? "andesite" : "brass")
                     + "_belt_cover_" + (alongX ? "x" : "z");
                 Append(result, LoadCreateModel(cover, 114));
             }
@@ -849,7 +876,7 @@ bool SpecialBlock::TryGenerateCreateBlockModel(const string& blockName,
         return !outModel.vertices.empty();
     }
     if (baseName == "create:belt") {
-        outModel = GenerateCreateBelt(ParseBlockStates(blockName), blockEntityNbt);
+        outModel = GenerateCreateBelt(blockName, ParseBlockStates(blockName), blockEntityNbt);
         return !outModel.vertices.empty();
     }
     if (baseName == "create:water_wheel" || baseName == "create:large_water_wheel") {
