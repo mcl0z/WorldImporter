@@ -67,6 +67,7 @@ struct Face {
     std::array<int, 4> uvIndices;     // 四个 UV 索引
     int materialIndex;                // 材质索引
     FaceType faceDirection;           // 剔除方向
+    int8_t uvFace = -1;               // 模型里声明的面方向(FaceType), uvlock 用
     int8_t tintIndex = -1;            // 面级 tintindex（-1 表示不染色）
     // 来自零厚度贴片显式定义的正反两面（同一元素内朝向相反且完全重合）。
     // 这是"双面几何"唯一可靠的依据：合并后网格里相邻方块的接触面虽然同样共面
@@ -101,6 +102,11 @@ struct ModelData {
 
     // 共面叠加层配对(见 OverlayPair)
     std::vector<OverlayPair> overlayPairs;
+
+    // 每个面在模型 JSON 里的 uv 区域(像素)与 rotation，与 faces 一一对应；
+    // 仅在刚加载的模型上有效，供 uvlock 按原版 FaceBakery.recomputeUVs 重算。
+    struct UvSpec { float region[4]; int rotation; };
+    std::vector<UvSpec> uvSpecs;
 };
 
 // Quantized vertex coordinates, with a 1e-4 step.
@@ -211,6 +217,11 @@ namespace std {
 
 // 辅助函数:将字符串方向转换为FaceType枚举
 FaceType StringToFaceType(const std::string& dirString);
+// uvlock UV rotation (degrees, OBJ UV space) for a declared face under a blockstate x/y rotation.
+int UvLockAngle(FaceType face, int rotationX, int rotationY);
+// Vanilla FaceBakery.recomputeUVs: uv region (pixels) + face rotation under uvlock.
+void RecomputeUvLock(const float region[4], int rotation, FaceType face, int rotationX, int rotationY,
+                     float outRegion[4], int& outRotation);
 
 // 辅助函数:根据面索引获取面方向 (每4个顶点构成一个面)
 FaceType GetFaceTypeByIndex(size_t faceIndex);

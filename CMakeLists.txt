@@ -46,6 +46,14 @@ if (BUILD_TESTING AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/WorldImporter/tests/ca
     set_tests_properties(cache_init PROPERTIES TIMEOUT 30)
 endif()
 
+if (BUILD_TESTING AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/WorldImporter/tests/uvlock_tests.cpp")
+    add_executable(uvlock_tests WorldImporter/tests/uvlock_tests.cpp)
+    target_link_libraries(uvlock_tests PRIVATE WorldImporterCore)
+    wi_apply_defaults(uvlock_tests)
+    add_test(NAME uvlock COMMAND uvlock_tests)
+    set_tests_properties(uvlock PROPERTIES TIMEOUT 30)
+endif()
+
 # This harness ships with the importer; tests/ below is an optional external suite.
 if (BUILD_TESTING AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/WorldImporter/tests/biome_colors_tests.cpp")
     add_executable(biome_colors_tests WorldImporter/tests/biome_colors_tests.cpp)

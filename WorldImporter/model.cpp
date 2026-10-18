@@ -252,6 +252,111 @@ static void applyFaceRotation(ModelData& modelData, size_t faceIdx, int angle) {
     }
 }
 
+// uvlock: Minecraft (BlockMath.getUVLockTransform) turns the face UVs by
+// L2B(face)^-1 * R^-1 * L2B(rotated face). For 90-degree blockstate rotations
+// that is a quarter turn in the face plane; return it as a UV rotation angle.
+static std::vector<std::vector<float>> UvCoordsFromRegion(
+    std::vector<float> uvRegion, int rotation, const Material* material);
+
+using IMat3 = std::array<std::array<int, 3>, 3>;
+static IMat3 IMul(const IMat3& a, const IMat3& b) {
+    IMat3 r{};
+    for (int i = 0; i < 3; ++i)
+        for (int j = 0; j < 3; ++j)
+            for (int k = 0; k < 3; ++k) r[i][j] += a[i][k] * b[k][j];
+    return r;
+}
+static IMat3 ITrans(const IMat3& a) {
+    IMat3 r{};
+    for (int i = 0; i < 3; ++i)
+        for (int j = 0; j < 3; ++j) r[i][j] = a[j][i];
+    return r;
+}
+static void ICosSin(int deg, int& c, int& s) {
+    deg = ((deg % 360) + 360) % 360;
+    c = deg == 0 ? 1 : (deg == 180 ? -1 : 0);
+    s = deg == 90 ? 1 : (deg == 270 ? -1 : 0);
+}
+static IMat3 IRotX(int deg) { int c, s; ICosSin(deg, c, s); return {{{1, 0, 0}, {0, c, -s}, {0, s, c}}}; }
+static IMat3 IRotY(int deg) { int c, s; ICosSin(deg, c, s); return {{{c, 0, s}, {0, 1, 0}, {-s, 0, c}}}; }
+static std::array<int, 3> FaceNormal(FaceType f) {
+    switch (f) {
+    case UP: return {0, 1, 0};
+    case DOWN: return {0, -1, 0};
+    case NORTH: return {0, 0, -1};
+    case SOUTH: return {0, 0, 1};
+    case WEST: return {-1, 0, 0};
+    default: return {1, 0, 0};
+    }
+}
+static IMat3 LocalToBlock(FaceType f) {
+    switch (f) {
+    case EAST: return IRotY(90);
+    case WEST: return IRotY(-90);
+    case NORTH: return IRotY(180);
+    case UP: return IRotX(-90);
+    case DOWN: return IRotX(90);
+    default: return IRotY(0);
+    }
+}
+int UvLockAngle(FaceType face, int rotationX, int rotationY) {
+    if (face != UP && face != DOWN && face != NORTH && face != SOUTH && face != WEST && face != EAST) return 0;
+    const IMat3 r = IMul(IRotY(-rotationY), IRotX(-rotationX));
+    const auto n = FaceNormal(face);
+    std::array<int, 3> rn{};
+    for (int i = 0; i < 3; ++i) rn[i] = r[i][0] * n[0] + r[i][1] * n[1] + r[i][2] * n[2];
+    FaceType rotated = EAST;
+    for (FaceType f : {UP, DOWN, NORTH, SOUTH, WEST, EAST})
+        if (FaceNormal(f) == rn) rotated = f;
+    const IMat3 m = IMul(IMul(ITrans(LocalToBlock(face)), ITrans(r)), LocalToBlock(rotated));
+    // m * (1,0,0) = (cos, sin) in Minecraft UV space (v down); OBJ UVs have v up.
+    const int c = m[0][0], s = m[1][0];
+    const int mcAngle = c == 1 ? 0 : (c == -1 ? 180 : (s == 1 ? 90 : 270));
+    return (360 - mcAngle) % 360;
+}
+
+static IMat3 UvLockMatrix(FaceType face, int rotationX, int rotationY) {
+    const IMat3 r = IMul(IRotY(-rotationY), IRotX(-rotationX));
+    const auto n = FaceNormal(face);
+    std::array<int, 3> rn{};
+    for (int i = 0; i < 3; ++i) rn[i] = r[i][0] * n[0] + r[i][1] * n[1] + r[i][2] * n[2];
+    FaceType rotated = EAST;
+    for (FaceType f : {UP, DOWN, NORTH, SOUTH, WEST, EAST})
+        if (FaceNormal(f) == rn) rotated = f;
+    return IMul(IMul(ITrans(LocalToBlock(face)), ITrans(r)), LocalToBlock(rotated));
+}
+
+void RecomputeUvLock(const float region[4], int rotation, FaceType face, int rotationX, int rotationY,
+                     float outRegion[4], int& outRotation) {
+    const IMat3 m = UvLockMatrix(face, rotationX, rotationY);
+    const int steps = ((rotation % 360) + 360) % 360 / 90;
+    auto getU = [&](int i) { const int j = (i + steps) % 4; return region[(j != 0 && j != 1) ? 2 : 0]; };
+    auto getV = [&](int i) { const int j = (i + steps) % 4; return region[(j != 0 && j != 3) ? 3 : 1]; };
+    auto reverse = [&](int i) { return (i + 4 - steps) % 4; };
+    // blockCenterToCorner: rotate around (0.5, 0.5, 0.5); the face plane maps onto itself.
+    auto transform = [&](float u, float v, float& tu, float& tv) {
+        const float x = u / 16.0f - 0.5f, y = v / 16.0f - 0.5f, z = -0.5f;
+        tu = 16.0f * (m[0][0] * x + m[0][1] * y + m[0][2] * z + 0.5f);
+        tv = 16.0f * (m[1][0] * x + m[1][1] * y + m[1][2] * z + 0.5f);
+    };
+    auto signum = [](float x) { return x > 0.0f ? 1 : (x < 0.0f ? -1 : 0); };
+    const float f = getU(reverse(0)), g = getV(reverse(0));
+    const float j = getU(reverse(2)), k = getV(reverse(2));
+    float h, i, l, mm;
+    transform(f, g, h, i);
+    transform(j, k, l, mm);
+    if (signum(j - f) == signum(l - h)) { outRegion[0] = h; outRegion[2] = l; }
+    else { outRegion[0] = l; outRegion[2] = h; }
+    if (signum(k - g) == signum(mm - i)) { outRegion[1] = i; outRegion[3] = mm; }
+    else { outRegion[1] = mm; outRegion[3] = i; }
+    // Vanilla: floorMod(-round(atan2(rotated dir) / 90) * 90, 360).
+    int c, s;
+    ICosSin(rotation, c, s);
+    const int rx = m[0][0] * c + m[0][1] * s, ry = m[1][0] * c + m[1][1] * s;
+    const int quarter = rx == 1 ? 0 : (rx == -1 ? 2 : (ry == 1 ? 1 : -1));
+    outRotation = ((-quarter * 90) % 360 + 360) % 360;
+}
+
 // 主逻辑优化(预处理面类型+并行处理)
 void ApplyRotationToUV(ModelData& modelData, int rotationX, int rotationY) {
     createUniqueUVs(modelData);
@@ -289,119 +394,34 @@ void ApplyRotationToUV(ModelData& modelData, int rotationX, int rotationY) {
         faceTypes.push_back(faceType);
     }
 
-    // 根据旋转组合处理UV旋转
-    auto getCase = [rotationX, rotationY]() {
-        return std::to_string(rotationX) + "-" + std::to_string(rotationY);
-    };
-
     // OpenMP并行处理
 // #pragma omp parallel for
+    const bool exact = modelData.uvSpecs.size() == modelData.faces.size();
     for (int i = 0; i < static_cast<int>(faceTypes.size()); ++i) {
-        const FaceType face = faceTypes[i];
-        int angle = 0;
-
-        const std::string caseKey = getCase();
-
-        if (caseKey == "0-0") {
-            // 不旋转
-        }
-        else if (caseKey == "0-90" || caseKey == "0-180" || caseKey == "0-270") {
-            if (face == UP) angle = -rotationY;
-            else if (face == DOWN) angle = -rotationY;
-        }
-        else if (caseKey == "90-0") {
-            if (face == UP) angle = 180;
-            else if (face == EAST) angle = 180;
-            else if (face == WEST) angle = 90;
-            else if (face == NORTH) angle = -90;
-        }
-        else if (caseKey == "90-90") {
-            if (face == UP) angle = 180;
-            else if (face == EAST) angle = -90;
-            else if (face == DOWN) angle = -90;
-            else if (face == WEST) angle = 90;
-            else if (face == NORTH) angle = -90;
-        }
-        else if (caseKey == "90-180") {
-            if (face == NORTH) angle = 180;
-            else if (face == DOWN) angle = 180;
-            else if (face == WEST) angle = 90;
-            else if (face == UP) angle = -90;
-        }
-        else if (caseKey == "90-270") {
-            if (face == UP) angle = 180;
-            else if (face == EAST) angle = 90;
-            else if (face == DOWN) angle = 90;
-            else if (face == WEST) angle = 90;
-            else if (face == NORTH) angle = -90;
-        }
-        else if (caseKey == "180-0") {
-            if (face == UP) angle = rotationY;
-            else if (face == EAST) angle = 180;
-            else if (face == SOUTH) angle = 180;
-            else if (face == WEST) angle = 180;
-            else if (face == NORTH) angle = 180;
-            else if (face == DOWN) angle = rotationY;
-        }
-        else if (caseKey == "180-90") {
-            if (face == UP) angle = rotationY;
-            else if (face == EAST) angle = 180;
-            else if (face == SOUTH) angle = 180;
-            else if (face == WEST) angle = 180;
-            else if (face == NORTH) angle = 180;
-            else if (face == DOWN) angle = rotationY;
-        }
-        else if (caseKey == "180-180") {
-            if (face == UP) angle = rotationY;
-            else if (face == EAST) angle = 180;
-            else if (face == SOUTH) angle = 180;
-            else if (face == WEST) angle = 180;
-            else if (face == NORTH) angle = 180;
-            else if (face == DOWN) angle = rotationY;
-        }
-        else if (caseKey=="180-270") {
-            if (face == UP) angle = rotationY;
-            else if (face == EAST) angle = 180;
-            else if (face == SOUTH) angle = 180;
-            else if (face == WEST) angle = 180;
-            else if (face == NORTH) angle = 180;
-            else if (face == DOWN) angle = rotationY;
-        }
-        else if (caseKey == "270-0") {
-            if (face == EAST) angle = 180;
-            else if (face == WEST) angle = -90;
-            else if (face == NORTH) angle = 90;
-            else if (face == SOUTH) angle = 180;
-        }
-        else if (caseKey == "270-90") {
-            if (face == EAST) angle = 90;
-            else if (face == DOWN) angle = 90;
-            else if (face == WEST) angle = -90;
-            else if (face == NORTH) angle = 90;
-            else if (face == SOUTH) angle = 180;
-        }
-        else if (caseKey == "270-180") {
-            if (face == DOWN) angle = 180;
-            else if (face == WEST) angle = -90;
-            else if (face == NORTH) angle = 90;
-            else if (face == SOUTH) angle = 180;
-        }
-        else if (caseKey == "270-270") {
-            if (face == EAST) angle = -90;
-            else if (face == DOWN) angle = -90;
-            else if (face == WEST) angle = -90;
-            else if (face == NORTH) angle = 90;
-            else if (face == SOUTH) angle = 180;
-        }
-        else {
-            // 未处理的旋转组合
-            static std::unordered_set<std::string> warnedCases;
-            if (warnedCases.find(caseKey) == warnedCases.end()) {
-                warnedCases.insert(caseKey);
-                std::cerr << "Bad UV lock rotation in model: " << caseKey << std::endl;
+        Face& face = modelData.faces[i];
+        const bool declared = face.uvFace >= UP && face.uvFace <= EAST;
+        if (exact && declared) {
+            // 与原版一致: 用模型里的 uv 区域和 rotation 重算, 而不是旋转已算好的 UV。
+            const auto& spec = modelData.uvSpecs[i];
+            float region[4];
+            int rotation = 0;
+            RecomputeUvLock(spec.region, spec.rotation, static_cast<FaceType>(face.uvFace),
+                            rotationX, rotationY, region, rotation);
+            const Material* material =
+                (face.materialIndex >= 0 && static_cast<size_t>(face.materialIndex) < modelData.materials.size())
+                ? &modelData.materials[face.materialIndex] : nullptr;
+            const auto uvs = UvCoordsFromRegion({region[0], region[1], region[2], region[3]}, rotation, material);
+            for (int j = 0; j < 4 && j < static_cast<int>(uvs.size()); ++j) {
+                const int uvIdx = face.uvIndices[j];
+                if (uvIdx >= 0 && static_cast<size_t>(uvIdx) * 2 + 1 < modelData.uvCoordinates.size()) {
+                    modelData.uvCoordinates[uvIdx * 2] = uvs[j][0];
+                    modelData.uvCoordinates[uvIdx * 2 + 1] = uvs[j][1];
+                }
             }
+            continue;
         }
-
+        const int angle = UvLockAngle(declared ? static_cast<FaceType>(face.uvFace) : faceTypes[i],
+                                      rotationX, rotationY);
         if (angle != 0) {
             applyFaceRotation(modelData, i, angle);
         }
@@ -939,12 +959,15 @@ void RenameBlockMaterials(ModelData& model, const std::string& namespaceName, co
 
 // 计算面的最终 UV 坐标(显式 uv、镜像翻转、动态贴图 V 缩放、90° 旋转)。
 // 面重叠配对比较与实际写出共用同一份逻辑,保证两层规格比较一致。
-static std::vector<std::vector<float>> ComputeFaceUvCoords(
+static std::vector<std::vector<float>> UvCoordsFromRegion(
+    std::vector<float> uvRegion, int rotation, const Material* material);
+
+// 面的 uv 区域(像素): 显式 uv 优先, 否则按原版由元素范围推导。
+static std::vector<float> FaceUvRegion(
     const std::string& faceName,
     float x1, float y1, float z1,
     float x2, float y2, float z2,
-    const nlohmann::json& faceData,
-    const Material* material)
+    const nlohmann::json& faceData)
 {
     std::vector<float> uvRegion;
     if (faceName == "down") {
@@ -979,6 +1002,24 @@ static std::vector<std::vector<float>> ComputeFaceUvCoords(
             uv[3].get<float>()
         };
     }
+    return uvRegion;
+}
+
+static std::vector<std::vector<float>> ComputeFaceUvCoords(
+    const std::string& faceName,
+    float x1, float y1, float z1,
+    float x2, float y2, float z2,
+    const nlohmann::json& faceData,
+    const Material* material)
+{
+    std::vector<float> uvRegion = FaceUvRegion(faceName, x1, y1, z1, x2, y2, z2, faceData);
+    if (uvRegion.empty()) return {};
+    return UvCoordsFromRegion(std::move(uvRegion), faceData.value("rotation", 0), material);
+}
+
+static std::vector<std::vector<float>> UvCoordsFromRegion(
+    std::vector<float> uvRegion, int rotation, const Material* material)
+{
 
     // 检测UV区域是否有镜像翻转
     bool flipX = uvRegion[0] > uvRegion[2];
@@ -1018,7 +1059,6 @@ static std::vector<std::vector<float>> ComputeFaceUvCoords(
         std::swap(uvCoords[3], uvCoords[2]);
     }
 
-    int rotation = faceData.value("rotation", 0);
     int steps = ((rotation % 360) + 360) % 360 / 90;
     if (steps != 0) {
         std::vector<std::vector<float>> rotatedUV(4);
@@ -1532,6 +1572,13 @@ void processElements(const nlohmann::json& modelJson, ModelData& data,
                         }
                     }
                     data.faces.push_back(newFace);
+                    {
+                        ModelData::UvSpec spec{};
+                        const auto region = FaceUvRegion(faceName, x1, y1, z1, x2, y2, z2, face.value());
+                        for (int k = 0; k < 4 && k < static_cast<int>(region.size()); ++k) spec.region[k] = region[k];
+                        spec.rotation = face.value().value("rotation", 0);
+                        data.uvSpecs.push_back(spec);
+                    }
 
                     if (face.value().contains("texture")) {
                         std::string texture = face.value()["texture"];
@@ -1590,6 +1637,7 @@ void processElements(const nlohmann::json& modelJson, ModelData& data,
                     
                     // 将字符串方向转换为枚举类型并添加到faceDirections
                     data.faces.back().faceDirection = StringToFaceType(faceDirection);
+                    data.faces.back().uvFace = static_cast<int8_t>(StringToFaceType(faceName));
                     faceId++;
                 }
 
