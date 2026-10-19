@@ -2,6 +2,8 @@
 #include "fileutils.h"
 #include "include/stb_image.h"
 #include <Windows.h>   
+#undef min
+#undef max
 #include <iostream>
 #include <fstream>
 #include <chrono>

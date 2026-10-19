@@ -11,6 +11,8 @@
 #include "GlobalCache.h"    // 贴图缓存
 #include "fileutils.h"      // string_to_wstring
 #include <Windows.h>
+#undef min
+#undef max
 #include <fstream>
 #include <sstream>
 #include <mutex>

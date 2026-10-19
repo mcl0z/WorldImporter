@@ -7,6 +7,8 @@
 #include <random>
 #include <numeric>
 #include <Windows.h>
+#undef min
+#undef max
 #include <iostream>
 #include <sstream>
 #include <mutex>

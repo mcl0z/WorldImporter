@@ -3,6 +3,8 @@
 #include "fileutils.h"
 #include "include/stb_image_write.h"
 #include <Windows.h>
+#undef min
+#undef max
 #include <sstream>
 #include <mutex>
 #include <unordered_set>

@@ -3,6 +3,8 @@
 #include "SpecialBlock.h"
 #include "HangingSignModel.h"
 #include <Windows.h>   
+#undef min
+#undef max
 #include <iostream>
 #include <fstream>
 #include <string>

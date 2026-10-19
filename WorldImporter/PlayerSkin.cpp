@@ -7,6 +7,8 @@
 
 #include <Windows.h>
 
+#undef min
+#undef max
 #include <cctype>
 #include <climits>
 #include <condition_variable>
