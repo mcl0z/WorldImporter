@@ -36,6 +36,7 @@ EntityAffine EntityAffine::RX(double r) { EntityAffine a; double c = std::cos(r)
 EntityAffine EntityAffine::RY(double r) { EntityAffine a; double c = std::cos(r), s = std::sin(r); a.m[0][0] = c; a.m[0][2] = s; a.m[2][0] = -s; a.m[2][2] = c; return a; }
 EntityAffine EntityAffine::RZ(double r) { EntityAffine a; double c = std::cos(r), s = std::sin(r); a.m[0][0] = c; a.m[0][1] = -s; a.m[1][0] = s; a.m[1][1] = c; return a; }
 EntityAffine EntityAffine::RYDeg(double d) { return RY(d * kPi / 180.0); }
+EntityAffine EntityAffine::RXDeg(double d) { return RX(d * kPi / 180.0); }
 EntityAffine EntityAffine::RZDeg(double d) { return RZ(d * kPi / 180.0); }
 
 bool EntityModel::Exists(const std::string& family, const std::string& id) { return FindLayer(family, id) >= 0; }

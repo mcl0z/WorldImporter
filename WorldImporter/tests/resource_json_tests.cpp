@@ -35,10 +35,10 @@ void run(const std::filesystem::path& root) {
     JarReader reader(jar.wstring());
     require(reader.open(), "open fixture");
     std::unordered_map<std::string, std::vector<unsigned char>> textures, colormaps, ctmTextures;
-    std::unordered_map<std::string, Json> blockstates, models, mcmeta, biomes, atlases;
+    std::unordered_map<std::string, Json> blockstates, models, mcmeta, biomes, atlases, paintings;
     std::unordered_map<std::string, std::string> modelAssets, ctmProperties;
     reader.cacheAllResources(textures, blockstates, models, modelAssets, mcmeta, biomes,
-        colormaps, ctmProperties, ctmTextures, atlases);
+        colormaps, ctmProperties, ctmTextures, atlases, paintings);
     require(models.count("test:wire/15") == 1, "model with trailing brace must load");
     require(models.at("test:wire/15").at("parent") == "test:wire/template", "model parent kept");
     require(models.at("test:wire/15").at("textures").at("0") == "test:wire/15", "model textures kept");
