@@ -82,6 +82,20 @@ if (BUILD_TESTING AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/WorldImporter/tests/pa
     set_tests_properties(palette_format PROPERTIES TIMEOUT 30)
 endif()
 
+# Pure sign-text helpers (no jar, no font cache). Links the extracted sources
+# directly rather than WorldImporterCore so it stays fast.
+if (BUILD_TESTING AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/WorldImporter/tests/sign_text_tests.cpp")
+    add_executable(sign_text_tests
+        WorldImporter/tests/sign_text_tests.cpp
+        WorldImporter/signtext_style.cpp
+        WorldImporter/signtext_unihex.cpp
+        WorldImporter/signtext_hash.cpp)
+    target_include_directories(sign_text_tests PRIVATE WorldImporter)
+    wi_apply_defaults(sign_text_tests)
+    add_test(NAME sign_text COMMAND sign_text_tests)
+    set_tests_properties(sign_text PROPERTIES TIMEOUT 30)
+endif()
+
 if (BUILD_TESTING AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/WorldImporter/tests/resource_json_tests.cpp")
     add_executable(resource_json_tests WorldImporter/tests/resource_json_tests.cpp)
     target_link_libraries(resource_json_tests PRIVATE WorldImporterCore)
