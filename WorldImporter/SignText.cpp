@@ -1,4 +1,7 @@
 #include "SignText.h"
+#include "signtext_hash.h"
+#include "signtext_style.h"
+#include "signtext_unihex.h"
 
 #include "config.h"
 #include "decompressor.h"
@@ -49,7 +52,6 @@
 namespace {
 
 constexpr int kNbtTextDataVersion = 4325;
-constexpr int kBlackGlowOutline = 0xF0EBCC;
 
 enum class SignKind { None, Standing, Wall, Hanging, WallHanging };
 enum class StringMode { Json, Literal, Heuristic };
@@ -105,80 +107,19 @@ struct PlacedGlyph {
     int color = 0;
 };
 
-// Resolved style. Unset fields are not stored: inheritance happens in RawStyle
-// before a run is built. hasColor false means "use the sign's default colour".
-struct RunStyle {
-    bool hasColor = false;
-    int color = 0;
-    bool bold = false;
-    bool italic = false;
-    bool underlined = false;
-    bool strikethrough = false;
-    bool obfuscated = false;
-
-    bool affectsPixels() const {
-        return hasColor || bold || italic || underlined || strikethrough;
-    }
-};
-
-// Tri-state flags: -1 inherits, 0/1 are explicit. Matches Style.applyTo.
-struct RawStyle {
-    bool hasColor = false;
-    int color = 0;
-    int bold = -1;
-    int italic = -1;
-    int underlined = -1;
-    int strikethrough = -1;
-    int obfuscated = -1;
-
-    RawStyle ApplyTo(const RawStyle& parent) const {
-        RawStyle out = parent;
-        if (hasColor) {
-            out.hasColor = true;
-            out.color = color;
-        }
-        if (bold >= 0) out.bold = bold;
-        if (italic >= 0) out.italic = italic;
-        if (underlined >= 0) out.underlined = underlined;
-        if (strikethrough >= 0) out.strikethrough = strikethrough;
-        if (obfuscated >= 0) out.obfuscated = obfuscated;
-        return out;
-    }
-
-    RunStyle Resolve() const {
-        RunStyle style;
-        style.hasColor = hasColor;
-        style.color = color & 0xFFFFFF;
-        style.bold = bold == 1;
-        style.italic = italic == 1;
-        style.underlined = underlined == 1;
-        style.strikethrough = strikethrough == 1;
-        style.obfuscated = obfuscated == 1;
-        return style;
-    }
-};
-
-struct TextRun {
-    std::string text;
-    RunStyle style;
-};
-
-struct StyledLine {
-    std::vector<TextRun> runs;
-
-    std::string Plain() const {
-        std::string out;
-        for (const auto& run : runs) out += run.text;
-        return out;
-    }
-
-    bool HasStyle() const {
-        for (const auto& run : runs) {
-            if (run.style.affectsPixels()) return true;
-        }
-        return false;
-    }
-};
+// Resolved style, tri-state inheritance (RawStyle), StyledLine and the colour
+// helpers now live in signtext_style.h so they can be unit-tested.
+using signtext::ApplyLegacyCode;
+using signtext::DarkColor;
+using signtext::DarkenRgb;
+using signtext::DyeTextColor;
+using signtext::NamedChatColor;
+using signtext::ParseColorString;
+using signtext::ParseHexColor;
+using signtext::RawStyle;
+using signtext::RunStyle;
+using signtext::StyledLine;
+using signtext::TextRun;
 
 FontLib gFont;
 std::once_flag gFontOnce;
@@ -203,10 +144,8 @@ struct PendingProvider {
     std::vector<SizeOverride> overrides;
 };
 
-struct HexLine {
-    int bitWidth = 0;
-    std::array<uint32_t, 16> rows{};
-};
+// HexLine and the unihex parsers now live in signtext_unihex.h.
+using signtext::HexLine;
 
 std::vector<PendingProvider> gPending;
 std::unordered_map<uint32_t, Glyph> gFallback;
@@ -267,101 +206,6 @@ bool TagFlag(const NbtTagPtr& tag) {
     if (tag->type == TagType::SHORT && tag->payload.size() >= 2) return bytesToShort(tag->payload) != 0;
     if (tag->type == TagType::INT && tag->payload.size() >= 4) return bytesToInt(tag->payload) != 0;
     return false;
-}
-
-int DyeTextColor(const std::string& name) {
-    const std::string key = ToLower(name);
-    static const std::pair<const char*, int> kColors[] = {
-        {"white", 16777215},
-        {"orange", 16738335},
-        {"magenta", 16711935},
-        {"light_blue", 10141901},
-        {"yellow", 16776960},
-        {"lime", 12582656},
-        {"pink", 16738740},
-        {"gray", 8421504},
-        {"light_gray", 13882323},
-        {"cyan", 65535},
-        {"purple", 10494192},
-        {"blue", 255},
-        {"brown", 9127187},
-        {"green", 65280},
-        {"red", 16711680},
-        {"black", 0},
-    };
-    for (const auto& entry : kColors) {
-        if (key == entry.first) return entry.second;
-    }
-    return 0;
-}
-
-int DarkChannel(int channel) {
-    return static_cast<int>(static_cast<double>(channel) * 0.4);
-}
-
-int DarkenRgb(int rgb) {
-    const int r = DarkChannel((rgb >> 16) & 255);
-    const int g = DarkChannel((rgb >> 8) & 255);
-    const int b = DarkChannel(rgb & 255);
-    return (r << 16) | (g << 8) | b;
-}
-
-// SignRenderer.getDarkColor. Black glowing text uses the cream outline constant.
-int DarkColor(int textRgb, bool glowing) {
-    if (textRgb == 0 && glowing) return kBlackGlowOutline;
-    return DarkenRgb(textRgb);
-}
-
-// ChatFormatting colours (not dye colours). Names match TextColor.parseColor.
-bool NamedChatColor(const std::string& name, int& rgb) {
-    static const std::pair<const char*, int> kColors[] = {
-        {"black", 0},
-        {"dark_blue", 170},
-        {"dark_green", 43520},
-        {"dark_aqua", 43690},
-        {"dark_red", 11141120},
-        {"dark_purple", 11141290},
-        {"gold", 16755200},
-        {"gray", 11184810},
-        {"dark_gray", 5592405},
-        {"blue", 5592575},
-        {"green", 5635925},
-        {"aqua", 5636095},
-        {"red", 16733525},
-        {"light_purple", 16733695},
-        {"yellow", 16777045},
-        {"white", 16777215},
-    };
-    for (const auto& entry : kColors) {
-        if (name == entry.first) {
-            rgb = entry.second;
-            return true;
-        }
-    }
-    return false;
-}
-
-// TextColor.parseColor: '#' + hex, value in 0..0xFFFFFF.
-bool ParseHexColor(const std::string& text, int& rgb) {
-    if (text.size() < 2 || text[0] != '#') return false;
-    int value = 0;
-    for (size_t i = 1; i < text.size(); ++i) {
-        const char c = text[i];
-        int digit = -1;
-        if (c >= '0' && c <= '9') digit = c - '0';
-        else if (c >= 'a' && c <= 'f') digit = c - 'a' + 10;
-        else if (c >= 'A' && c <= 'F') digit = c - 'A' + 10;
-        else return false;
-        value = (value << 4) | digit;
-        if (value > 0xFFFFFF) return false;
-    }
-    rgb = value;
-    return true;
-}
-
-bool ParseColorString(const std::string& text, int& rgb) {
-    if (ParseHexColor(text, rgb)) return true;
-    return NamedChatColor(text, rgb);
 }
 
 int JsonTri(const nlohmann::json& node, const char* key) {
@@ -517,18 +361,6 @@ void ReadFourLines(const NbtTagPtr& messages, StringMode mode, std::array<Styled
 bool SideHasText(const std::array<StyledLine, 4>& lines) {
     for (const auto& line : lines) {
         if (!line.Plain().empty()) return true;
-    }
-    return false;
-}
-
-bool LineNeedsStyleHash(const StyledLine& line) {
-    if (line.HasStyle()) return true;
-    for (const auto& run : line.runs) {
-        const auto* bytes = reinterpret_cast<const unsigned char*>(run.text.data());
-        const size_t n = run.text.size();
-        for (size_t i = 0; i + 1 < n; ++i) {
-            if (bytes[i] == 0xC2 && bytes[i + 1] == 0xA7) return true;
-        }
     }
     return false;
 }
@@ -814,90 +646,6 @@ void LogUnifont(const std::string& path) {
     });
 }
 
-int DecodeHexDigit(char c) {
-    if (c >= '0' && c <= '9') return c - '0';
-    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-    return -1;
-}
-
-bool ReadHexLine(const std::string& digits, HexLine& line) {
-    const size_t n = digits.size();
-    int perRow = 0;
-    int shift = 0;
-    if (n == 32) {
-        perRow = 2;
-        shift = 24;
-        line.bitWidth = 8;
-    } else if (n == 64) {
-        perRow = 4;
-        shift = 16;
-        line.bitWidth = 16;
-    } else if (n == 96) {
-        perRow = 6;
-        shift = 8;
-        line.bitWidth = 24;
-    } else if (n == 128) {
-        perRow = 8;
-        shift = 0;
-        line.bitWidth = 32;
-    } else {
-        return false;
-    }
-    size_t cursor = 0;
-    for (int row = 0; row < 16; ++row) {
-        uint32_t value = 0;
-        for (int d = 0; d < perRow; ++d) {
-            const int digit = DecodeHexDigit(digits[cursor++]);
-            if (digit < 0) return false;
-            value = (value << 4) | static_cast<uint32_t>(digit);
-        }
-        line.rows[row] = value << shift;
-    }
-    return true;
-}
-
-bool ParseHex(const std::string& data, std::unordered_map<uint32_t, HexLine>& out) {
-    size_t i = 0;
-    const size_t n = data.size();
-    int lineNo = 0;
-    auto nextByte = [&]() -> int {
-        if (i >= n) return -1;
-        return static_cast<unsigned char>(data[i++]);
-    };
-    while (true) {
-        std::string code;
-        bool colon = false;
-        while (true) {
-            const int c = nextByte();
-            if (c < 0) break;
-            if (c == ':') {
-                colon = true;
-                break;
-            }
-            code.push_back(static_cast<char>(c));
-        }
-        if (code.empty() && !colon) return true;
-        if (!colon || (code.size() != 4 && code.size() != 5 && code.size() != 6)) return false;
-        uint32_t cp = 0;
-        for (char ch : code) {
-            const int digit = DecodeHexDigit(ch);
-            if (digit < 0) return false;
-            cp = (cp << 4) | static_cast<uint32_t>(digit);
-        }
-        std::string bits;
-        while (true) {
-            const int c = nextByte();
-            if (c < 0 || c == '\n') break;
-            bits.push_back(static_cast<char>(c));
-        }
-        HexLine line;
-        if (!ReadHexLine(bits, line)) return false;
-        out[cp] = line;
-        ++lineNo;
-        (void)lineNo;
-    }
-}
-
 void AddPendingUnihex(const nlohmann::json& provider) {
     if (!provider.contains("hex_file") || !provider["hex_file"].is_string()) return;
     if (!provider.contains("size_overrides") || !provider["size_overrides"].is_array()) return;
@@ -1136,50 +884,6 @@ const FontLib& Font() {
     return gFont;
 }
 
-uint64_t HashText(const std::array<StyledLine, 4>& lines, int rgb, bool glowing, int lineHeight, int maxWidth) {
-    uint64_t hash = 14695981039346656037ull;
-    auto mix = [&hash](unsigned char byte) {
-        hash ^= byte;
-        hash *= 1099511628211ull;
-    };
-    auto mixString = [&mix](const std::string& text) {
-        for (unsigned char c : text) mix(c);
-        mix(0);
-    };
-    // Unstyled lines mix only the plain text, same bytes as before styles existed.
-    for (const auto& line : lines) mixString(line.Plain());
-    mixString(std::to_string(rgb));
-    mix(glowing ? 1 : 0);
-    mixString(std::to_string(lineHeight));
-    mixString(std::to_string(maxWidth));
-    bool styled = false;
-    for (const auto& line : lines) {
-        if (LineNeedsStyleHash(line)) styled = true;
-    }
-    if (styled) {
-        mix(1);
-        for (const auto& line : lines) {
-            for (const auto& run : line.runs) {
-                unsigned char flags = 0;
-                if (run.style.bold) flags |= 1;
-                if (run.style.italic) flags |= 2;
-                if (run.style.underlined) flags |= 4;
-                if (run.style.strikethrough) flags |= 8;
-                if (run.style.hasColor) flags |= 16;
-                mix(flags);
-                if (run.style.hasColor) {
-                    mix(static_cast<unsigned char>((run.style.color >> 16) & 255));
-                    mix(static_cast<unsigned char>((run.style.color >> 8) & 255));
-                    mix(static_cast<unsigned char>(run.style.color & 255));
-                }
-                mixString(run.text);
-            }
-            mix(2);
-        }
-    }
-    return hash;
-}
-
 std::string Hex64(uint64_t value) {
     char buffer[17];
     std::snprintf(buffer, sizeof(buffer), "%016" PRIx64, value);
@@ -1201,6 +905,8 @@ std::string LegacyPageJarPath(const std::string& templ, int page) {
     }
     return "assets/" + ns + "/textures/" + path;
 }
+
+void BuildFallback();
 
 void LoadLegacyPage(int page) {
     if (gLegacyTemplate.empty() || page < 0 || page >= 256) return;
@@ -1228,6 +934,12 @@ void LoadLegacyPage(int page) {
 
 bool EnsureLegacyPage(int page) {
     if (page < 0 || page >= 256) return false;
+    // gLegacyTemplate is only assigned by LoadLegacyProvider, which runs inside
+    // BuildFallback. Without this, calling EnsureLegacyPage first burns the
+    // once_flag on a no-op and the page can never load (call_once does not retry
+    // after an early return). Build the fallback first so the template exists.
+    std::call_once(gFallbackOnce, BuildFallback);
+    if (gLegacyTemplate.empty()) return false;
     std::call_once(gLegacyOnce[page], [page] { LoadLegacyPage(page); });
     const FontImage& image = gLegacyPages[page];
     return image.width == 256 && image.height == 256;
@@ -1347,51 +1059,6 @@ const Glyph* FindGlyph(const FontLib& font, uint32_t cp) {
 // GlyphInfo.getBoldOffset: 1 for bitmap, 0.5 for unihex / legacy (oversample 2).
 float BoldOffset(const Glyph& glyph) {
     return glyph.oversample >= 1.5f ? 0.5f : 1.0f;
-}
-
-// StringDecomposer.iterateFormatted + Style.applyLegacyFormat. §r restores `base`.
-void ApplyLegacyCode(RunStyle& current, const RunStyle& base, uint32_t code) {
-    if (code >= 'A' && code <= 'Z') code = code - 'A' + 'a';
-    if (code > 127) return;
-    const char c = static_cast<char>(code);
-    switch (c) {
-        case 'k': current.obfuscated = true; return;
-        case 'l': current.bold = true; return;
-        case 'm': current.strikethrough = true; return;
-        case 'n': current.underlined = true; return;
-        case 'o': current.italic = true; return;
-        case 'r': current = base; return;
-        default: break;
-    }
-    int rgb = 0;
-    bool color = false;
-    switch (c) {
-        case '0': rgb = 0; color = true; break;
-        case '1': rgb = 170; color = true; break;
-        case '2': rgb = 43520; color = true; break;
-        case '3': rgb = 43690; color = true; break;
-        case '4': rgb = 11141120; color = true; break;
-        case '5': rgb = 11141290; color = true; break;
-        case '6': rgb = 16755200; color = true; break;
-        case '7': rgb = 11184810; color = true; break;
-        case '8': rgb = 5592405; color = true; break;
-        case '9': rgb = 5592575; color = true; break;
-        case 'a': rgb = 5635925; color = true; break;
-        case 'b': rgb = 5636095; color = true; break;
-        case 'c': rgb = 16733525; color = true; break;
-        case 'd': rgb = 16733695; color = true; break;
-        case 'e': rgb = 16777045; color = true; break;
-        case 'f': rgb = 16777215; color = true; break;
-        default: break;
-    }
-    if (!color) return;
-    current.hasColor = true;
-    current.color = rgb;
-    current.bold = false;
-    current.italic = false;
-    current.underlined = false;
-    current.strikethrough = false;
-    current.obfuscated = false;
 }
 
 std::vector<PlacedGlyph> LayoutLine(const StyledLine& line, float lineY, int maxWidth, const FontLib& font) {
