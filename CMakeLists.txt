@@ -140,6 +140,14 @@ if (BUILD_TESTING AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/WorldImporter/tests/bi
     set_tests_properties(biome_colors PROPERTIES TIMEOUT 30 RESOURCE_LOCK biome_texture_output)
 endif()
 
+if (BUILD_TESTING AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/WorldImporter/tests/tintindex_fallback_tests.cpp")
+    add_executable(tintindex_fallback_tests WorldImporter/tests/tintindex_fallback_tests.cpp)
+    target_link_libraries(tintindex_fallback_tests PRIVATE WorldImporterCore)
+    wi_apply_defaults(tintindex_fallback_tests)
+    add_test(NAME tintindex_fallback COMMAND tintindex_fallback_tests)
+    set_tests_properties(tintindex_fallback PROPERTIES TIMEOUT 30)
+endif()
+
 if (BUILD_TESTING AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/WorldImporter/tests/variant_pick_tests.cpp")
     add_executable(variant_pick_tests WorldImporter/tests/variant_pick_tests.cpp)
     target_link_libraries(variant_pick_tests PRIVATE WorldImporterCore)
