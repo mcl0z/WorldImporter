@@ -219,7 +219,24 @@ void ApplyTintToBlockModel(ModelData& model, const std::string& blockStateName) 
             break;
         }
     }
-    if (!hasTintedFace) return;
+    // 资源包常把原版树叶/草模型改写成无 tintindex 的 elements。
+    // 原版客户端仍按方块类型染色；这里对已知原版色型回退为 tintindex 0，
+    // 避免导入后树叶/草变成未染色灰色。
+    // grass_block 顶面/overlay 才染色、侧面泥土不染色，不能整块回退。
+    if (!hasTintedFace) {
+        if (ExtractNamespace(blockStateName) == "minecraft" &&
+            ExtractBaseName(blockStateName) == "grass_block") {
+            return;
+        }
+        TintResult fallback = ResolveTint(blockStateName, 0);
+        if (!fallback.on()) return;
+        for (auto& face : model.faces) {
+            face.tintIndex = 0;
+        }
+        for (auto& material : model.materials) {
+            if (material.tintIndex < 0) material.tintIndex = 0;
+        }
+    }
 
     // tintindex -> 结果 的小缓存，避免同方块重复解析
     std::vector<std::pair<int, TintResult>> resolveCache;
