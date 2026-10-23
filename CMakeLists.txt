@@ -24,6 +24,8 @@ target_link_libraries(WorldImporter PRIVATE WorldImporterCore)
 function(wi_apply_defaults target)
     if (MSVC)
         target_compile_options(${target} PRIVATE /EHsc /utf-8 /Zc:preprocessor)
+        # Windows.h defines min/max macros that break std::min/std::max (C2589).
+        target_compile_definitions(${target} PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
     endif()
 endfunction()
 
