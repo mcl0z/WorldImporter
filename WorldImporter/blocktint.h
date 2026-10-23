@@ -42,3 +42,11 @@ TintResult ResolveTint(const std::string& blockStateName, int tintIndex);
 
 // 对单个方块模型做面级 tint 解析；同一材质出现多种 tint 结果时复制材质并加后缀。
 void ApplyTintToBlockModel(ModelData& model, const std::string& blockStateName);
+
+// ---------- tint 诊断（导出结束时汇总打印，不做任何自动改色） ----------
+// 记录一个"面写了 tintindex 但解析不到色型"的方块（线程安全，按方块名计数）。
+void NoteUnresolvedTint(const std::string& blockStateName);
+// 记录一个"属于已知原版色型、但模型一个 tintindex 都没有"的方块（仅提示）。
+void NoteUntintedKnownBlock(const std::string& blockStateName);
+// 打印并清空上面两项统计；导出收尾调用一次。
+void PrintTintDiagnostics();

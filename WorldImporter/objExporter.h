@@ -18,6 +18,17 @@
 // 文件导出
 void CreateModelFiles(const ModelData& data, const std::string& filename);
 
+// Blender 材质名（63 字节）安全化：超长时保留前 54 字节 + "~" + FNV-1a 哈希，避免
+// Blender 静默截断后 tint.json / overlay.json / doubleSided.json 的键对不上。
+// MTL/OBJ 与各元数据 json 的写出必须统一走这个函数。
+std::string BlenderSafeName(const std::string& name);
+
+// 登记"完整材质名"：只有被 BlenderSafeName 截断的名字才需要登记。
+// 导出收尾时 WriteMaterialsJson() 落盘为 materials.json（可见名 -> 完整名），
+// 插件导入后按可见名查回原名（用于分类），并存进材质节点树。
+void RegisterMaterialFullName(const std::string& fullName);
+void WriteMaterialsJson();
+
 void CreateMultiModelFiles(const ModelData& data, const std::string& filename,
     std::unordered_map<std::string, std::string>& uniqueMaterialsL,
     const std::string& sharedMtlName);
@@ -28,6 +39,12 @@ void CreateSharedMtlFile(std::unordered_map<std::string, std::string> uniqueMate
 
 // 输出 tint.json（材质名 -> {on, kind, color?}），供 Blender 插件读取
 void CreateTintJsonFile(const std::unordered_map<std::string, TintResult>& uniqueTints);
+
+// tint 诊断：检查 tint 用到的群系色型是否都有对应 biomeTex 图；缺图时 Blender 侧
+// 取不到颜色（发白/发灰）。mergedModel 可为空（分组导出路径），非空时把其中材质的
+// tint 也计入。
+void CheckBiomeTexCoverage(const std::unordered_map<std::string, TintResult>& uniqueTints,
+                           const ModelData* mergedModel);
 
 // ---------- 共面叠加层元数据（overlay.json） ----------
 // 一层叠加层：导出器侧的完整材质名、贴图路径（相对 importer 目录）、tint（线性色约定同 tint.json）

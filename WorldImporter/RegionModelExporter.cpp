@@ -2,6 +2,7 @@
 #include "RegionModelExporter.h"
 #include "locutil.h"
 #include "objExporter.h"
+#include "blocktint.h"
 #include "include/stb_image.h"
 #include "LODManager.h"
 #include "biome.h"
@@ -477,6 +478,15 @@ void RegionModelExporter::ExportModels(const string& outputName) {
     Biome::ExportToPNG("fog.png", BiomeColorType::Fog);
     Biome::ExportToPNG("sky.png", BiomeColorType::Sky);
     }
+
+    // tint 诊断（只提示，不改色）：
+    //  1) 群系色型缺 biomeTex 图 → Blender 侧取不到颜色，表现为发白/发灰；
+    //  2) 面写了 tintindex 但查不到色型 / 原版色型方块模型没有 tintindex → 游戏里也不染，
+    //     这里显式列出，避免再靠"猜色型"去修。
+    { CrafterLog::StageTimer t("tint 诊断");
+    CheckBiomeTexCoverage(uniqueTints, &finalMergedModel);
+    PrintTintDiagnostics();
+    }
     // Group workers have joined. The final mesh is now the only task; restore
     // internal CPU parallelism instead of retaining the former outer budget.
     SetModelThreadBudget(1);
@@ -525,6 +535,11 @@ void RegionModelExporter::ExportModels(const string& outputName) {
         { CrafterLog::StageTimer t("写入 doubleSided.json");
         CreateDoubleSidedJsonFile();
         }
+    }
+
+    // 超长材质名映射（Blender 63 字节截断后，插件靠它还原原名做分类）
+    { CrafterLog::StageTimer t("写入 materials.json");
+    WriteMaterialsJson();
     }
 
     monitor.SetStatus(TaskStatus::COMPLETED, "Finished");

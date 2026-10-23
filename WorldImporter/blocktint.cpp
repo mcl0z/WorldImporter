@@ -4,6 +4,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <iostream>
+#include <mutex>
 #include <string_view>
 #include <unordered_map>
 #include <utility>
@@ -219,23 +221,13 @@ void ApplyTintToBlockModel(ModelData& model, const std::string& blockStateName) 
             break;
         }
     }
-    // 资源包常把原版树叶/草模型改写成无 tintindex 的 elements。
-    // 原版客户端仍按方块类型染色；这里对已知原版色型回退为 tintindex 0，
-    // 避免导入后树叶/草变成未染色灰色。
-    // grass_block 顶面/overlay 才染色、侧面泥土不染色，不能整块回退。
+    // 与游戏一致：模型里一个 tintindex 都没有就不染色。
+    // 游戏侧 tintindex 是硬门槛——面没有 tintindex 时客户端根本不会去问方块的
+    // color provider；资源包删掉这个字段就是在表达"这些面不上色"（例如 Yuushya
+    // 把白桦/云杉的贴图直接画成彩色）。这里只记录诊断，绝不替资源包猜色型。
     if (!hasTintedFace) {
-        if (ExtractNamespace(blockStateName) == "minecraft" &&
-            ExtractBaseName(blockStateName) == "grass_block") {
-            return;
-        }
-        TintResult fallback = ResolveTint(blockStateName, 0);
-        if (!fallback.on()) return;
-        for (auto& face : model.faces) {
-            face.tintIndex = 0;
-        }
-        for (auto& material : model.materials) {
-            if (material.tintIndex < 0) material.tintIndex = 0;
-        }
+        NoteUntintedKnownBlock(blockStateName);
+        return;
     }
 
     // tintindex -> 结果 的小缓存，避免同方块重复解析
@@ -245,6 +237,10 @@ void ApplyTintToBlockModel(ModelData& model, const std::string& blockStateName) 
             if (entry.first == index) return entry.second;
         }
         resolveCache.emplace_back(index, ResolveTint(blockStateName, index));
+        // 面确实要染色(tintindex >= 0)却解析不出色型：记一条诊断，供导出结束时汇总。
+        if (index >= 0 && !resolveCache.back().second.on()) {
+            NoteUnresolvedTint(blockStateName);
+        }
         return resolveCache.back().second;
     };
 
@@ -293,4 +289,89 @@ void ApplyTintToBlockModel(ModelData& model, const std::string& blockStateName) 
     }
 
     model.materials = std::move(newMaterials);
+}
+
+// ------------------------- tint 诊断 -------------------------
+// 两件事在导出器里没有"正确"做法，只能提示：
+//  1) 面写了 tintindex，但按方块名查不到色型（例如新版本方块 / 模组方块）→ 这些面
+//     在游戏里会由方块自己的 provider 上色，Crafter 里则是贴图原色；
+//  2) 方块属于已知原版色型，但模型整块没有 tintindex → 游戏里同样不染色，不是 bug。
+// 两者都在导出结束时按方块名汇总，替代"没 tintindex 就猜一个色型"的做法。
+namespace {
+
+struct TintDiagnostics {
+    std::mutex mutex;
+    std::unordered_map<std::string, size_t> unresolved;    // 有 tintindex 但查不到色型
+    std::unordered_map<std::string, size_t> untintedKnown; // 已知色型但模型无 tintindex
+};
+
+TintDiagnostics& Diagnostics() {
+    static TintDiagnostics diagnostics;
+    return diagnostics;
+}
+
+// 方块名条目上限：极端场景（大量模组方块）下避免统计表无限膨胀。
+constexpr size_t kMaxDiagEntries = 4096;
+
+void CountEntry(std::unordered_map<std::string, size_t>& entries, const std::string& name) {
+    if (name.empty()) return;
+    auto it = entries.find(name);
+    if (it != entries.end()) {
+        ++it->second;
+        return;
+    }
+    if (entries.size() >= kMaxDiagEntries) return;
+    entries.emplace(name, 1);
+}
+
+void DumpDiagnostics(const char* title, std::unordered_map<std::string, size_t>& entries,
+                     const char* hint) {
+    if (entries.empty()) return;
+    std::vector<std::pair<std::string, size_t>> rows(entries.begin(), entries.end());
+    std::sort(rows.begin(), rows.end(),
+              [](const auto& a, const auto& b) { return a.second > b.second; });
+    size_t total = 0;
+    for (const auto& row : rows) total += row.second;
+    std::cout << "⚠ tint 诊断 | " << title << ": " << rows.size() << " 种, " << total << " 个方块\n";
+    const size_t shown = std::min<size_t>(rows.size(), 15);
+    for (size_t i = 0; i < shown; ++i) {
+        std::cout << "    " << rows[i].first << "  x" << rows[i].second << "\n";
+    }
+    if (rows.size() > shown) {
+        std::cout << "    ... 另有 " << (rows.size() - shown) << " 种未列出\n";
+    }
+    if (hint) std::cout << "    (" << hint << ")\n";
+}
+
+} // namespace
+
+void NoteUnresolvedTint(const std::string& blockStateName) {
+    auto& diagnostics = Diagnostics();
+    std::lock_guard<std::mutex> lock(diagnostics.mutex);
+    CountEntry(diagnostics.unresolved, blockStateName);
+}
+
+void NoteUntintedKnownBlock(const std::string& blockStateName) {
+    // 只有"表里认得这个方块、但模型没 tintindex"才值得提示；表外方块本来就该不染。
+    if (ExtractNamespace(blockStateName) != "minecraft") return;
+    if (LookupVanillaKind(ExtractBaseName(blockStateName)) == TintKind::None) return;
+    auto& diagnostics = Diagnostics();
+    std::lock_guard<std::mutex> lock(diagnostics.mutex);
+    CountEntry(diagnostics.untintedKnown, blockStateName);
+}
+
+void PrintTintDiagnostics() {
+    auto& diagnostics = Diagnostics();
+    std::unordered_map<std::string, size_t> unresolved;
+    std::unordered_map<std::string, size_t> untintedKnown;
+    {
+        std::lock_guard<std::mutex> lock(diagnostics.mutex);
+        unresolved.swap(diagnostics.unresolved);
+        untintedKnown.swap(diagnostics.untintedKnown);
+    }
+    DumpDiagnostics("有 tintindex 但解析不到色型", unresolved,
+                    "这些面不会染色；原版方块出现说明色型表缺项，模组方块属于已知限制");
+    DumpDiagnostics("原版色型方块但模型无 tintindex", untintedKnown,
+                    "游戏里同样不染色（资源包有意为之），仅提示，未做任何修改");
+    std::cout.flush();
 }
