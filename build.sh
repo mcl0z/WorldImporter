@@ -45,7 +45,6 @@ SOURCES=(
     PaintingExporter.cpp
     RegionCache.cpp
     RegionModelExporter.cpp
-    RenderLayer.cpp
     SpecialBlock.cpp
     TaskMonitor.cpp
     texture.cpp

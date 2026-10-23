@@ -296,11 +296,8 @@ ModelData YuushyaShowBlockEntity::GenerateModel() const {
             blockModel = PickShowContentModel(ns, blockName, showRng);
         }
 
-        // 展台内容在游戏里一律走 SHOW_BLOCK 的 cutout 层，即使内嵌的是
-        // translucent 方块（如染色玻璃）。材质名仍用内嵌方块 id 时，
-        // renderLayer.json 会把它标成 translucent，Crafter 按半透明混合。
-        // 加上 yuushya:showblock# 前缀后，BlockIdFromMaterialName /
-        // Crafter material_block_id 都解析为 yuushya:showblock → cutout。
+        // 展台内嵌方块统一加 yuushya:showblock# 前缀，材质名归属到展台方块，
+        // 原方块 id 保留在 # 之后供贴图查找。
         // GetRandomModelFromCache 返回拷贝，改名不会写回缓存。
         for (auto& mat : blockModel.materials) {
             if (mat.name.rfind("yuushya:showblock#", 0) != 0)

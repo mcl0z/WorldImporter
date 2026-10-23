@@ -23,7 +23,6 @@
 #include "block.h"
 #include "TaskMonitor.h"
 #include "Occlusion.h"
-#include "RenderLayer.h"
 using namespace std;
 using namespace std::chrono;  // 新增:方便使用 chrono
 
@@ -514,13 +513,6 @@ void RegionModelExporter::ExportModels(const string& outputName) {
         { CrafterLog::StageTimer t("写入 doubleSided.json");
         CreateDoubleSidedJsonFile();
         }
-        { CrafterLog::StageTimer t("写入 renderLayer.json");
-        vector<string> materialNames;
-        materialNames.reserve(finalMergedModel.materials.size());
-        for (const auto& mat : finalMergedModel.materials)
-            materialNames.push_back(mat.name);
-        CreateRenderLayerJsonFile(materialNames);
-        }
     }
     else if (!uniqueMaterials.empty()) {
         { CrafterLog::StageTimer t("写入共享 mtl");
@@ -532,13 +524,6 @@ void RegionModelExporter::ExportModels(const string& outputName) {
         }
         { CrafterLog::StageTimer t("写入 doubleSided.json");
         CreateDoubleSidedJsonFile();
-        }
-        { CrafterLog::StageTimer t("写入 renderLayer.json");
-        vector<string> materialNames;
-        materialNames.reserve(uniqueMaterials.size());
-        for (const auto& entry : uniqueMaterials)
-            materialNames.push_back(entry.first);
-        CreateRenderLayerJsonFile(materialNames);
         }
     }
 
