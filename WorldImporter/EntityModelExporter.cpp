@@ -3306,6 +3306,40 @@ void RenderCamel(Ctx& ctx, const NbtTagPtr& e) {
     Placement pl = ReadPlacement(e);
     const float headX = static_cast<float>(std::clamp(pl.pitch, -25.0, 45.0) * kPi / 180.0);
     model.SetRot("head", headX, 0.0f, 0.0f);
+    // CamelModel.setupAnim: CAMEL_SIT_POSE / CAMEL_BABY_SIT_POSE, constant keyframes added to the rest pose (after the
+    // head look). isCamelSitting = LastPoseTick < 0 (1.21.1 and 26.x). The transition is assumed finished, as at rest.
+    // The 26.x baby uses its own sit pose; 1.21.1 has no baby model, so the adult pose is scaled with the body.
+    const bool sitting = NumOr(e, "LastPoseTick", 0) < 0;
+    const float deg = static_cast<float>(kPi / 180.0);
+    struct SitOff { const char* part; float rx, ry, rz, px, py, pz; };
+    static const SitOff kAdultSit[] = {
+        { "body", 0.0f, 0.0f, 0.0f, 0.0f, -19.9f, 0.0f },
+        { "right_front_leg", -90.0f, 10.0f, 0.0f, 0.0f, -20.6f, 12.0f },
+        { "left_front_leg", -90.0f, -10.0f, 0.0f, 0.0f, -20.6f, 12.0f },
+        { "left_hind_leg", -90.0f, -15.0f, 0.0f, 1.0f, -20.5f, 5.0f },
+        { "right_hind_leg", -90.0f, 15.0f, 0.0f, -1.0f, -20.5f, 5.0f },
+        { "tail", 50.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f },
+    };
+    static const SitOff kBabySit[] = {
+        { "body", 2.5f, 0.0f, 0.0f, 0.0f, -13.25f, 0.0f },
+        { "right_front_leg", -90.0f, 10.0f, 0.0f, 0.1f, -11.0f, 6.0f },
+        { "left_front_leg", -90.0f, -10.0f, 0.0f, 0.0f, -11.0f, 6.0f },
+        { "left_hind_leg", -90.0f, -11.88f, -0.54f, 1.4f, -10.95f, 1.95f },
+        { "right_hind_leg", -90.0f, 11.89f, 0.54f, -1.33f, -11.0f, 1.95f },
+        { "head", -4.75f, 0.0f, 0.0f, 0.0f, 0.0f, 1.22f },
+        { "tail", 52.5f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f },
+        { "left_ear", 0.0f, 0.0f, -22.5f, 0.0f, 0.0f, 0.0f },
+        { "right_ear", 0.0f, 0.0f, 15.0f, 0.0f, 0.0f, 0.0f },
+    };
+    auto applySitPose = [&](EntityModel& m, bool babyPose) {
+        const SitOff* first = babyPose ? kBabySit : kAdultSit;
+        const SitOff* last = first + (babyPose ? sizeof(kBabySit) : sizeof(kAdultSit)) / sizeof(SitOff);
+        for (const SitOff* o = first; o != last; ++o) {
+            m.AddRot(o->part, o->rx * deg, o->ry * deg, o->rz * deg);
+            AddPos(m, o->part, o->px, o->py, o->pz);
+        }
+    };
+    if (sitting) applySitPose(model, ctx.modern && baby);
     const ItemStackInfo saddleItem = SaddleStack(e);
     const bool saddled = !saddleItem.empty();
     const bool ridden = HasPassengers(e);
@@ -3330,6 +3364,7 @@ void RenderCamel(Ctx& ctx, const NbtTagPtr& e) {
         EntityModel saddle(fam, "minecraft:camel#saddle");
         if (saddle.Valid()) {
             saddle.SetRot("head", headX, 0.0f, 0.0f);
+            if (sitting) applySitPose(saddle, false);  // CamelSaddleModel extends AdultCamelModel
             const int mat = ArmorMaterial(ctx, layers);
             if (mat >= 0) {
                 saddle.Emit(obj.mesh, base, [&](int part) {
