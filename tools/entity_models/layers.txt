@@ -312,6 +312,9 @@ modern minecraft:witch#main
 # ==== batch3 C layers (insert below) ====
 legacy minecraft:frog#main
 modern minecraft:frog#main
+legacy minecraft:armadillo#main
+modern minecraft:armadillo#main
+modern minecraft:armadillo_baby#main
 # ---- end batch3 C ----
 # ==== batch3 D layers (insert below) ====
 # ---- end batch3 D ----

@@ -2856,6 +2856,25 @@ void RenderFrog(Ctx& ctx, const NbtTagPtr& e) {
     EmitTextured(ctx, obj, model, LivingBase(pl, 0.3, 1.0), nullptr, "minecraft:" + tex, ctx.Texture("minecraft", tex));
 }
 // ---- end batch3 C frog ----
+// ---- batch3 C: armadillo ----
+// ArmadilloModel.setupAnim (未缩球): cube 隐藏; 头俯仰 clamp 到 [-22.5°, 25°], 头 yaw 取 0 (NBT 没有头部朝向)。
+// 行走 / 滚动 / 偷看关键帧未启动, 静止即烘焙姿态。缩球状态 (state NBT) 未做, 一律按未缩球渲染。
+// 26.x 幼体有独立 layer 和贴图 (armadillo_baby); 1.21.1 没有幼体, 按成年体渲染。
+void RenderArmadillo(Ctx& ctx, const NbtTagPtr& e) {
+    const std::string fam = ctx.modern ? "modern" : "legacy";
+    const bool baby = IsBaby(e);
+    EntityModel model(fam, MobLayer(ctx, "armadillo", baby));
+    if (!model.Valid()) return;
+    Placement pl = ReadPlacement(e);
+    model.SetVisible("cube", false);
+    model.SetRot("head", static_cast<float>(std::clamp(pl.pitch, -22.5, 25.0) * kPi / 180.0), 0.0f, 0.0f);
+    const bool modernBaby = ctx.modern && baby;
+    const std::string texPath = modernBaby ? "entity/armadillo/armadillo_baby"
+                                           : PickTex({ "entity/armadillo/armadillo", "entity/armadillo" });
+    OutObject& obj = ctx.NewObject("minecraft:armadillo");
+    EmitTextured(ctx, obj, model, LivingBase(pl, 0.4, 1.0), nullptr, "minecraft:" + texPath, ctx.Texture("minecraft", texPath));
+}
+// ---- end batch3 C armadillo ----
 // ---- end batch3 C ----
 
 // ==== batch3 D renderers (insert below) ====
@@ -3161,6 +3180,7 @@ size_t Export(const std::string& name) {
         // ---- end batch3 B ----
         // ==== batch3 C dispatch (insert below) ====
         else if (id == "minecraft:frog") RenderFrog(ctx, e);
+        else if (id == "minecraft:armadillo") RenderArmadillo(ctx, e);
         // ---- end batch3 C ----
         // ==== batch3 D dispatch (insert below) ====
         // ---- end batch3 D ----
