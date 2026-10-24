@@ -2668,6 +2668,85 @@ void RenderOcelot(Ctx& ctx, const NbtTagPtr& e) {
 
 // ==== batch2 B renderers (insert below) ====
 
+// TadpoleModel.setupAnim: tail yRot = -amp*0.25*sin(0.3*age). At age 0 that is 0, so the baked pose stands.
+// TadpoleRenderer's 0.14 is the shadow radius, not a scale, so only the living base applies.
+void RenderTadpole(Ctx& ctx, const NbtTagPtr& e) {
+    const std::string fam = ctx.modern ? "modern" : "legacy";
+    EntityModel model(fam, "minecraft:tadpole#main");
+    if (!model.Valid()) return;
+    Placement pl = ReadPlacement(e);
+    const std::string texPath = "entity/tadpole/tadpole";
+    OutObject& obj = ctx.NewObject("minecraft:tadpole");
+    EmitTextured(ctx, obj, model, MobBase(pl, BodyRot(pl), 1.0), nullptr, "minecraft:" + texPath, ctx.Texture("minecraft", texPath));
+}
+
+// VexModel.setupAnim at age 0, not charging, nothing in hands: the arms sit at pi/5 with the cos(0)*0.1 bob,
+// the body tilts pi/20, and the wings take their fixed angles with the flap yRot at age 0.
+// Head pitch follows the entity. Yaw is relative to the body and not saved, so it stays 0.
+// Held items (ItemInHandLayer) are not drawn. The vex texture is translucent in vanilla; the OBJ material is opaque.
+void RenderVex(Ctx& ctx, const NbtTagPtr& e) {
+    const std::string fam = ctx.modern ? "modern" : "legacy";
+    EntityModel model(fam, "minecraft:vex#main");
+    if (!model.Valid()) return;
+    Placement pl = ReadPlacement(e);
+    ApplyHeadLook(model, pl);
+    const float pi = static_cast<float>(kPi);
+    const float armZ = pi / 5.0f + 0.1f;
+    SetZRot(model, "right_arm", armZ);
+    SetZRot(model, "left_arm", -armZ);
+    model.SetRot("body", pi / 20.0f, 0.0f, 0.0f);
+    const float wingY = 1.0995574f + static_cast<float>(16.2 * kPi / 180.0);  // + cos(0) * 16.2 deg
+    model.SetRot("left_wing", 0.47123888f, wingY, -0.47123888f);
+    model.SetRot("right_wing", 0.47123888f, -wingY, 0.47123888f);
+    const std::string texPath = "entity/illager/vex";
+    OutObject& obj = ctx.NewObject("minecraft:vex");
+    EmitTextured(ctx, obj, model, MobBase(pl, BodyRot(pl), 1.0), nullptr, "minecraft:" + texPath, ctx.Texture("minecraft", texPath));
+}
+
+// AllayModel.setupAnim at age 0, not moving, dancing or holding: the wings flap at amplitude 0.15*pi,
+// the arms hang at the idle sway 0.43633 rad, and the root gets the cos(0)*0.25 idle bob.
+// Dancing, the held-item raise and the spin are client-side and not saved, so they are left out.
+// Head pitch follows the entity; yaw is relative to the body and stays 0.
+void RenderAllay(Ctx& ctx, const NbtTagPtr& e) {
+    const std::string fam = ctx.modern ? "modern" : "legacy";
+    EntityModel model(fam, "minecraft:allay#main");
+    if (!model.Valid()) return;
+    Placement pl = ReadPlacement(e);
+    ApplyHeadLook(model, pl);
+    const float pi = static_cast<float>(kPi);
+    const float flap = 0.15f * pi;
+    const float sway = 0.43633232f;
+    model.SetRot("right_wing", sway, -pi / 4.0f + flap, 0.0f);
+    model.SetRot("left_wing", sway, pi / 4.0f - flap, 0.0f);
+    model.SetRot("right_arm", 0.0f, 0.0f, sway);
+    model.SetRot("left_arm", 0.0f, 0.0f, -sway);
+    AddPos(model, "root", 0.0f, 0.25f, 0.0f);
+    const std::string texPath = "entity/allay/allay";
+    OutObject& obj = ctx.NewObject("minecraft:allay");
+    EmitTextured(ctx, obj, model, MobBase(pl, BodyRot(pl), 1.0), nullptr, "minecraft:" + texPath, ctx.Texture("minecraft", texPath));
+}
+
+// PhantomRenderer: setupRotations is the living flip plus RX(pitch), then scale(1 + 0.15*size) and
+// translate(0, 1.3125, 0.1875) before the usual -1.501 lift. Size is "size" in 26.x and "Size" in 1.21.1.
+// The wings and tail follow flapTime, which includes a per-entity offset that is not saved, so they keep
+// the dump's rest pose. The eyes are the same posed model with the eyes texture.
+void RenderPhantom(Ctx& ctx, const NbtTagPtr& e) {
+    using A = EntityAffine;
+    const std::string fam = ctx.modern ? "modern" : "legacy";
+    EntityModel model(fam, "minecraft:phantom#main");
+    if (!model.Valid()) return;
+    Placement pl = ReadPlacement(e);
+    const int size = std::clamp(static_cast<int>(NumOr(e, "size", NumOr(e, "Size", 0))), 0, 64);
+    const double s = 1.0 + 0.15 * size;
+    const EntityAffine base = A::T(pl.x, pl.y, pl.z) * A::S(pl.scale) * BodyRot(pl) * A::S(-1.0, -1.0, 1.0)
+                            * A::RXDeg(pl.pitch) * A::S(s) * A::T(0.0, 1.3125, 0.1875) * A::T(0.0, -1.501, 0.0);
+    const std::string texPath = PickTex({ "entity/phantom/phantom", "entity/phantom" });
+    OutObject& obj = ctx.NewObject("minecraft:phantom");
+    EmitTextured(ctx, obj, model, base, nullptr, "minecraft:" + texPath, ctx.Texture("minecraft", texPath));
+    const std::string eyes = PickTex({ "entity/phantom/phantom_eyes", "entity/phantom_eyes" });
+    EmitTextured(ctx, obj, model, base, nullptr, "minecraft:" + eyes, ctx.Texture("minecraft", eyes));
+}
+
 // ---- end batch2 B ----
 
 // ==== batch2 C renderers (insert below) ====
@@ -2957,6 +3036,10 @@ size_t Export(const std::string& name) {
         else if (id == "minecraft:ocelot") RenderOcelot(ctx, e);
         // ---- end batch2 A ----
         // ==== batch2 B dispatch (insert below) ====
+        else if (id == "minecraft:tadpole") RenderTadpole(ctx, e);
+        else if (id == "minecraft:vex") RenderVex(ctx, e);
+        else if (id == "minecraft:allay") RenderAllay(ctx, e);
+        else if (id == "minecraft:phantom") RenderPhantom(ctx, e);
         // ---- end batch2 B ----
         // ==== batch2 C dispatch (insert below) ====
         // ---- end batch2 C ----
