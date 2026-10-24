@@ -3059,14 +3059,30 @@ void RenderArmadillo(Ctx& ctx, const NbtTagPtr& e) {
     EntityModel model(fam, MobLayer(ctx, "armadillo", baby));
     if (!model.Valid()) return;
     Placement pl = ReadPlacement(e);
-    model.SetVisible("cube", false);
-    model.SetRot("head", static_cast<float>(std::clamp(pl.pitch, -22.5, 25.0) * kPi / 180.0), 0.0f, 0.0f);
+    // isHidingInShell = state.shouldHideInShell(ticksInState): scared always, unrolling while ticks < 26; ticks are
+    // runtime and a loaded entity starts at 0. Rolled model: body's own cubes skipped (children still draw), hind legs
+    // and tail hidden, cube shown; front legs and head keep drawing. Head look is not applied while rolled.
+    const std::string state = Str(e, "state");
+    const bool rolled = state == "scared" || state == "unrolling";
+    if (!rolled) {
+        model.SetVisible("cube", false);
+        model.SetRot("head", static_cast<float>(std::clamp(pl.pitch, -22.5, 25.0) * kPi / 180.0), 0.0f, 0.0f);
+    }
     const bool modernBaby = ctx.modern && baby;
     const std::string texPath = modernBaby ? "entity/armadillo/armadillo_baby"
                                            : PickTex({ "entity/armadillo/armadillo", "entity/armadillo" });
     OutObject& obj = ctx.NewObject("minecraft:armadillo");
     const TopPre pre = (!ctx.modern && baby) ? LegacyWholeBabyPre(0.6f, 16.02f) : nullptr;  // 1.21.1 ArmadilloModel
-    EmitTextured(ctx, obj, model, LivingBase(pl, 0.4, 1.0), pre, "minecraft:" + texPath, ctx.Texture("minecraft", texPath));
+    const std::string tex = ctx.Texture("minecraft", texPath);
+    if (rolled && !tex.empty()) {
+        const int mat = ctx.Material("minecraft:" + texPath, tex);
+        model.Emit(obj.mesh, LivingBase(pl, 0.4, 1.0), [&](int part) {
+            const std::string& n = model.Name(part);
+            return (n == "body" || n == "tail" || n == "left_hind_leg" || n == "right_hind_leg") ? -1 : mat;
+        }, pre);
+        return;
+    }
+    EmitTextured(ctx, obj, model, LivingBase(pl, 0.4, 1.0), pre, "minecraft:" + texPath, tex);
 }
 // ---- end batch3 C armadillo ----
 // ---- batch3 C: axolotl ----
