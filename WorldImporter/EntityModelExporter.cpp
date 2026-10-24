@@ -3641,6 +3641,79 @@ void RenderSulfurCube(Ctx& ctx, const NbtTagPtr& e) {
 // ---- end batch4 B ----
 
 // ==== batch4 C renderers (insert below) ====
+// ---------- boats and rafts (batch4 C) ----------
+// AbstractBoatRenderer.submit at rest (no hurt, no bubble): T(0, 0.375, 0) * RY(180 - yaw) * S(-1, -1, 1) * RY(90).
+// Paddles at rest: AbstractBoatModel.setupAnim with rowing time 0 (AbstractBoat.getRowingTime is 0 unless paddling):
+// xRot = lerp(0.5, -60deg, -15deg), yRot = lerp((sin 1 + 1) / 2, -45deg, 45deg); the right paddle uses 180deg - yRot.
+// Paddle z rotation stays at the baked value. Rafts share the paddle code (RaftModel extends AbstractBoatModel).
+// The water patch (BoatRenderer.submitTypeAdditions, outside water only) is not exported.
+void BoatPaddlesRest(EntityModel& model) {
+    const float xRot = static_cast<float>(-kPi / 3 + 0.5 * (kPi / 4));
+    const float yRot = static_cast<float>(-kPi / 4 + (std::sin(1.0) + 1.0) / 2.0 * (kPi / 2));
+    const char* names[2] = { "left_paddle", "right_paddle" };
+    for (int side = 0; side < 2; ++side) {
+        const int i = model.Find(names[side]);
+        if (i < 0) continue;
+        model.Pose(i)[3] = xRot;
+        model.Pose(i)[4] = side == 0 ? yRot : static_cast<float>(kPi) - yRot;
+    }
+}
+
+// layer = "boat/<wood>" or "chest_boat/<wood>" (raft types use the raft geometry under the same layer name)
+void RenderBoat(Ctx& ctx, const NbtTagPtr& e, const std::string& id, const std::string& layer) {
+    using A = EntityAffine;
+    EntityModel model(ctx.modern ? "modern" : "legacy", "minecraft:" + layer + "#main");
+    if (!model.Valid()) return;
+    Placement pl = ReadPlacement(e);
+    BoatPaddlesRest(model);
+    const A base = A::T(pl.x, pl.y, pl.z) * A::T(0.0, 0.375, 0.0) * A::RYDeg(180.0 - pl.yaw) *
+                   A::S(-1.0, -1.0, 1.0) * A::RYDeg(90.0);
+    OutObject& obj = ctx.NewObject(id);
+    const std::string tex = "entity/" + layer;
+    EmitTextured(ctx, obj, model, base, nullptr, "minecraft:" + tex, ctx.Texture("minecraft", tex));
+}
+// ---------- minecarts (batch4 C) ----------
+// AbstractMinecartRenderer.submit at rest (no hurt, rails not followed): T(0, 0.375, 0) * RY(180 - yaw) * RZ(-pitch),
+// then the display block (scale 0.75, T(-0.5, (offset - 8) / 16, 0.5), RY 90) and the cart model with S(-1, -1, 1).
+// Rail-following orientation and the random per-entity jitter (+-0.002 block) are not reproduced.
+// Display block: DisplayState when present, otherwise the cart type's default block and offset. The block is drawn
+// through the block-in-entity item path (as CarriedBlockLayer does); block properties (furnace LIT, chest facing)
+// are not applied. Chest blocks have no item model (builtin/entity), so the chest contents are skipped.
+std::string MinecartDisplayBlock(const NbtTagPtr& e, const std::string& fallback) {
+    auto c = getChildByName(e, "DisplayState");
+    if (!c) return fallback;
+    std::string raw;
+    if (c->type == TagType::STRING) raw = getStringTag(c);
+    else if (c->type == TagType::COMPOUND) raw = Str(c, "Name");
+    else return fallback;
+    const size_t br = raw.find('[');
+    if (br != std::string::npos) raw = raw.substr(0, br);
+    if (raw.empty() || raw == "air" || raw == "minecraft:air") return {};
+    if (raw.find(':') == std::string::npos) raw = "minecraft:" + raw;
+    return raw;
+}
+
+void RenderMinecart(Ctx& ctx, const NbtTagPtr& e, const std::string& id, const std::string& layer,
+                    const std::string& defaultBlock, int defaultOffset) {
+    using A = EntityAffine;
+    EntityModel model(ctx.modern ? "modern" : "legacy", "minecraft:" + layer + "#main");
+    if (!model.Valid()) return;
+    Placement pl = ReadPlacement(e);
+    const std::string tex = ctx.modern ? "entity/minecart/minecart" : "entity/minecart";  // one texture for all carts
+    const A pre = A::T(pl.x, pl.y, pl.z) * A::T(0.0, 0.375, 0.0) * A::RYDeg(180.0 - pl.yaw) * A::RZDeg(-pl.pitch);
+    OutObject& obj = ctx.NewObject(id);
+    const std::string block = MinecartDisplayBlock(e, defaultBlock);
+    const int offset = static_cast<int>(NumOr(e, "DisplayOffset", defaultOffset));
+    if (!block.empty()) {
+        ItemStackInfo item;
+        item.id = block;
+        item.count = 1;
+        // ItemDisplay::None centres the block on the origin; T(0.5) moves it back to the block-corner origin used by the cart
+        const A m = pre * A::S(0.75) * A::T(-0.5, (offset - 8) / 16.0, 0.5) * A::RYDeg(90.0) * A::T(0.5, 0.5, 0.5);
+        AppendItem(ctx, obj, item, ItemDisplay::None, false, m);
+    }
+    EmitTextured(ctx, obj, model, pre * A::S(-1.0, -1.0, 1.0), nullptr, "minecraft:" + tex, ctx.Texture("minecraft", tex));
+}
 // ---- end batch4 C ----
 
 // ==== batch4 D renderers (insert below) ====
@@ -3986,6 +4059,35 @@ size_t Export(const std::string& name) {
         else if (id == "minecraft:sulfur_cube") RenderSulfurCube(ctx, e);
         // ---- end batch4 B ----
         // ==== batch4 C dispatch (insert below) ====
+        else if (id == "minecraft:oak_boat") RenderBoat(ctx, e, id, "boat/oak");
+        else if (id == "minecraft:spruce_boat") RenderBoat(ctx, e, id, "boat/spruce");
+        else if (id == "minecraft:birch_boat") RenderBoat(ctx, e, id, "boat/birch");
+        else if (id == "minecraft:jungle_boat") RenderBoat(ctx, e, id, "boat/jungle");
+        else if (id == "minecraft:acacia_boat") RenderBoat(ctx, e, id, "boat/acacia");
+        else if (id == "minecraft:dark_oak_boat") RenderBoat(ctx, e, id, "boat/dark_oak");
+        else if (id == "minecraft:mangrove_boat") RenderBoat(ctx, e, id, "boat/mangrove");
+        else if (id == "minecraft:cherry_boat") RenderBoat(ctx, e, id, "boat/cherry");
+        else if (ctx.modern && id == "minecraft:pale_oak_boat") RenderBoat(ctx, e, id, "boat/pale_oak");
+        else if (ctx.modern && id == "minecraft:poplar_boat") RenderBoat(ctx, e, id, "boat/poplar");
+        else if (id == "minecraft:bamboo_raft") RenderBoat(ctx, e, id, "boat/bamboo");
+        else if (id == "minecraft:oak_chest_boat") RenderBoat(ctx, e, id, "chest_boat/oak");
+        else if (id == "minecraft:spruce_chest_boat") RenderBoat(ctx, e, id, "chest_boat/spruce");
+        else if (id == "minecraft:birch_chest_boat") RenderBoat(ctx, e, id, "chest_boat/birch");
+        else if (id == "minecraft:jungle_chest_boat") RenderBoat(ctx, e, id, "chest_boat/jungle");
+        else if (id == "minecraft:acacia_chest_boat") RenderBoat(ctx, e, id, "chest_boat/acacia");
+        else if (id == "minecraft:dark_oak_chest_boat") RenderBoat(ctx, e, id, "chest_boat/dark_oak");
+        else if (id == "minecraft:mangrove_chest_boat") RenderBoat(ctx, e, id, "chest_boat/mangrove");
+        else if (id == "minecraft:cherry_chest_boat") RenderBoat(ctx, e, id, "chest_boat/cherry");
+        else if (ctx.modern && id == "minecraft:pale_oak_chest_boat") RenderBoat(ctx, e, id, "chest_boat/pale_oak");
+        else if (ctx.modern && id == "minecraft:poplar_chest_boat") RenderBoat(ctx, e, id, "chest_boat/poplar");
+        else if (id == "minecraft:bamboo_chest_raft") RenderBoat(ctx, e, id, "chest_boat/bamboo");
+        else if (id == "minecraft:minecart") RenderMinecart(ctx, e, id, "minecart", "", 6);
+        else if (id == "minecraft:chest_minecart") RenderMinecart(ctx, e, id, "chest_minecart", "minecraft:chest", 8);
+        else if (id == "minecraft:furnace_minecart") RenderMinecart(ctx, e, id, "furnace_minecart", "minecraft:furnace", 6);
+        else if (id == "minecraft:hopper_minecart") RenderMinecart(ctx, e, id, "hopper_minecart", "minecraft:hopper", 1);
+        else if (id == "minecraft:tnt_minecart") RenderMinecart(ctx, e, id, "tnt_minecart", "minecraft:tnt", 6);
+        else if (id == "minecraft:spawner_minecart") RenderMinecart(ctx, e, id, "spawner_minecart", "minecraft:spawner", 6);
+        else if (id == "minecraft:command_block_minecart") RenderMinecart(ctx, e, id, "command_block_minecart", "minecraft:command_block", 6);
         // ---- end batch4 C ----
         // ==== batch4 D dispatch (insert below) ====
         // ---- end batch4 D ----
