@@ -9,6 +9,7 @@
 #include "blocktint.h"
 #include "texture.h"
 #include "Occlusion.h"
+#include <cmath>
 #include <iomanip>
 #include <sstream>
 #include <regex>
@@ -88,7 +89,13 @@ std::string getExecutablePathForTexture() {
     }
 }
 
-std::string GetBlockAverageColor(int blockId, Block currentBlock, int x, int y, int z, const std::string& faceDirection, float gamma = 2.0) {
+static float SrgbToLinear(float s) {
+    return (s <= 0.04045f) ? (s / 12.92f) : std::pow((s + 0.055f) / 1.055f, 2.4f);
+}
+
+// 返回的 "color#r g b" 是线性值：Crafter 把它直接填进 Base Color（线性空间），
+// 近处方块的群系色走 sRGB 的 biomeTex，两边都在线性空间相乘才能对上。
+std::string GetBlockAverageColor(int blockId, Block currentBlock, int x, int y, int z, const std::string& faceDirection) {
 
     Block b = GetBlockById(blockId);
     std::string blockName = b.GetModifiedNameWithNamespace();
@@ -140,13 +147,13 @@ std::string GetBlockAverageColor(int blockId, Block currentBlock, int x, int y, 
         }
 
         if (materialIndex == -1 && !blockModel.materials.empty()) materialIndex = 0;
-        if (materialIndex == -1) return "color#0.50 0.50 0.50=";
+        if (materialIndex == -1) return "color#0.21 0.21 0.21="; // sRGB 0.5 灰
 
         std::string materialName = blockModel.materials[materialIndex].name;
         std::string texturePath;
         if (!blockModel.materials.empty()) texturePath = blockModel.materials[materialIndex].texturePath;
 
-        float r = 0.5f, g = 0.5f, b = 0.5f;
+        float r = 0.214f, g = 0.214f, b = 0.214f; // sRGB 0.5 灰
         if (!texturePath.empty()) {
             // 使用跨平台方式获取可执行文件路径
             std::string exePath = getExecutablePathForTexture();
@@ -154,33 +161,24 @@ std::string GetBlockAverageColor(int blockId, Block currentBlock, int x, int y, 
             texturePath = exeDir + "//" + texturePath;
 
             int width, height, channels;
-            unsigned char* data = stbi_load(texturePath.c_str(), &width, &height, &channels, 0);
+            // 统一按 RGBA 读：灰度(+透明)图原生只有 1~2 个通道，按原生步长取 RGB
+            // 会把 alpha 当成 G（藤蔓、睡莲变荧光绿）且读越界。
+            unsigned char* data = stbi_load(texturePath.c_str(), &width, &height, &channels, 4);
             if (data) {
                 float sumR = 0, sumG = 0, sumB = 0;
                 int validPixelCount = 0;
                 for (int i = 0; i < width * height; ++i) {
-                    if (channels >= 4 && data[i * channels + 3] == 0) continue;
-                    float r_s = data[i * channels] / 255.0f;
-                    float g_s = data[i * channels + 1] / 255.0f;
-                    float b_s = data[i * channels + 2] / 255.0f;
-                    float r_lin = (r_s <= 0.04045f) ? (r_s / 12.92f) : pow((r_s + 0.055f) / 1.055f, 2.4f);
-                    float g_lin = (g_s <= 0.04045f) ? (g_s / 12.92f) : pow((g_s + 0.055f) / 1.055f, 2.4f);
-                    float b_lin = (b_s <= 0.04045f) ? (b_s / 12.92f) : pow((b_s + 0.055f) / 1.055f, 2.4f);
-                    sumR += r_lin;
-                    sumG += g_lin;
-                    sumB += b_lin;
+                    const unsigned char* px = data + i * 4;
+                    if (px[3] == 0) continue;
+                    sumR += SrgbToLinear(px[0] / 255.0f);
+                    sumG += SrgbToLinear(px[1] / 255.0f);
+                    sumB += SrgbToLinear(px[2] / 255.0f);
                     validPixelCount++;
                 }
                 if (validPixelCount > 0) {
-                    float avgR_lin = sumR / validPixelCount;
-                    float avgG_lin = sumG / validPixelCount;
-                    float avgB_lin = sumB / validPixelCount;
-                    avgR_lin = pow(avgR_lin, gamma);
-                    avgG_lin = pow(avgG_lin, gamma);
-                    avgB_lin = pow(avgB_lin, gamma);
-                    r = (avgR_lin <= 0.0031308f) ? (avgR_lin * 12.92f) : (1.055f * pow(avgR_lin, 1.0f / 2.4f) - 0.055f);
-                    g = (avgG_lin <= 0.0031308f) ? (avgG_lin * 12.92f) : (1.055f * pow(avgG_lin, 1.0f / 2.4f) - 0.055f);
-                    b = (avgB_lin <= 0.0031308f) ? (avgB_lin * 12.92f) : (1.055f * pow(avgB_lin, 1.0f / 2.4f) - 0.055f);
+                    r = sumR / validPixelCount;
+                    g = sumG / validPixelCount;
+                    b = sumB / validPixelCount;
                 }
                 stbi_image_free(data);
             }
@@ -232,9 +230,9 @@ std::string GetBlockAverageColor(int blockId, Block currentBlock, int x, int y, 
         sscanf(textureAverage.c_str(), "%f %f %f", &textureR, &textureG, &textureB);
         float tintR, tintG, tintB;
         if (tint.kind == TintKind::Fixed) {
-            tintR = ((tint.color >> 16) & 0xFF) / 255.0f;
-            tintG = ((tint.color >> 8) & 0xFF) / 255.0f;
-            tintB = (tint.color & 0xFF) / 255.0f;
+            tintR = SrgbToLinear(((tint.color >> 16) & 0xFF) / 255.0f);
+            tintG = SrgbToLinear(((tint.color >> 8) & 0xFF) / 255.0f);
+            tintB = SrgbToLinear((tint.color & 0xFF) / 255.0f);
         }
         else {
             BiomeColorType type = BiomeColorType::Foliage;
@@ -249,9 +247,9 @@ std::string GetBlockAverageColor(int blockId, Block currentBlock, int x, int y, 
             default: break;
             }
             uint32_t hexColor = Biome::GetBiomeColor(x, y, z, type);
-            tintR = ((hexColor >> 16) & 0xFF) / 255.0f;
-            tintG = ((hexColor >> 8) & 0xFF) / 255.0f;
-            tintB = (hexColor & 0xFF) / 255.0f;
+            tintR = SrgbToLinear(((hexColor >> 16) & 0xFF) / 255.0f);
+            tintG = SrgbToLinear(((hexColor >> 8) & 0xFF) / 255.0f);
+            tintB = SrgbToLinear((hexColor & 0xFF) / 255.0f);
         }
         float finalR = tintR * textureR;
         float finalG = tintG * textureG;
