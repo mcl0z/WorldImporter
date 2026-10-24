@@ -2612,6 +2612,60 @@ void RenderMagmaCube(Ctx& ctx, const NbtTagPtr& e) {
 // ---- end batch2 B ----
 
 // ==== batch2 C renderers (insert below) ====
+// ---------- shulker ----------
+// ShulkerModel.setupAnim (age 0): bs = (0.5+peek)π, lid y = 16 + sin(bs)*8, peek>0.3 时 lid yRot = q^4·π/8, q = -1+sin(bs).
+// ShulkerRenderer: 无阴影; yBodyRot 恒为 0 (身体不随 Rotation 转), head yaw = Rotation - 180。
+// 外壳伸展方向 D = AttachFace.getOpposite() (3D id ^ 1), 按 rotateAround(R(D), (0,0.5,0)) 旋转;
+// R(D) 为 26.3 Direction.getRotation 的反汇编结果 (JDK 26 javap):
+// DOWN=RX(π), UP=I, NORTH=RX(π/2)·RZ(π), SOUTH=RX(π/2), WEST=RX(π/2)·RZ(π/2), EAST=RX(π/2)·RZ(-π/2)。
+// getRenderPosition (clientSideTeleportInterpolation 的瞬移插值偏移) 不存盘, 忽略。
+void RenderShulker(Ctx& ctx, const NbtTagPtr& e) {
+    using A = EntityAffine;
+    const std::string fam = ctx.modern ? "modern" : "legacy";
+    EntityModel model(fam, "minecraft:shulker#main");
+    if (!model.Valid()) return;
+    Placement pl = ReadPlacement(e);
+
+    // ---- pose ----
+    const float peek = static_cast<float>(std::clamp(static_cast<double>(NumOr(e, "Peek", 0.0)), 0.0, 100.0) * 0.01);
+    const float bs = (0.5f + peek) * static_cast<float>(kPi);
+    const float s = std::sin(bs);
+    const float q = -1.0f + s;
+    if (int lid = model.Find("lid"); lid >= 0) {
+        float* p = model.Pose(lid);
+        p[1] = 16.0f + s * 8.0f;
+        p[4] = peek > 0.3f ? q * q * q * q * static_cast<float>(kPi) * 0.125f : 0.0f;
+    }
+    model.SetRot("head", HeadPitch(pl), static_cast<float>((pl.yaw - 180.0) * kPi / 180.0), 0.0f);
+
+    // ---- attach face ----
+    const int face = std::clamp(static_cast<int>(NumOr(e, "AttachFace", 0)), 0, 5);
+    const int dir = face ^ 1;  // getOpposite(): DOWN<->UP, NORTH<->SOUTH, WEST<->EAST
+    const double h = kPi / 2.0;
+    A R;
+    switch (dir) {
+        case 0: R = A::RX(kPi); break;                 // DOWN
+        case 1: break;                                 // UP
+        case 2: R = A::RX(h) * A::RZ(kPi); break;      // NORTH
+        case 3: R = A::RX(h); break;                   // SOUTH
+        case 4: R = A::RX(h) * A::RZ(h); break;        // WEST
+        default: R = A::RX(h) * A::RZ(-h); break;      // EAST
+    }
+    const A rot = A::T(0.0, 0.5, 0.0) * R * A::T(0.0, -0.5, 0.0);
+
+    // ---- texture: DyeColor id 0-15, 16 / 缺省 = 无色 ----
+    static const char* kColors[16] = { "white", "orange", "magenta", "light_blue", "yellow", "lime", "pink", "gray",
+                                       "light_gray", "cyan", "purple", "blue", "brown", "green", "red", "black" };
+    const int color = static_cast<int>(NumOr(e, "Color", 16));
+    std::string texPath = "entity/shulker/shulker";
+    if (color >= 0 && color <= 15) {
+        const std::string colored = std::string("entity/shulker/shulker_") + kColors[color];
+        if (TextureExists("minecraft", colored)) texPath = colored;
+    }
+    OutObject& obj = ctx.NewObject("minecraft:shulker");
+    EmitTextured(ctx, obj, model, MobBase(pl, rot, 1.0), nullptr, "minecraft:" + texPath, ctx.Texture("minecraft", texPath));
+}
+
 // ---------- witch ----------
 // WitchModel (VillagerModel 身体 + 帽子 + 鼻子) / WitchRenderer: 无 renderer scale (26.x 根节点已烘焙 0.9375)。
 // setupAnim at age 0: 鼻子 zRot = cos(0)*2.5°; 手持物品时鼻子下垂 (setPos(0,1,-1.5), xRot -0.9)。
@@ -2917,6 +2971,7 @@ size_t Export(const std::string& name) {
         // ==== batch2 B dispatch (insert below) ====
         // ---- end batch2 B ----
         // ==== batch2 C dispatch (insert below) ====
+        else if (id == "minecraft:shulker") RenderShulker(ctx, e);
         else if (id == "minecraft:witch") RenderWitch(ctx, e);
         // ---- end batch2 C ----
         else if (id != "minecraft:painting") ctx.skippedEntities[id]++;  // 画由 PaintingExporter 导出
