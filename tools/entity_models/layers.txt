@@ -306,6 +306,16 @@ legacy minecraft:witch#main
 modern minecraft:witch#main
 # ---- end batch2 C ----
 # ==== batch3 A layers (insert below) ====
+legacy minecraft:pillager#main
+modern minecraft:pillager#main
+legacy minecraft:vindicator#main
+modern minecraft:vindicator#main
+legacy minecraft:evoker#main
+modern minecraft:evoker#main
+legacy minecraft:illusioner#main
+modern minecraft:illusioner#main
+legacy minecraft:wandering_trader#main
+modern minecraft:wandering_trader#main
 # ---- end batch3 A ----
 # ==== batch3 B layers (insert below) ====
 # ---- end batch3 B ----

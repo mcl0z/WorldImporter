@@ -2830,6 +2830,80 @@ void RenderWitch(Ctx& ctx, const NbtTagPtr& e) {
 
 // ==== batch3 A renderers (insert below) ====
 
+// ---------- illagers (pillager / vindicator / evoker / illusioner) ----------
+// IllagerModel.setupAnim 静止相位 (walkAnimationPos/Speed = 0): arms 与 legs/手臂 的摆动项为 0, arms 位姿已在 dump 的初始姿态里。
+// 手臂姿态 (AbstractIllager.getArmPose 在 NBT 里没有对应状态时的值):
+//   pillager: 手里有弩 (主手/副手) -> CROSSBOW_HOLD (animateCrossbowHold(right, left, head, true)); 否则 NEUTRAL (双臂下垂)
+//   vindicator / evoker / illusioner: 默认 CROSSED (双手交叉, 只显示 arms, 隐藏 left_arm / right_arm)
+// IllagerModel 构造函数会把 hat 设为不可见; IllusionerRenderer 再把 hat 打开。
+// 手持物品 / 盔甲层 (IllagerRenderer 只有 CustomHeadLayer) / 隐身镜像分身 不画。
+// 旧版 IllagerRenderer.scale(0.9375); 26.x 的 root 已烘焙 0.9375, renderer 不再缩放。
+enum class IllagerArms { Neutral, Crossed, CrossbowHold };
+void RenderIllager(Ctx& ctx, const NbtTagPtr& e, const char* kind, const char* objId, IllagerArms arms,
+                   bool hatVisible, const char* texPath) {
+    const std::string fam = ctx.modern ? "modern" : "legacy";
+    EntityModel model(fam, std::string("minecraft:") + kind + "#main");
+    if (!model.Valid()) return;
+    Placement pl = ReadPlacement(e);
+    const float pitch = HeadPitch(pl);
+    model.SetRot("head", pitch, 0.0f, 0.0f);
+    model.SetVisible("hat", hatVisible);
+    if (arms == IllagerArms::CrossbowHold) {
+        // AnimationUtils.animateCrossbowHold(rightArm, leftArm, head, true); head.yRot = 0 (与其它生物一致)
+        model.SetRot("right_arm", static_cast<float>(-kPi / 2) + pitch + 0.1f, -0.3f, 0.0f);
+        model.SetRot("left_arm", -1.5f + pitch, 0.6f, 0.0f);
+    }
+    const bool crossed = arms == IllagerArms::Crossed;
+    model.SetVisible("arms", crossed);
+    model.SetVisible("left_arm", !crossed);
+    model.SetVisible("right_arm", !crossed);
+
+    const double rendererScale = ctx.modern ? 1.0 : 0.9375;
+    EntityAffine base = LivingBase(pl, 1.62, rendererScale);
+    OutObject& obj = ctx.NewObject(objId);
+    EmitTextured(ctx, obj, model, base, nullptr, std::string("minecraft:") + texPath, ctx.Texture("minecraft", texPath));
+}
+
+// PillagerRenderer / PillagerModel(IllagerModel): 手持弩时为 CROSSBOW_HOLD, 否则 NEUTRAL
+void RenderPillager(Ctx& ctx, const NbtTagPtr& e) {
+    const Equipment eq = ReadEquipment(e);
+    const bool crossbow = eq.mainhand.id == "minecraft:crossbow" || eq.offhand.id == "minecraft:crossbow";
+    RenderIllager(ctx, e, "pillager", "minecraft:pillager",
+                  crossbow ? IllagerArms::CrossbowHold : IllagerArms::Neutral, false, "entity/illager/pillager");
+}
+
+// VindicatorRenderer: 默认 CROSSED (非攻击状态, 攻击状态不在 NBT 里)
+void RenderVindicator(Ctx& ctx, const NbtTagPtr& e) {
+    RenderIllager(ctx, e, "vindicator", "minecraft:vindicator", IllagerArms::Crossed, false, "entity/illager/vindicator");
+}
+
+// EvokerRenderer: SpellcasterIllager.getArmPose 默认 CROSSED (施法状态不在 NBT 里)
+void RenderEvoker(Ctx& ctx, const NbtTagPtr& e) {
+    RenderIllager(ctx, e, "evoker", "minecraft:evoker", IllagerArms::Crossed, false, "entity/illager/evoker");
+}
+
+// IllusionerRenderer: hat 可见; 默认 CROSSED. 只画本体 (isInvisible 的镜像分身不画)
+void RenderIllusioner(Ctx& ctx, const NbtTagPtr& e) {
+    RenderIllager(ctx, e, "illusioner", "minecraft:illusioner", IllagerArms::Crossed, true, "entity/illager/illusioner");
+}
+
+// ---------- wandering trader ----------
+// WanderingTraderRenderer + VillagerModel (与 RenderVillagerLike 的 villager 同一套体型).
+// 旧版 WanderingTraderRenderer.scale(0.9375); 26.x 根节点已烘焙, 不再缩放.
+// 贴图: 1.21.1 entity/wandering_trader.png, 26.x entity/wandering_trader/wandering_trader.png
+void RenderWanderingTrader(Ctx& ctx, const NbtTagPtr& e) {
+    const std::string fam = ctx.modern ? "modern" : "legacy";
+    EntityModel model(fam, "minecraft:wandering_trader#main");
+    if (!model.Valid()) return;
+    Placement pl = ReadPlacement(e);
+    model.SetRot("head", HeadPitch(pl), 0.0f, 0.0f);
+    const double rendererScale = ctx.modern ? 1.0 : 0.9375;
+    EntityAffine base = LivingBase(pl, 1.62, rendererScale);
+    const std::string texPath = PickTex({ "entity/wandering_trader/wandering_trader", "entity/wandering_trader" });
+    OutObject& obj = ctx.NewObject("minecraft:wandering_trader");
+    EmitTextured(ctx, obj, model, base, nullptr, "minecraft:" + texPath, ctx.Texture("minecraft", texPath));
+}
+
 // ---- end batch3 A ----
 
 // ==== batch3 B renderers (insert below) ====
@@ -3138,6 +3212,11 @@ size_t Export(const std::string& name) {
         else if (id == "minecraft:witch") RenderWitch(ctx, e);
         // ---- end batch2 C ----
         // ==== batch3 A dispatch (insert below) ====
+        else if (id == "minecraft:pillager") RenderPillager(ctx, e);
+        else if (id == "minecraft:vindicator") RenderVindicator(ctx, e);
+        else if (id == "minecraft:evoker") RenderEvoker(ctx, e);
+        else if (id == "minecraft:illusioner") RenderIllusioner(ctx, e);
+        else if (id == "minecraft:wandering_trader") RenderWanderingTrader(ctx, e);
         // ---- end batch3 A ----
         // ==== batch3 B dispatch (insert below) ====
         // ---- end batch3 B ----
