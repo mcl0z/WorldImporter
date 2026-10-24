@@ -877,6 +877,12 @@ TopPre LegacyAgeablePre(const AgeableParams& p) {
     };
 }
 TopPre LegacyBabyPre(const EntityModel&) { return LegacyAgeablePre(kAgeHumanoid); }
+// 旧版 AgeableHierarchicalModel.renderToBuffer (及 CamelModel): 幼体整体 scale(s) 后 translate(0, yOffset/16, 0)
+TopPre LegacyWholeBabyPre(float scale, float yOffset) {
+    return [scale, yOffset](const std::string&) {
+        return EntityAffine::S(scale) * EntityAffine::T(0.0, yOffset / 16.0, 0.0);
+    };
+}
 
 void EmitTextured(Ctx& ctx, OutObject& obj, EntityModel& model, const EntityAffine& base,
                   const TopPre& pre, const std::string& matName, const std::string& tex) {
@@ -3059,7 +3065,8 @@ void RenderArmadillo(Ctx& ctx, const NbtTagPtr& e) {
     const std::string texPath = modernBaby ? "entity/armadillo/armadillo_baby"
                                            : PickTex({ "entity/armadillo/armadillo", "entity/armadillo" });
     OutObject& obj = ctx.NewObject("minecraft:armadillo");
-    EmitTextured(ctx, obj, model, LivingBase(pl, 0.4, 1.0), nullptr, "minecraft:" + texPath, ctx.Texture("minecraft", texPath));
+    const TopPre pre = (!ctx.modern && baby) ? LegacyWholeBabyPre(0.6f, 16.02f) : nullptr;  // 1.21.1 ArmadilloModel
+    EmitTextured(ctx, obj, model, LivingBase(pl, 0.4, 1.0), pre, "minecraft:" + texPath, ctx.Texture("minecraft", texPath));
 }
 // ---- end batch3 C armadillo ----
 // ---- batch3 C: axolotl ----
@@ -3280,7 +3287,8 @@ void RenderSniffer(Ctx& ctx, const NbtTagPtr& e) {
     OutObject& obj = ctx.NewObject("minecraft:sniffer");
     const char* babyTex = (ctx.modern && baby) ? "entity/sniffer/snifflet" : nullptr;
     const std::string tex = PickTex({ babyTex, "entity/sniffer/sniffer" });
-    EmitTextured(ctx, obj, model, base, nullptr, "minecraft:" + tex, ctx.Texture("minecraft", tex));
+    const TopPre pre = (!ctx.modern && baby) ? LegacyWholeBabyPre(0.5f, 24.0f) : nullptr;  // 1.21.1 SnifferModel
+    EmitTextured(ctx, obj, model, base, pre, "minecraft:" + tex, ctx.Texture("minecraft", tex));
 }
 
 
@@ -3292,7 +3300,7 @@ void RenderSniffer(Ctx& ctx, const NbtTagPtr& e) {
 // CamelRenderer's 0.7 is the shadow radius, so there is no renderer scale.
 void RenderCamel(Ctx& ctx, const NbtTagPtr& e) {
     const std::string fam = ctx.modern ? "modern" : "legacy";
-    const bool baby = IsBaby(e);  // 26.x only; 1.21.1 has no camel baby model
+    const bool baby = IsBaby(e);  // 26.x: camel_baby layer; 1.21.1: adult layer scaled in renderToBuffer
     EntityModel model(fam, MobLayer(ctx, "camel", baby));
     if (!model.Valid()) return;
     Placement pl = ReadPlacement(e);
@@ -3310,7 +3318,8 @@ void RenderCamel(Ctx& ctx, const NbtTagPtr& e) {
     OutObject& obj = ctx.NewObject("minecraft:camel");
     const char* babyTex = (ctx.modern && baby) ? "entity/camel/camel_baby" : nullptr;
     const std::string tex = PickTex({ babyTex, "entity/camel/camel" });
-    EmitTextured(ctx, obj, model, base, nullptr, "minecraft:" + tex, ctx.Texture("minecraft", tex));
+    const TopPre pre = (!ctx.modern && baby) ? LegacyWholeBabyPre(0.45f, 29.35f) : nullptr;  // 1.21.1 CamelModel
+    EmitTextured(ctx, obj, model, base, pre, "minecraft:" + tex, ctx.Texture("minecraft", tex));
 
     // 26.x SimpleEquipmentLayer(camel_saddle) with CamelSaddleModel (adult geometry, not drawn for babies here).
     // Only the saddle/bridle/reins parts are emitted, as for the horse saddle, to avoid the transparent body sheet.
