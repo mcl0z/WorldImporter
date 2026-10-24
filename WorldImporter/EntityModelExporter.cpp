@@ -4117,6 +4117,7 @@ size_t Export(const std::string& name) {
         }
         if (id == "minecraft:item") { RenderItemEntity(ctx, e); return; }
         if (NumOr(e, "Invisible", 0) != 0) return;
+        bool more1 = false, more2 = false;
         if (id == "minecraft:villager") RenderVillagerLike(ctx, e, false);
         else if (id == "minecraft:zombie_villager") RenderVillagerLike(ctx, e, true);
         else if (id == "minecraft:zombie")
@@ -4171,7 +4172,9 @@ size_t Export(const std::string& name) {
         else if (id == "minecraft:salmon") RenderSalmon(ctx, e);
         else if (id == "minecraft:pufferfish") RenderPufferfish(ctx, e);
         else if (id == "minecraft:squid") RenderSquid(ctx, e, false);
-        else if (id == "minecraft:glow_squid") RenderSquid(ctx, e, true);
+        else more1 = true;  // MSVC C1061: 拆开 else-if 链避免嵌套超限
+        if (more1) {
+        if (id == "minecraft:glow_squid") RenderSquid(ctx, e, true);
         else if (id == "minecraft:dolphin") RenderDolphin(ctx, e);
         else if (id == "minecraft:guardian") RenderGuardian(ctx, e, false);
         else if (id == "minecraft:elder_guardian") RenderGuardian(ctx, e, true);
@@ -4225,7 +4228,9 @@ size_t Export(const std::string& name) {
         // ---- end batch3 D ----
         // ==== batch4 A dispatch (insert below) ====
         else if (id == "minecraft:ender_dragon" && ctx.modern) RenderEnderDragon(ctx, e);
-        else if (id == "minecraft:wither") RenderWither(ctx, e);
+        else more2 = true;  // MSVC C1061: 拆开 else-if 链避免嵌套超限
+        if (more2) {
+        if (id == "minecraft:wither") RenderWither(ctx, e);
         else if (id == "minecraft:end_crystal") RenderEndCrystal(ctx, e);
         // ---- end batch4 A ----
         // ==== batch4 B dispatch (insert below) ====
@@ -4281,6 +4286,8 @@ size_t Export(const std::string& name) {
         // ==== batch4 F dispatch (insert below) ====
         // ---- end batch4 F ----
         else if (id != "minecraft:painting") ctx.skippedEntities[id]++;  // 画由 PaintingExporter 导出
+        }
+        }
     });
     if (!ctx.skippedEntities.empty()) {
         std::cout << "[EntityModels] entities without model:";
