@@ -2644,6 +2644,29 @@ void RenderVex(Ctx& ctx, const NbtTagPtr& e) {
     EmitTextured(ctx, obj, model, MobBase(pl, BodyRot(pl), 1.0), nullptr, "minecraft:" + texPath, ctx.Texture("minecraft", texPath));
 }
 
+// AllayModel.setupAnim at age 0, not moving, dancing or holding: the wings flap at amplitude 0.15*pi,
+// the arms hang at the idle sway 0.43633 rad, and the root gets the cos(0)*0.25 idle bob.
+// Dancing, the held-item raise and the spin are client-side and not saved, so they are left out.
+// Head pitch follows the entity; yaw is relative to the body and stays 0.
+void RenderAllay(Ctx& ctx, const NbtTagPtr& e) {
+    const std::string fam = ctx.modern ? "modern" : "legacy";
+    EntityModel model(fam, "minecraft:allay#main");
+    if (!model.Valid()) return;
+    Placement pl = ReadPlacement(e);
+    ApplyHeadLook(model, pl);
+    const float pi = static_cast<float>(kPi);
+    const float flap = 0.15f * pi;
+    const float sway = 0.43633232f;
+    model.SetRot("right_wing", sway, -pi / 4.0f + flap, 0.0f);
+    model.SetRot("left_wing", sway, pi / 4.0f - flap, 0.0f);
+    model.SetRot("right_arm", 0.0f, 0.0f, sway);
+    model.SetRot("left_arm", 0.0f, 0.0f, -sway);
+    AddPos(model, "root", 0.0f, 0.25f, 0.0f);
+    const std::string texPath = "entity/allay/allay";
+    OutObject& obj = ctx.NewObject("minecraft:allay");
+    EmitTextured(ctx, obj, model, MobBase(pl, BodyRot(pl), 1.0), nullptr, "minecraft:" + texPath, ctx.Texture("minecraft", texPath));
+}
+
 // ---- end batch2 B ----
 
 // ==== batch2 C renderers (insert below) ====
@@ -2931,6 +2954,7 @@ size_t Export(const std::string& name) {
         // ==== batch2 B dispatch (insert below) ====
         else if (id == "minecraft:tadpole") RenderTadpole(ctx, e);
         else if (id == "minecraft:vex") RenderVex(ctx, e);
+        else if (id == "minecraft:allay") RenderAllay(ctx, e);
         // ---- end batch2 B ----
         // ==== batch2 C dispatch (insert below) ====
         // ---- end batch2 C ----

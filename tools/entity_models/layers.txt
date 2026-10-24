@@ -283,6 +283,8 @@ legacy minecraft:tadpole#main
 modern minecraft:tadpole#main
 legacy minecraft:vex#main
 modern minecraft:vex#main
+legacy minecraft:allay#main
+modern minecraft:allay#main
 # ---- end batch2 B ----
 # ==== batch2 C layers (insert below) ====
 # ---- end batch2 C ----
