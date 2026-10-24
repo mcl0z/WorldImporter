@@ -2904,6 +2904,43 @@ void RenderZombifiedPiglin(Ctx& ctx, const NbtTagPtr& e) {
                         "entity/piglin/zombified_piglin_baby", true);
 }
 
+// BatModel at animation time 0: BatAnimation.BAT_RESTING (BatFlags bit0) or BAT_FLYING, same keyframes in
+// 1.21.1 and 26.3. The keyframe values are offsets on the dump's rest pose (posVec negates y).
+// Resting head yaw is not saved, so it stays 0. Bats have no head pitch, and the 0.25 in the renderer is the
+// shadow radius, so the scale is 1.0.
+void RenderBat(Ctx& ctx, const NbtTagPtr& e) {
+    const std::string fam = ctx.modern ? "modern" : "legacy";
+    EntityModel model(fam, "minecraft:bat#main");
+    if (!model.Valid()) return;
+    Placement pl = ReadPlacement(e);
+    const float pi = static_cast<float>(kPi);
+    const float deg = static_cast<float>(kPi / 180.0);
+    const bool resting = (static_cast<int>(NumOr(e, "BatFlags", 0)) & 1) != 0;
+    if (resting) {
+        model.AddRot("head", pi, 0.0f, 0.0f);
+        AddPos(model, "head", 0.0f, -0.5f, 0.0f);
+        model.AddRot("body", pi, 0.0f, 0.0f);
+        AddPos(model, "body", 0.0f, -0.5f, 0.0f);
+        model.AddRot("right_wing", 0.0f, -10.0f * deg, 0.0f);
+        AddPos(model, "right_wing", 0.0f, 0.0f, 1.0f);
+        model.AddRot("right_wing_tip", 0.0f, -120.0f * deg, 0.0f);
+        model.AddRot("left_wing", 0.0f, 10.0f * deg, 0.0f);
+        AddPos(model, "left_wing", 0.0f, 0.0f, 1.0f);
+        model.AddRot("left_wing_tip", 0.0f, 120.0f * deg, 0.0f);
+    } else {
+        model.AddRot("body", 40.0f * deg, 0.0f, 0.0f);
+        model.AddRot("feet", 10.0f * deg, 0.0f, 0.0f);
+        model.AddRot("right_wing", 0.0f, 85.0f * deg, 0.0f);
+        model.AddRot("right_wing_tip", 0.0f, 10.5f * deg, 0.0f);
+        model.AddRot("left_wing", 0.0f, -85.0f * deg, 0.0f);
+        model.AddRot("left_wing_tip", 0.0f, -10.5f * deg, 0.0f);
+    }
+    const std::string texPath = PickTex({ "entity/bat/bat", "entity/bat" });
+    OutObject& obj = ctx.NewObject("minecraft:bat");
+    EmitTextured(ctx, obj, model, MobBase(pl, BodyRot(pl), 1.0), nullptr, "minecraft:" + texPath,
+                 ctx.Texture("minecraft", texPath));
+}
+
 // ---- end batch3 B ----
 
 // ==== batch3 C renderers (insert below) ====
@@ -3213,6 +3250,7 @@ size_t Export(const std::string& name) {
         else if (id == "minecraft:piglin") RenderPiglin(ctx, e);
         else if (id == "minecraft:piglin_brute") RenderPiglinBrute(ctx, e);
         else if (id == "minecraft:zombified_piglin") RenderZombifiedPiglin(ctx, e);
+        else if (id == "minecraft:bat") RenderBat(ctx, e);
         // ---- end batch3 B ----
         // ==== batch3 C dispatch (insert below) ====
         // ---- end batch3 C ----
