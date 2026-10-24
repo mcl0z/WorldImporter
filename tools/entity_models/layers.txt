@@ -285,6 +285,8 @@ legacy minecraft:vex#main
 modern minecraft:vex#main
 legacy minecraft:allay#main
 modern minecraft:allay#main
+legacy minecraft:phantom#main
+modern minecraft:phantom#main
 # ---- end batch2 B ----
 # ==== batch2 C layers (insert below) ====
 # ---- end batch2 C ----
