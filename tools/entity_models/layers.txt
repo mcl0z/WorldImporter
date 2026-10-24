@@ -279,6 +279,9 @@ modern minecraft:magma_cube#main
 # ==== batch2 A layers (insert below) ====
 legacy minecraft:ravager#main
 modern minecraft:ravager#main
+legacy minecraft:hoglin#main
+modern minecraft:hoglin#main
+modern minecraft:hoglin_baby#main
 # ---- end batch2 A ----
 # ==== batch2 B layers (insert below) ====
 # ---- end batch2 B ----

@@ -2621,6 +2621,28 @@ void RenderRavager(Ctx& ctx, const NbtTagPtr& e) {
                  "minecraft:" + texPath, ctx.Texture("minecraft", texPath));
 }
 
+// HoglinModel / ZoglinModel (AbstractHoglinRenderer, no renderer scale; 0.7 is the shadow radius).
+// setupAnim at rest: the head sits at its headbutt rest pose (0.8727) and ignores head pitch, ears keep
+// their baked rest zRot. 1.21.1 babies use the adult layer with AgeableList scaling (8, 6, 1.9, 2.0, 24).
+// That setupAnim also sets mane z to -7 for adults and -3 for babies, so the baked -5 is overridden.
+// 26.x babies have their own layer (BabyHoglinModel), whose rest headbutt y offset is 0.
+const AgeableParams kAgeHoglin { true, 8.0f, 6.0f, 1.9f, 2.0f, 24.0f, { "head" } };
+void RenderHoglinLike(Ctx& ctx, const NbtTagPtr& e, const std::string& kind, const std::string& id) {
+    const std::string fam = ctx.modern ? "modern" : "legacy";
+    const bool baby = IsBaby(e);
+    EntityModel model(fam, MobLayer(ctx, kind, baby));
+    if (!model.Valid()) return;
+    Placement pl = ReadPlacement(e);
+    if (int mane = model.Find("mane"); mane >= 0) model.Pose(mane)[2] = (!ctx.modern && baby) ? -3.0f : -7.0f;
+    const std::string adultTex = "entity/hoglin/" + kind;
+    const std::string babyTex = adultTex + "_baby";
+    const std::string texPath = (ctx.modern && baby) ? PickTex({ babyTex.c_str(), adultTex.c_str() }) : adultTex;
+    TopPre pre = (!ctx.modern && baby) ? LegacyAgeablePre(kAgeHoglin) : nullptr;
+    OutObject& obj = ctx.NewObject(id);
+    EmitTextured(ctx, obj, model, MobBase(pl, BodyRot(pl), 1.0), pre, "minecraft:" + texPath, ctx.Texture("minecraft", texPath));
+}
+void RenderHoglin(Ctx& ctx, const NbtTagPtr& e) { RenderHoglinLike(ctx, e, "hoglin", "minecraft:hoglin"); }
+
 // ---- end batch2 A ----
 
 // ==== batch2 B renderers (insert below) ====
@@ -2909,6 +2931,7 @@ size_t Export(const std::string& name) {
         else if (id == "minecraft:magma_cube") RenderMagmaCube(ctx, e);
         // ==== batch2 A dispatch (insert below) ====
         else if (id == "minecraft:ravager") RenderRavager(ctx, e);
+        else if (id == "minecraft:hoglin") RenderHoglin(ctx, e);
         // ---- end batch2 A ----
         // ==== batch2 B dispatch (insert below) ====
         // ---- end batch2 B ----
