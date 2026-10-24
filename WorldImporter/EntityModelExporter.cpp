@@ -3354,6 +3354,22 @@ void RenderCamel(Ctx& ctx, const NbtTagPtr& e) {
 // ---- end batch4 C ----
 
 // ==== batch4 D renderers (insert below) ====
+// ---------- wither skull (batch4 D) ----------
+// WitherSkullRenderer: SkullModel head takes the entity yaw/pitch (Rotation), animationPos is 0.
+// The blue (invulnerable) skull is the "dangerous" NBT flag. Drawn at the entity position after scale(-1,-1,1).
+void RenderWitherSkull(Ctx& ctx, const NbtTagPtr& e) {
+    using A = EntityAffine;
+    EntityModel model(ctx.modern ? "modern" : "legacy", "minecraft:wither_skull#main");
+    if (!model.Valid()) return;
+    Placement pl = ReadPlacement(e);
+    model.SetRot("head", HeadPitch(pl), static_cast<float>(pl.yaw * kPi / 180.0), 0.0f);
+    const bool dangerous = NumOr(e, "dangerous", 0) != 0;
+    const std::string tex = dangerous ? "entity/wither/wither_invulnerable" : "entity/wither/wither";
+    const A base = A::T(pl.x, pl.y, pl.z) * A::S(-1.0, -1.0, 1.0);
+    OutObject& obj = ctx.NewObject("minecraft:wither_skull");
+    EmitTextured(ctx, obj, model, base, nullptr, "minecraft:" + tex, ctx.Texture("minecraft", tex));
+}
+
 // ---- end batch4 D ----
 
 // ==== batch4 E renderers (insert below) ====
@@ -3689,6 +3705,7 @@ size_t Export(const std::string& name) {
         // ==== batch4 C dispatch (insert below) ====
         // ---- end batch4 C ----
         // ==== batch4 D dispatch (insert below) ====
+        else if (id == "minecraft:wither_skull") RenderWitherSkull(ctx, e);
         // ---- end batch4 D ----
         // ==== batch4 E dispatch (insert below) ====
         // ---- end batch4 E ----
