@@ -3354,6 +3354,30 @@ void RenderCamel(Ctx& ctx, const NbtTagPtr& e) {
 // ---- end batch4 C ----
 
 // ==== batch4 D renderers (insert below) ====
+// ---------- arrow / spectral arrow (batch4 D) ----------
+// ArrowRenderer: yaw-90 and pitch from Rotation. Tipped arrows use arrow_tipped; the tip state is the potion
+// contents of the saved pickup item. 1.21.1 draws arrows with hard-coded quads and has no arrow layer, so
+// legacy arrows are counted as skipped.
+bool ArrowTipped(const NbtTagPtr& e) {
+    auto pc = getChildByName(getChildByName(getChildByName(e, "item"), "components"), "minecraft:potion_contents");
+    if (!pc) return false;
+    auto effects = getChildByName(pc, "custom_effects");
+    return getChildByName(pc, "potion") || getChildByName(pc, "custom_color") || (effects && !effects->children.empty());
+}
+
+void RenderArrow(Ctx& ctx, const NbtTagPtr& e, bool spectral) {
+    using A = EntityAffine;
+    const char* id = spectral ? "minecraft:spectral_arrow" : "minecraft:arrow";
+    EntityModel model(ctx.modern ? "modern" : "legacy", "minecraft:arrow#main");
+    if (!model.Valid()) { ctx.skippedEntities[id]++; return; }
+    Placement pl = ReadPlacement(e);
+    const A base = A::T(pl.x, pl.y, pl.z) * A::RYDeg(pl.yaw - 90.0) * A::RZDeg(pl.pitch);
+    const std::string tex = spectral ? "entity/projectiles/arrow_spectral"
+                          : ArrowTipped(e) ? "entity/projectiles/arrow_tipped" : "entity/projectiles/arrow";
+    OutObject& obj = ctx.NewObject(id);
+    EmitTextured(ctx, obj, model, base, nullptr, "minecraft:" + tex, ctx.Texture("minecraft", tex));
+}
+
 // ---------- trident (batch4 D) ----------
 // ThrownTridentRenderer: yaw-90 and pitch+90 from Rotation. The enchantment glint pass is not exported.
 void RenderTrident(Ctx& ctx, const NbtTagPtr& e) {
@@ -3744,6 +3768,8 @@ size_t Export(const std::string& name) {
         // ==== batch4 C dispatch (insert below) ====
         // ---- end batch4 C ----
         // ==== batch4 D dispatch (insert below) ====
+        else if (id == "minecraft:arrow") RenderArrow(ctx, e, false);
+        else if (id == "minecraft:spectral_arrow") RenderArrow(ctx, e, true);
         else if (id == "minecraft:trident") RenderTrident(ctx, e);
         else if (id == "minecraft:leash_knot") RenderLeashKnot(ctx, e);
         else if (id == "minecraft:llama_spit") RenderLlamaSpit(ctx, e);
