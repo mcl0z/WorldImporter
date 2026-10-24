@@ -2842,6 +2842,58 @@ void RenderWitch(Ctx& ctx, const NbtTagPtr& e) {
 
 // ==== batch3 D renderers (insert below) ====
 
+// ---------- breeze (batch3 D) ----------
+// Emit only the listed parts' own polys (a child part is skipped unless listed). Visibility is not used,
+// because Emit hides children of hidden parents.
+void BatchD_EmitParts(Ctx& ctx, OutObject& obj, EntityModel& model, const EntityAffine& base,
+                      const std::string& texPath, const std::vector<std::string>& parts) {
+    const std::string tex = ctx.Texture("minecraft", texPath);
+    if (tex.empty()) return;
+    const int mat = ctx.Material("minecraft:" + texPath, tex);
+    model.Emit(obj.mesh, base, [&](int part) {
+        const std::string& n = model.Name(part);
+        return std::find(parts.begin(), parts.end(), n) != parts.end() ? mat : -1;
+    }, nullptr);
+}
+
+// BreezeModel has no head look. 26.x: three layer models (main = head + rods, wind = wind_body, eyes) with the dump
+// rest pose; keyframes are not applied. 1.21.1: one model switched per pass (base = head + rods, wind = wind_body
+// subtree on breeze_wind#main, eyes = eyes). The 1.21.1 setupAnim at age 0 writes absolute values: head.y 4.25,
+// wind_top.x 0.6, wind_mid.z 0.8, wind_bottom.x -0.25. BreezeRenderer's 0.5 is the shadow radius.
+void BreezeLegacyRest(EntityModel& model) {
+    auto set = [&](const char* p, int axis, float v) { int i = model.Find(p); if (i >= 0) model.Pose(i)[axis] = v; };
+    set("head", 1, 4.25f);
+    set("wind_top", 0, 0.6f);
+    set("wind_mid", 2, 0.8f);
+    set("wind_bottom", 0, -0.25f);
+}
+void RenderBreeze(Ctx& ctx, const NbtTagPtr& e) {
+    const std::string fam = ctx.modern ? "modern" : "legacy";
+    EntityModel main(fam, "minecraft:breeze#main");
+    if (!main.Valid()) return;
+    Placement pl = ReadPlacement(e);
+    const EntityAffine base = LivingBase(pl, 1.0, 1.0);
+    OutObject& obj = ctx.NewObject("minecraft:breeze");
+    const std::string body = "entity/breeze/breeze", wind = "entity/breeze/breeze_wind", eyes = "entity/breeze/breeze_eyes";
+    if (ctx.modern) {
+        EmitTextured(ctx, obj, main, base, nullptr, "minecraft:" + body, ctx.Texture("minecraft", body));
+        EntityModel windM(fam, "minecraft:breeze#wind");
+        if (windM.Valid()) EmitTextured(ctx, obj, windM, base, nullptr, "minecraft:" + wind, ctx.Texture("minecraft", wind));
+        EntityModel eyesM(fam, "minecraft:breeze#eyes");
+        if (eyesM.Valid()) EmitTextured(ctx, obj, eyesM, base, nullptr, "minecraft:" + eyes, ctx.Texture("minecraft", eyes));
+    } else {
+        EntityModel windM(fam, "minecraft:breeze_wind#main");
+        BreezeLegacyRest(main);
+        BatchD_EmitParts(ctx, obj, main, base, body, { "head", "rods", "rod_1", "rod_2", "rod_3" });
+        if (windM.Valid()) {
+            BreezeLegacyRest(windM);
+            BatchD_EmitParts(ctx, obj, windM, base, wind, { "wind_body", "wind_bottom", "wind_mid", "wind_top" });
+        }
+        BatchD_EmitParts(ctx, obj, main, base, eyes, { "eyes" });
+    }
+}
+
+
 // ---------- sniffer (batch3 D) ----------
 // SnifferModel.setupAnim at rest: head.xRot = pitch, head.yRot = netHeadYaw (0). Dig/sniff/walk keyframes use the
 // dump rest pose. 26.x snifflet = sniffer_baby + snifflet.png. 1.21.1 has no baby model and no baby scaling.
@@ -3212,6 +3264,7 @@ size_t Export(const std::string& name) {
         // ==== batch3 C dispatch (insert below) ====
         // ---- end batch3 C ----
         // ==== batch3 D dispatch (insert below) ====
+        else if (id == "minecraft:breeze") RenderBreeze(ctx, e);
         else if (id == "minecraft:sniffer") RenderSniffer(ctx, e);
         else if (id == "minecraft:camel") RenderCamel(ctx, e);
         // ---- end batch3 D ----

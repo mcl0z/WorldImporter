@@ -312,6 +312,11 @@ modern minecraft:witch#main
 # ==== batch3 C layers (insert below) ====
 # ---- end batch3 C ----
 # ==== batch3 D layers (insert below) ====
+legacy minecraft:breeze#main
+legacy minecraft:breeze_wind#main
+modern minecraft:breeze#main
+modern minecraft:breeze#wind
+modern minecraft:breeze#eyes
 legacy minecraft:sniffer#main
 modern minecraft:sniffer#main
 modern minecraft:sniffer_baby#main
