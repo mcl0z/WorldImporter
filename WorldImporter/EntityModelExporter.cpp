@@ -2898,6 +2898,12 @@ void RenderPiglinBrute(Ctx& ctx, const NbtTagPtr& e) {
     BRenderPiglinCommon(ctx, e, "piglin_brute", "entity/piglin/piglin_brute", "", false);
 }
 
+// Zombified piglin: zombie-style arms (see BPiglinPose), the zombified_piglin textures.
+void RenderZombifiedPiglin(Ctx& ctx, const NbtTagPtr& e) {
+    BRenderPiglinCommon(ctx, e, "zombified_piglin", "entity/piglin/zombified_piglin",
+                        "entity/piglin/zombified_piglin_baby", true);
+}
+
 // ---- end batch3 B ----
 
 // ==== batch3 C renderers (insert below) ====
@@ -3206,6 +3212,7 @@ size_t Export(const std::string& name) {
         // ==== batch3 B dispatch (insert below) ====
         else if (id == "minecraft:piglin") RenderPiglin(ctx, e);
         else if (id == "minecraft:piglin_brute") RenderPiglinBrute(ctx, e);
+        else if (id == "minecraft:zombified_piglin") RenderZombifiedPiglin(ctx, e);
         // ---- end batch3 B ----
         // ==== batch3 C dispatch (insert below) ====
         // ---- end batch3 C ----
