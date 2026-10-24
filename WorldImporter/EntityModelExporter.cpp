@@ -3717,6 +3717,85 @@ void RenderMinecart(Ctx& ctx, const NbtTagPtr& e, const std::string& id, const s
 // ---- end batch4 C ----
 
 // ==== batch4 D renderers (insert below) ====
+// ---------- arrow / spectral arrow (batch4 D) ----------
+// ArrowRenderer: yaw-90 and pitch from Rotation. Tipped arrows use arrow_tipped; the tip state is the potion
+// contents of the saved pickup item. 1.21.1 draws arrows with hard-coded quads and has no arrow layer, so
+// legacy arrows are counted as skipped.
+bool ArrowTipped(const NbtTagPtr& e) {
+    auto pc = getChildByName(getChildByName(getChildByName(e, "item"), "components"), "minecraft:potion_contents");
+    if (!pc) return false;
+    auto effects = getChildByName(pc, "custom_effects");
+    return getChildByName(pc, "potion") || getChildByName(pc, "custom_color") || (effects && !effects->children.empty());
+}
+
+void RenderArrow(Ctx& ctx, const NbtTagPtr& e, bool spectral) {
+    using A = EntityAffine;
+    const char* id = spectral ? "minecraft:spectral_arrow" : "minecraft:arrow";
+    EntityModel model(ctx.modern ? "modern" : "legacy", "minecraft:arrow#main");
+    if (!model.Valid()) { ctx.skippedEntities[id]++; return; }
+    Placement pl = ReadPlacement(e);
+    const A base = A::T(pl.x, pl.y, pl.z) * A::RYDeg(pl.yaw - 90.0) * A::RZDeg(pl.pitch);
+    const std::string tex = spectral ? "entity/projectiles/arrow_spectral"
+                          : ArrowTipped(e) ? "entity/projectiles/arrow_tipped" : "entity/projectiles/arrow";
+    OutObject& obj = ctx.NewObject(id);
+    EmitTextured(ctx, obj, model, base, nullptr, "minecraft:" + tex, ctx.Texture("minecraft", tex));
+}
+
+// ---------- trident (batch4 D) ----------
+// ThrownTridentRenderer: yaw-90 and pitch+90 from Rotation. The enchantment glint pass is not exported.
+void RenderTrident(Ctx& ctx, const NbtTagPtr& e) {
+    using A = EntityAffine;
+    EntityModel model(ctx.modern ? "modern" : "legacy", "minecraft:trident#main");
+    if (!model.Valid()) return;
+    Placement pl = ReadPlacement(e);
+    const A base = A::T(pl.x, pl.y, pl.z) * A::RYDeg(pl.yaw - 90.0) * A::RZDeg(pl.pitch + 90.0);
+    const std::string tex = PickTex({ "entity/trident/trident", "entity/trident" });
+    OutObject& obj = ctx.NewObject("minecraft:trident");
+    EmitTextured(ctx, obj, model, base, nullptr, "minecraft:" + tex, ctx.Texture("minecraft", tex));
+}
+
+// ---------- leash knot (batch4 D) ----------
+// LeashKnotRenderer has no pose: the knot model at the entity position with the usual scale(-1,-1,1).
+void RenderLeashKnot(Ctx& ctx, const NbtTagPtr& e) {
+    using A = EntityAffine;
+    EntityModel model(ctx.modern ? "modern" : "legacy", "minecraft:leash_knot#main");
+    if (!model.Valid()) return;
+    Placement pl = ReadPlacement(e);
+    const A base = A::T(pl.x, pl.y, pl.z) * A::S(-1.0, -1.0, 1.0);
+    const std::string tex = PickTex({ "entity/lead_knot/lead_knot", "entity/lead_knot" });
+    OutObject& obj = ctx.NewObject("minecraft:leash_knot");
+    EmitTextured(ctx, obj, model, base, nullptr, "minecraft:" + tex, ctx.Texture("minecraft", tex));
+}
+
+// ---------- llama spit (batch4 D) ----------
+// LlamaSpitRenderer: translate(0, 0.15, 0), then yaw-90 and pitch from Rotation. The model has no animation.
+void RenderLlamaSpit(Ctx& ctx, const NbtTagPtr& e) {
+    using A = EntityAffine;
+    EntityModel model(ctx.modern ? "modern" : "legacy", "minecraft:llama_spit#main");
+    if (!model.Valid()) return;
+    Placement pl = ReadPlacement(e);
+    const A base = A::T(pl.x, pl.y, pl.z) * A::T(0.0, 0.15, 0.0) * A::RYDeg(pl.yaw - 90.0) * A::RZDeg(pl.pitch);
+    const std::string tex = PickTex({ "entity/llama/llama_spit", "entity/llama/spit" });
+    OutObject& obj = ctx.NewObject("minecraft:llama_spit");
+    EmitTextured(ctx, obj, model, base, nullptr, "minecraft:" + tex, ctx.Texture("minecraft", tex));
+}
+
+// ---------- wither skull (batch4 D) ----------
+// WitherSkullRenderer: SkullModel head takes the entity yaw/pitch (Rotation), animationPos is 0.
+// The blue (invulnerable) skull is the "dangerous" NBT flag. Drawn at the entity position after scale(-1,-1,1).
+void RenderWitherSkull(Ctx& ctx, const NbtTagPtr& e) {
+    using A = EntityAffine;
+    EntityModel model(ctx.modern ? "modern" : "legacy", "minecraft:wither_skull#main");
+    if (!model.Valid()) return;
+    Placement pl = ReadPlacement(e);
+    model.SetRot("head", HeadPitch(pl), static_cast<float>(pl.yaw * kPi / 180.0), 0.0f);
+    const bool dangerous = NumOr(e, "dangerous", 0) != 0;
+    const std::string tex = dangerous ? "entity/wither/wither_invulnerable" : "entity/wither/wither";
+    const A base = A::T(pl.x, pl.y, pl.z) * A::S(-1.0, -1.0, 1.0);
+    OutObject& obj = ctx.NewObject("minecraft:wither_skull");
+    EmitTextured(ctx, obj, model, base, nullptr, "minecraft:" + tex, ctx.Texture("minecraft", tex));
+}
+
 // ---- end batch4 D ----
 
 // ==== batch4 E renderers (insert below) ====
@@ -4090,6 +4169,12 @@ size_t Export(const std::string& name) {
         else if (id == "minecraft:command_block_minecart") RenderMinecart(ctx, e, id, "command_block_minecart", "minecraft:command_block", 6);
         // ---- end batch4 C ----
         // ==== batch4 D dispatch (insert below) ====
+        else if (id == "minecraft:arrow") RenderArrow(ctx, e, false);
+        else if (id == "minecraft:spectral_arrow") RenderArrow(ctx, e, true);
+        else if (id == "minecraft:trident") RenderTrident(ctx, e);
+        else if (id == "minecraft:leash_knot") RenderLeashKnot(ctx, e);
+        else if (id == "minecraft:llama_spit") RenderLlamaSpit(ctx, e);
+        else if (id == "minecraft:wither_skull") RenderWitherSkull(ctx, e);
         // ---- end batch4 D ----
         // ==== batch4 E dispatch (insert below) ====
         // ---- end batch4 E ----

@@ -483,6 +483,13 @@ modern minecraft:spawner_minecart#main
 modern minecraft:command_block_minecart#main
 # ---- end batch4 C ----
 # ==== batch4 D layers (insert below) ====
+modern minecraft:arrow#main
+legacy minecraft:leash_knot#main
+modern minecraft:leash_knot#main
+legacy minecraft:llama_spit#main
+modern minecraft:llama_spit#main
+legacy minecraft:wither_skull#main
+modern minecraft:wither_skull#main
 # ---- end batch4 D ----
 # ==== batch4 E layers (insert below) ====
 # ---- end batch4 E ----
