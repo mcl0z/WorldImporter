@@ -277,6 +277,17 @@ modern minecraft:blaze#main
 modern minecraft:ghast#main
 modern minecraft:magma_cube#main
 # ==== batch2 A layers (insert below) ====
+legacy minecraft:ravager#main
+modern minecraft:ravager#main
+legacy minecraft:hoglin#main
+modern minecraft:hoglin#main
+modern minecraft:hoglin_baby#main
+legacy minecraft:zoglin#main
+modern minecraft:zoglin#main
+modern minecraft:zoglin_baby#main
+legacy minecraft:ocelot#main
+modern minecraft:ocelot#main
+modern minecraft:ocelot_baby#main
 # ---- end batch2 A ----
 # ==== batch2 B layers (insert below) ====
 # ---- end batch2 B ----

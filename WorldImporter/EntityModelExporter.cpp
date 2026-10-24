@@ -2605,6 +2605,65 @@ void RenderMagmaCube(Ctx& ctx, const NbtTagPtr& e) {
 
 // ==== batch2 A renderers (insert below) ====
 
+// RavagerModel.setupAnim at rest: not stunned and not attacking or roaring (none of which is saved), so the
+// neck and mouth keep their rest values. RavagerRenderer's 1.1 is the shadow radius, not a scale.
+// Adults only in both families. The head follows the pitch, and the mouth's rest xRot is pi * 0.01.
+void RenderRavager(Ctx& ctx, const NbtTagPtr& e) {
+    const std::string fam = ctx.modern ? "modern" : "legacy";
+    EntityModel model(fam, "minecraft:ravager#main");
+    if (!model.Valid()) return;
+    Placement pl = ReadPlacement(e);
+    ApplyHeadLook(model, pl);
+    SetXRot(model, "mouth", static_cast<float>(kPi * 0.01));
+    const std::string texPath = "entity/illager/ravager";
+    OutObject& obj = ctx.NewObject("minecraft:ravager");
+    EmitTextured(ctx, obj, model, MobBase(pl, BodyRot(pl), 1.0), nullptr,
+                 "minecraft:" + texPath, ctx.Texture("minecraft", texPath));
+}
+
+// HoglinModel / ZoglinModel (AbstractHoglinRenderer, no renderer scale; 0.7 is the shadow radius).
+// setupAnim at rest: the head sits at its headbutt rest pose (0.8727) and ignores head pitch, ears keep
+// their baked rest zRot. 1.21.1 babies use the adult layer with AgeableList scaling (8, 6, 1.9, 2.0, 24).
+// That setupAnim also sets mane z to -7 for adults and -3 for babies, so the baked -5 is overridden.
+// 26.x babies have their own layer (BabyHoglinModel), whose rest headbutt y offset is 0.
+const AgeableParams kAgeHoglin { true, 8.0f, 6.0f, 1.9f, 2.0f, 24.0f, { "head" } };
+void RenderHoglinLike(Ctx& ctx, const NbtTagPtr& e, const std::string& kind, const std::string& id) {
+    const std::string fam = ctx.modern ? "modern" : "legacy";
+    const bool baby = IsBaby(e);
+    EntityModel model(fam, MobLayer(ctx, kind, baby));
+    if (!model.Valid()) return;
+    Placement pl = ReadPlacement(e);
+    if (int mane = model.Find("mane"); mane >= 0) model.Pose(mane)[2] = (!ctx.modern && baby) ? -3.0f : -7.0f;
+    const std::string adultTex = "entity/hoglin/" + kind;
+    const std::string babyTex = adultTex + "_baby";
+    const std::string texPath = (ctx.modern && baby) ? PickTex({ babyTex.c_str(), adultTex.c_str() }) : adultTex;
+    TopPre pre = (!ctx.modern && baby) ? LegacyAgeablePre(kAgeHoglin) : nullptr;
+    OutObject& obj = ctx.NewObject(id);
+    EmitTextured(ctx, obj, model, MobBase(pl, BodyRot(pl), 1.0), pre, "minecraft:" + texPath, ctx.Texture("minecraft", texPath));
+}
+void RenderHoglin(Ctx& ctx, const NbtTagPtr& e) { RenderHoglinLike(ctx, e, "hoglin", "minecraft:hoglin"); }
+void RenderZoglin(Ctx& ctx, const NbtTagPtr& e) { RenderHoglinLike(ctx, e, "zoglin", "minecraft:zoglin"); }
+
+// OcelotModel (1.21.1) / AdultOcelotModel, BabyOcelotModel (26.x). Crouching and sprinting are not saved,
+// so the standing pose applies: setupAnim p == 1 gives tail2 xRot 1.7278761, all else stays baked.
+// OcelotRenderer's 0.4 is the shadow radius. Legacy babies use the AgeableList scaling of kAgeOcelot.
+// 1.21.1 has no ocelot_baby texture, so legacy babies use ocelot.png.
+void RenderOcelot(Ctx& ctx, const NbtTagPtr& e) {
+    const std::string fam = ctx.modern ? "modern" : "legacy";
+    const bool baby = IsBaby(e);
+    EntityModel model(fam, MobLayer(ctx, "ocelot", baby));
+    if (!model.Valid()) return;
+    Placement pl = ReadPlacement(e);
+    SetXRot(model, "tail2", 1.7278761f);
+    ApplyHeadLook(model, pl);
+    const std::string adultTex = "entity/cat/ocelot";
+    const std::string babyTex = "entity/cat/ocelot_baby";
+    const std::string texPath = (ctx.modern && baby) ? PickTex({ babyTex.c_str(), adultTex.c_str() }) : adultTex;
+    TopPre pre = (!ctx.modern && baby) ? LegacyAgeablePre(kAgeOcelot) : nullptr;
+    OutObject& obj = ctx.NewObject("minecraft:ocelot");
+    EmitTextured(ctx, obj, model, MobBase(pl, BodyRot(pl), 1.0), pre, "minecraft:" + texPath, ctx.Texture("minecraft", texPath));
+}
+
 // ---- end batch2 A ----
 
 // ==== batch2 B renderers (insert below) ====
@@ -2892,6 +2951,10 @@ size_t Export(const std::string& name) {
         else if (id == "minecraft:ghast") RenderGhast(ctx, e);
         else if (id == "minecraft:magma_cube") RenderMagmaCube(ctx, e);
         // ==== batch2 A dispatch (insert below) ====
+        else if (id == "minecraft:ravager") RenderRavager(ctx, e);
+        else if (id == "minecraft:hoglin") RenderHoglin(ctx, e);
+        else if (id == "minecraft:zoglin") RenderZoglin(ctx, e);
+        else if (id == "minecraft:ocelot") RenderOcelot(ctx, e);
         // ---- end batch2 A ----
         // ==== batch2 B dispatch (insert below) ====
         // ---- end batch2 B ----
