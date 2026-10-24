@@ -312,6 +312,9 @@ modern minecraft:witch#main
 # ==== batch3 C layers (insert below) ====
 # ---- end batch3 C ----
 # ==== batch3 D layers (insert below) ====
+legacy minecraft:sniffer#main
+modern minecraft:sniffer#main
+modern minecraft:sniffer_baby#main
 legacy minecraft:camel#main
 modern minecraft:camel#main
 modern minecraft:camel_baby#main

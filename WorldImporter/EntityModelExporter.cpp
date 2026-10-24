@@ -2842,6 +2842,25 @@ void RenderWitch(Ctx& ctx, const NbtTagPtr& e) {
 
 // ==== batch3 D renderers (insert below) ====
 
+// ---------- sniffer (batch3 D) ----------
+// SnifferModel.setupAnim at rest: head.xRot = pitch, head.yRot = netHeadYaw (0). Dig/sniff/walk keyframes use the
+// dump rest pose. 26.x snifflet = sniffer_baby + snifflet.png. 1.21.1 has no baby model and no baby scaling.
+// SnifferRenderer's 1.1 is the shadow radius.
+void RenderSniffer(Ctx& ctx, const NbtTagPtr& e) {
+    const std::string fam = ctx.modern ? "modern" : "legacy";
+    const bool baby = IsBaby(e);
+    EntityModel model(fam, MobLayer(ctx, "sniffer", baby));
+    if (!model.Valid()) return;
+    Placement pl = ReadPlacement(e);
+    ApplyHeadLook(model, pl);
+    const EntityAffine base = LivingBase(pl, 1.0, 1.0);
+    OutObject& obj = ctx.NewObject("minecraft:sniffer");
+    const char* babyTex = (ctx.modern && baby) ? "entity/sniffer/snifflet" : nullptr;
+    const std::string tex = PickTex({ babyTex, "entity/sniffer/sniffer" });
+    EmitTextured(ctx, obj, model, base, nullptr, "minecraft:" + tex, ctx.Texture("minecraft", tex));
+}
+
+
 // ---------- camel (batch3 D) ----------
 // CamelModel.setupAnim at rest: applyHeadRotation only (netHeadYaw 0 for NoAI, head pitch clamped to [-25, 45];
 // jumpCooldown is runtime, so no lift). Walk/sit/standup/dash keyframes use the dump rest pose.
@@ -3193,6 +3212,7 @@ size_t Export(const std::string& name) {
         // ==== batch3 C dispatch (insert below) ====
         // ---- end batch3 C ----
         // ==== batch3 D dispatch (insert below) ====
+        else if (id == "minecraft:sniffer") RenderSniffer(ctx, e);
         else if (id == "minecraft:camel") RenderCamel(ctx, e);
         // ---- end batch3 D ----
         else if (id != "minecraft:painting") ctx.skippedEntities[id]++;  // 画由 PaintingExporter 导出
