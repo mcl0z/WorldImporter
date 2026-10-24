@@ -2621,6 +2621,29 @@ void RenderTadpole(Ctx& ctx, const NbtTagPtr& e) {
     EmitTextured(ctx, obj, model, MobBase(pl, BodyRot(pl), 1.0), nullptr, "minecraft:" + texPath, ctx.Texture("minecraft", texPath));
 }
 
+// VexModel.setupAnim at age 0, not charging, nothing in hands: the arms sit at pi/5 with the cos(0)*0.1 bob,
+// the body tilts pi/20, and the wings take their fixed angles with the flap yRot at age 0.
+// Head pitch follows the entity. Yaw is relative to the body and not saved, so it stays 0.
+// Held items (ItemInHandLayer) are not drawn. The vex texture is translucent in vanilla; the OBJ material is opaque.
+void RenderVex(Ctx& ctx, const NbtTagPtr& e) {
+    const std::string fam = ctx.modern ? "modern" : "legacy";
+    EntityModel model(fam, "minecraft:vex#main");
+    if (!model.Valid()) return;
+    Placement pl = ReadPlacement(e);
+    ApplyHeadLook(model, pl);
+    const float pi = static_cast<float>(kPi);
+    const float armZ = pi / 5.0f + 0.1f;
+    SetZRot(model, "right_arm", armZ);
+    SetZRot(model, "left_arm", -armZ);
+    model.SetRot("body", pi / 20.0f, 0.0f, 0.0f);
+    const float wingY = 1.0995574f + static_cast<float>(16.2 * kPi / 180.0);  // + cos(0) * 16.2 deg
+    model.SetRot("left_wing", 0.47123888f, wingY, -0.47123888f);
+    model.SetRot("right_wing", 0.47123888f, -wingY, 0.47123888f);
+    const std::string texPath = "entity/illager/vex";
+    OutObject& obj = ctx.NewObject("minecraft:vex");
+    EmitTextured(ctx, obj, model, MobBase(pl, BodyRot(pl), 1.0), nullptr, "minecraft:" + texPath, ctx.Texture("minecraft", texPath));
+}
+
 // ---- end batch2 B ----
 
 // ==== batch2 C renderers (insert below) ====
@@ -2907,6 +2930,7 @@ size_t Export(const std::string& name) {
         // ---- end batch2 A ----
         // ==== batch2 B dispatch (insert below) ====
         else if (id == "minecraft:tadpole") RenderTadpole(ctx, e);
+        else if (id == "minecraft:vex") RenderVex(ctx, e);
         // ---- end batch2 B ----
         // ==== batch2 C dispatch (insert below) ====
         // ---- end batch2 C ----
