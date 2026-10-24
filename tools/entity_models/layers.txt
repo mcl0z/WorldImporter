@@ -411,6 +411,11 @@ modern minecraft:nautilus#main
 modern minecraft:nautilus_baby#main
 modern minecraft:zombie_nautilus#main
 modern minecraft:zombie_nautilus_coral#main
+modern minecraft:parched#main
+modern minecraft:parched#helmet
+modern minecraft:parched#chestplate
+modern minecraft:parched#leggings
+modern minecraft:parched#boots
 # ---- end batch4 B ----
 # ==== batch4 C layers (insert below) ====
 # ---- end batch4 C ----

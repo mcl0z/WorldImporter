@@ -3449,6 +3449,12 @@ void RenderZombieNautilus(Ctx& ctx, const NbtTagPtr& e) {
     const std::string tex = warm ? "entity/nautilus/zombie_nautilus_coral" : "entity/nautilus/zombie_nautilus";
     EmitTextured(ctx, obj, model, base, nullptr, "minecraft:" + tex, ctx.Texture("minecraft", tex));
 }
+
+// ---------- parched (batch4 B, 26.x only) ----------
+// Parched uses the skeleton model and AbstractSkeletonRenderer with parched.png and no clothing overlay, so the skeleton
+// path is used. The parched#outer layer is not drawn because the renderer adds no overlay. 1.74 is the skeleton eye height
+// (used only for the sleeping offset).
+void RenderParched(Ctx& ctx, const NbtTagPtr& e) { RenderHumanoidMob(ctx, e, "parched", "entity/skeleton/parched", 1.74, false); }
 // ---- end batch4 B ----
 
 // ==== batch4 C renderers (insert below) ====
@@ -3790,6 +3796,7 @@ size_t Export(const std::string& name) {
         else if (id == "minecraft:copper_golem") RenderCopperGolem(ctx, e);
         else if (id == "minecraft:nautilus") RenderNautilus(ctx, e);
         else if (id == "minecraft:zombie_nautilus") RenderZombieNautilus(ctx, e);
+        else if (id == "minecraft:parched") RenderParched(ctx, e);
         // ---- end batch4 B ----
         // ==== batch4 C dispatch (insert below) ====
         // ---- end batch4 C ----
