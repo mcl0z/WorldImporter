@@ -3354,6 +3354,19 @@ void RenderCamel(Ctx& ctx, const NbtTagPtr& e) {
 // ---- end batch4 C ----
 
 // ==== batch4 D renderers (insert below) ====
+// ---------- leash knot (batch4 D) ----------
+// LeashKnotRenderer has no pose: the knot model at the entity position with the usual scale(-1,-1,1).
+void RenderLeashKnot(Ctx& ctx, const NbtTagPtr& e) {
+    using A = EntityAffine;
+    EntityModel model(ctx.modern ? "modern" : "legacy", "minecraft:leash_knot#main");
+    if (!model.Valid()) return;
+    Placement pl = ReadPlacement(e);
+    const A base = A::T(pl.x, pl.y, pl.z) * A::S(-1.0, -1.0, 1.0);
+    const std::string tex = PickTex({ "entity/lead_knot/lead_knot", "entity/lead_knot" });
+    OutObject& obj = ctx.NewObject("minecraft:leash_knot");
+    EmitTextured(ctx, obj, model, base, nullptr, "minecraft:" + tex, ctx.Texture("minecraft", tex));
+}
+
 // ---------- llama spit (batch4 D) ----------
 // LlamaSpitRenderer: translate(0, 0.15, 0), then yaw-90 and pitch from Rotation. The model has no animation.
 void RenderLlamaSpit(Ctx& ctx, const NbtTagPtr& e) {
@@ -3718,6 +3731,7 @@ size_t Export(const std::string& name) {
         // ==== batch4 C dispatch (insert below) ====
         // ---- end batch4 C ----
         // ==== batch4 D dispatch (insert below) ====
+        else if (id == "minecraft:leash_knot") RenderLeashKnot(ctx, e);
         else if (id == "minecraft:llama_spit") RenderLlamaSpit(ctx, e);
         else if (id == "minecraft:wither_skull") RenderWitherSkull(ctx, e);
         // ---- end batch4 D ----
