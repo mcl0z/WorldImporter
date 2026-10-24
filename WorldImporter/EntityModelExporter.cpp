@@ -2642,6 +2642,7 @@ void RenderHoglinLike(Ctx& ctx, const NbtTagPtr& e, const std::string& kind, con
     EmitTextured(ctx, obj, model, MobBase(pl, BodyRot(pl), 1.0), pre, "minecraft:" + texPath, ctx.Texture("minecraft", texPath));
 }
 void RenderHoglin(Ctx& ctx, const NbtTagPtr& e) { RenderHoglinLike(ctx, e, "hoglin", "minecraft:hoglin"); }
+void RenderZoglin(Ctx& ctx, const NbtTagPtr& e) { RenderHoglinLike(ctx, e, "zoglin", "minecraft:zoglin"); }
 
 // ---- end batch2 A ----
 
@@ -2932,6 +2933,7 @@ size_t Export(const std::string& name) {
         // ==== batch2 A dispatch (insert below) ====
         else if (id == "minecraft:ravager") RenderRavager(ctx, e);
         else if (id == "minecraft:hoglin") RenderHoglin(ctx, e);
+        else if (id == "minecraft:zoglin") RenderZoglin(ctx, e);
         // ---- end batch2 A ----
         // ==== batch2 B dispatch (insert below) ====
         // ---- end batch2 B ----

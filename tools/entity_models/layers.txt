@@ -282,6 +282,9 @@ modern minecraft:ravager#main
 legacy minecraft:hoglin#main
 modern minecraft:hoglin#main
 modern minecraft:hoglin_baby#main
+legacy minecraft:zoglin#main
+modern minecraft:zoglin#main
+modern minecraft:zoglin_baby#main
 # ---- end batch2 A ----
 # ==== batch2 B layers (insert below) ====
 # ---- end batch2 B ----
