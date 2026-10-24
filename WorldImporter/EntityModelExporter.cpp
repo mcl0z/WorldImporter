@@ -2887,6 +2887,23 @@ void RenderIllusioner(Ctx& ctx, const NbtTagPtr& e) {
     RenderIllager(ctx, e, "illusioner", "minecraft:illusioner", IllagerArms::Crossed, true, "entity/illager/illusioner");
 }
 
+// ---------- wandering trader ----------
+// WanderingTraderRenderer + VillagerModel (与 RenderVillagerLike 的 villager 同一套体型).
+// 旧版 WanderingTraderRenderer.scale(0.9375); 26.x 根节点已烘焙, 不再缩放.
+// 贴图: 1.21.1 entity/wandering_trader.png, 26.x entity/wandering_trader/wandering_trader.png
+void RenderWanderingTrader(Ctx& ctx, const NbtTagPtr& e) {
+    const std::string fam = ctx.modern ? "modern" : "legacy";
+    EntityModel model(fam, "minecraft:wandering_trader#main");
+    if (!model.Valid()) return;
+    Placement pl = ReadPlacement(e);
+    model.SetRot("head", HeadPitch(pl), 0.0f, 0.0f);
+    const double rendererScale = ctx.modern ? 1.0 : 0.9375;
+    EntityAffine base = LivingBase(pl, 1.62, rendererScale);
+    const std::string texPath = PickTex({ "entity/wandering_trader/wandering_trader", "entity/wandering_trader" });
+    OutObject& obj = ctx.NewObject("minecraft:wandering_trader");
+    EmitTextured(ctx, obj, model, base, nullptr, "minecraft:" + texPath, ctx.Texture("minecraft", texPath));
+}
+
 // ---- end batch3 A ----
 
 // ==== batch3 B renderers (insert below) ====
@@ -3199,6 +3216,7 @@ size_t Export(const std::string& name) {
         else if (id == "minecraft:vindicator") RenderVindicator(ctx, e);
         else if (id == "minecraft:evoker") RenderEvoker(ctx, e);
         else if (id == "minecraft:illusioner") RenderIllusioner(ctx, e);
+        else if (id == "minecraft:wandering_trader") RenderWanderingTrader(ctx, e);
         // ---- end batch3 A ----
         // ==== batch3 B dispatch (insert below) ====
         // ---- end batch3 B ----
