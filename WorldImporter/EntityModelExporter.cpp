@@ -2875,6 +2875,70 @@ void RenderArmadillo(Ctx& ctx, const NbtTagPtr& e) {
     EmitTextured(ctx, obj, model, LivingBase(pl, 0.4, 1.0), nullptr, "minecraft:" + texPath, ctx.Texture("minecraft", texPath));
 }
 // ---- end batch3 C armadillo ----
+// ---- batch3 C: axolotl ----
+// 静止姿态 (年龄 0, 无速度, 无头部 yaw; 水里 = 脚下方块是水, 否则视为趴在陆地上)。
+// 26.x 成年体 AdultAxolotlModel.setupAnim: 水里 -> 悬停 (factor 1); 陆地 -> laystill (factor 1); 再把左腿镜像到右腿。
+// 26.x 幼体 BabyAxolotlModel: 静止动画全是关键帧 (idle/swim/walk 未启动), 用烘焙姿态。
+// 1.21.1 AxolotlModel 与 26.x 常数相同, 但每帧先把姿态重置再按 5% 插值, 导出无法复现; 用烘焙姿态 +
+// 空映射分支的 body 俯仰 (body = (headPitch, netHeadYaw, 0)), 幼体同样 (AgeableListModel 参数见 kC3AgeAxolotl)。
+const AgeableParams kC3AgeAxolotl { true, 8.0f, 3.35f, 2.0f, 2.0f, 24.0f, { "head" } };
+
+// AdultAxolotlModel.setupWaterHoveringAnimation, 年龄 0, factor 1 (sin 0 = 0, cos 0 = 1)
+void C3AxolotlHover(EntityModel& m) {
+    m.AddRot("body", -0.075f, 0.0f, 0.0f);
+    m.AddRot("head", 0.075f, 0.0f, 0.0f);
+    m.AddRot("top_gills", 0.2f, 0.0f, 0.0f);
+    m.AddRot("left_gills", 0.0f, -0.49f, 0.0f);
+    m.AddRot("right_gills", 0.0f, 0.49f, 0.0f);
+    m.AddRot("left_hind_leg", static_cast<float>(3.0 * kPi / 4.0 - 0.11), 0.47123894f, 1.7278761f);
+    m.AddRot("left_front_leg", static_cast<float>(kPi / 4.0 - 0.2), 2.042035f, 0.0f);
+    m.AddRot("tail", 0.0f, 0.5f, 0.0f);
+}
+// AdultAxolotlModel.setupLayStillOnGroundAnimation, 年龄 0, factor 1 (movement = 0, movement2 = 1)
+void C3AxolotlLayStill(EntityModel& m) {
+    m.AddRot("head", 0.0f, 0.0f, -0.2f);
+    m.AddRot("tail", 0.0f, -0.1f, 0.0f);
+    m.AddRot("top_gills", 0.65f, 0.0f, 0.0f);
+    m.AddRot("left_gills", 0.0f, -0.65f, 0.0f);
+    m.AddRot("right_gills", 0.0f, 0.65f, 0.0f);
+    m.AddRot("left_hind_leg", 1.1f, 1.0f, 0.0f);
+    m.AddRot("left_front_leg", 0.8f, 2.3f, -0.5f);
+}
+// applyMirrorLegRotations (factor 1): right += (x, -y, -z) of left
+void C3AxolotlMirror(EntityModel& m, const char* left, const char* right) {
+    const int l = m.Find(left), r = m.Find(right);
+    if (l < 0 || r < 0) return;
+    const float* a = m.Pose(l);
+    float* b = m.Pose(r);
+    b[3] += a[3];
+    b[4] += -a[4];
+    b[5] += -a[5];
+}
+
+void RenderAxolotl(Ctx& ctx, const NbtTagPtr& e) {
+    const std::string fam = ctx.modern ? "modern" : "legacy";
+    const bool baby = IsBaby(e);
+    EntityModel model(fam, MobLayer(ctx, "axolotl", baby));
+    if (!model.Valid()) return;
+    Placement pl = ReadPlacement(e);
+    const bool modernBaby = ctx.modern && baby;
+    if (ctx.modern && !baby) {
+        if (InWater(ctx, pl)) C3AxolotlHover(model);
+        else C3AxolotlLayStill(model);
+        C3AxolotlMirror(model, "left_hind_leg", "right_hind_leg");
+        C3AxolotlMirror(model, "left_front_leg", "right_front_leg");
+    } else if (!ctx.modern) {
+        model.SetRot("body", static_cast<float>(pl.pitch * kPi / 180.0), 0.0f, 0.0f);
+    }
+    // Variant: 0 lucy, 1 wild, 2 gold, 3 cyan, 4 blue
+    static const char* kNames[] = { "lucy", "wild", "gold", "cyan", "blue" };
+    const int variant = std::clamp(static_cast<int>(NumOr(e, "Variant", 0)), 0, 4);
+    const std::string texPath = std::string("entity/axolotl/axolotl_") + kNames[variant] + (modernBaby ? "_baby" : "");
+    TopPre pre = (!ctx.modern && baby) ? LegacyAgeablePre(kC3AgeAxolotl) : nullptr;
+    OutObject& obj = ctx.NewObject("minecraft:axolotl");
+    EmitTextured(ctx, obj, model, LivingBase(pl, 0.3, 1.0), pre, "minecraft:" + texPath, ctx.Texture("minecraft", texPath));
+}
+// ---- end batch3 C axolotl ----
 // ---- end batch3 C ----
 
 // ==== batch3 D renderers (insert below) ====
@@ -3181,6 +3245,7 @@ size_t Export(const std::string& name) {
         // ==== batch3 C dispatch (insert below) ====
         else if (id == "minecraft:frog") RenderFrog(ctx, e);
         else if (id == "minecraft:armadillo") RenderArmadillo(ctx, e);
+        else if (id == "minecraft:axolotl") RenderAxolotl(ctx, e);
         // ---- end batch3 C ----
         // ==== batch3 D dispatch (insert below) ====
         // ---- end batch3 D ----
