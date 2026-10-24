@@ -3503,6 +3503,141 @@ void RenderEndCrystal(Ctx& ctx, const NbtTagPtr& e) {
 // ---- end batch4 A ----
 
 // ==== batch4 B renderers (insert below) ====
+// ---------- happy_ghast (batch4 B, 26.x only) ----------
+// HappyGhastModel.setupAnim at rest: GhastModel.animateTentacles at age 0 (as RenderGhast). A body item (harness) scales
+// body to 0.9375, which the tentacles inherit. The baby layer is baked with BABY_TRANSFORMER.
+// Harness (SimpleEquipmentLayer HAPPY_GHAST_BODY): goggles follow isRidden (passengers) via y / xRot.
+// Ropes are drawn only while the ghast is a leash holder (runtime state, not saved on this entity), so they are skipped.
+// HappyGhastRenderer's 2.0 is the shadow radius, so there is no renderer scale.
+void RenderHappyGhast(Ctx& ctx, const NbtTagPtr& e) {
+    const std::string fam = ctx.modern ? "modern" : "legacy";
+    const bool baby = IsBaby(e);
+    EntityModel model(fam, MobLayer(ctx, "happy_ghast", baby));
+    if (!model.Valid()) return;  // 1.21.1 has no happy ghast
+    for (int i = 0; i < 9; ++i)
+        SetXRot(model, ("tentacle" + std::to_string(i)).c_str(), 0.2f * std::sin(static_cast<float>(i)) + 0.4f);
+    const ItemStackInfo bodyItem = BodyArmorStack(e);
+    if (!bodyItem.empty()) {
+        const int body = model.Find("body");
+        if (body >= 0) { float* q = model.Pose(body); q[6] = q[7] = q[8] = 0.9375f; }
+    }
+    Placement pl = ReadPlacement(e);
+    const EntityAffine base = MobBase(pl, BodyRot(pl), 1.0);
+    OutObject& obj = ctx.NewObject("minecraft:happy_ghast");
+    const std::string tex = baby ? "entity/ghast/happy_ghast_baby" : "entity/ghast/happy_ghast";
+    EmitTextured(ctx, obj, model, base, nullptr, "minecraft:" + tex, ctx.Texture("minecraft", tex));
+
+    // Harness: only when the saved body item resolves to a happy_ghast_body equipment layer.
+    const std::string asset = bodyItem.equipAsset;
+    const std::vector<ArmorTexLayer> layers = asset.empty() ? std::vector<ArmorTexLayer>()
+                                                            : EquipmentTexLayers(bodyItem, asset, "happy_ghast_body");
+    const int mat = ArmorMaterial(ctx, layers);
+    if (mat < 0) return;
+    EntityModel harness(fam, baby ? "minecraft:happy_ghast_baby_harness#main" : "minecraft:happy_ghast_harness#main");
+    if (!harness.Valid()) return;
+    const bool ridden = HasPassengers(e);
+    const int goggles = harness.Find("goggles");
+    if (goggles >= 0) {
+        float* q = harness.Pose(goggles);
+        q[1] = ridden ? 14.0f : 9.0f;
+        q[3] = ridden ? 0.0f : -0.7854f;
+    }
+    harness.Emit(obj.mesh, base, [mat](int) { return mat; }, nullptr);
+}
+
+// ---------- copper_golem (batch4 B, 26.x only) ----------
+// CopperGolemModel.setupAnim at rest: head pitch from the look, yaw 0. Walk, idle and interaction keyframes are not
+// applied, so the dump rest pose is used. The state (IDLE/STAR/SITTING/RUNNING) is runtime and only changes the
+// held-item pose, so the standing model is used. weather_state picks the body and eyes texture.
+// The eyes layer is drawn with the full model and the eyes texture (vanilla COPPER_GOLEM_EYES is an empty layer).
+// The antenna block, held items and the head layer are not drawn. CopperGolemRenderer's 0.5 is the shadow radius.
+void RenderCopperGolem(Ctx& ctx, const NbtTagPtr& e) {
+    EntityModel model(ctx.modern ? "modern" : "legacy", "minecraft:copper_golem#main");
+    if (!model.Valid()) return;  // 1.21.1 has no copper golem
+    Placement pl = ReadPlacement(e);
+    ApplyHeadLook(model, pl);
+    const EntityAffine base = LivingBase(pl, 1.0, 1.0);
+    const std::string weather = Str(e, "weather_state");  // WeatheringCopper.WeatherState serialized name
+    const std::string suffix = (weather == "exposed" || weather == "weathered" || weather == "oxidized") ? "_" + weather : "";
+    OutObject& obj = ctx.NewObject("minecraft:copper_golem");
+    const std::string tex = "entity/copper_golem/copper_golem" + suffix;
+    EmitTextured(ctx, obj, model, base, nullptr, "minecraft:" + tex, ctx.Texture("minecraft", tex));
+    const std::string eyes = "entity/copper_golem/copper_golem_eyes" + suffix;
+    EmitTextured(ctx, obj, model, base, nullptr, "minecraft:" + eyes, ctx.Texture("minecraft", eyes));
+}
+
+// ---------- nautilus / zombie_nautilus (batch4 B, 26.x only) ----------
+// NautilusModel.setupAnim at rest: body yRot 0 and body xRot = pitch clamped to [-10, 10] (netHeadYaw 0 for NoAI).
+// The swim keyframes run at walk speed + 0.2 at runtime, so the dump rest pose is used.
+// Body armor and saddle are not drawn: both layers are full-body geometry, so emitting them would redraw the whole body.
+// ZombieNautilusCoralModel hides the corals while body armor is worn (the armor itself is not drawn).
+// Nautilus and ZombieNautilusRenderer's 0.7 is the shadow radius, so there is no renderer scale.
+void PoseNautilusRest(EntityModel& model, const Placement& pl, bool armored) {
+    const float x = static_cast<float>(std::clamp(pl.pitch, -10.0, 10.0) * kPi / 180.0);
+    model.SetRot("body", x, 0.0f, 0.0f);
+    if (model.Find("corals") >= 0) model.SetVisible("corals", !armored);
+}
+void RenderNautilus(Ctx& ctx, const NbtTagPtr& e) {
+    const std::string fam = ctx.modern ? "modern" : "legacy";
+    const bool baby = IsBaby(e);
+    EntityModel model(fam, MobLayer(ctx, "nautilus", baby));
+    if (!model.Valid()) return;  // 1.21.1 has no nautilus
+    Placement pl = ReadPlacement(e);
+    PoseNautilusRest(model, pl, false);
+    const EntityAffine base = LivingBase(pl, 1.0, 1.0);
+    OutObject& obj = ctx.NewObject("minecraft:nautilus");
+    const std::string tex = baby ? "entity/nautilus/nautilus_baby" : "entity/nautilus/nautilus";
+    EmitTextured(ctx, obj, model, base, nullptr, "minecraft:" + tex, ctx.Texture("minecraft", tex));
+}
+// ZombieNautilusVariant: "warm" uses ZombieNautilusCoralModel and zombie_nautilus_coral.png, temperate (default) the normal model.
+void RenderZombieNautilus(Ctx& ctx, const NbtTagPtr& e) {
+    const std::string fam = ctx.modern ? "modern" : "legacy";
+    std::string variant = SplitId(Str(e, "variant")).second;
+    if (variant.empty()) variant = "temperate";
+    const bool warm = variant == "warm";
+    EntityModel model(fam, warm ? "minecraft:zombie_nautilus_coral#main" : "minecraft:zombie_nautilus#main");
+    if (!model.Valid()) return;  // 1.21.1 has no zombie nautilus
+    Placement pl = ReadPlacement(e);
+    PoseNautilusRest(model, pl, !BodyArmorStack(e).empty());
+    const EntityAffine base = LivingBase(pl, 1.0, 1.0);
+    OutObject& obj = ctx.NewObject("minecraft:zombie_nautilus");
+    const std::string tex = warm ? "entity/nautilus/zombie_nautilus_coral" : "entity/nautilus/zombie_nautilus";
+    EmitTextured(ctx, obj, model, base, nullptr, "minecraft:" + tex, ctx.Texture("minecraft", tex));
+}
+
+// ---------- parched (batch4 B, 26.x only) ----------
+// Parched uses the skeleton model and AbstractSkeletonRenderer with parched.png and no clothing overlay, so the skeleton
+// path is used. The parched#outer layer is not drawn because the renderer adds no overlay. 1.74 is the skeleton eye height
+// (used only for the sleeping offset).
+void RenderParched(Ctx& ctx, const NbtTagPtr& e) { RenderHumanoidMob(ctx, e, "parched", "entity/skeleton/parched", 1.74, false); }
+
+// ---------- sulfur_cube (batch4 B, 26.x only) ----------
+// SulfurCubeModel has no setupAnim, so the dump rest pose is used. SulfurCubeRenderer.scale at rest, applied between the
+// flip and the model draw (like the renderer scale slot of LivingBase): downscaleSlightly (0.999, y +0.001), size from
+// applySizeAndSquish with squish 0, then adult 0.5 / baby 1.0 and y offset 0.98 / 1.24 minus one pixel. Squish and fuse
+// are runtime and taken as 0. Size is NBT "Size" + 1. The chain is conjugated around the -1.501 model offset.
+// Inner layer is drawn only when no body item is carried (a carried block or skull replaces it and is not drawn).
+void RenderSulfurCube(Ctx& ctx, const NbtTagPtr& e) {
+    const std::string fam = ctx.modern ? "modern" : "legacy";
+    const bool baby = IsBaby(e);
+    EntityModel model(fam, baby ? "minecraft:sulfur_cube_small#main" : "minecraft:sulfur_cube#main");
+    if (!model.Valid()) return;  // 1.21.1 has no sulfur cube
+    Placement pl = ReadPlacement(e);
+    using A = EntityAffine;
+    const double size = NumOr(e, "Size", 0) + 1;
+    const A chain = A::S(0.999) * A::T(0.0, 0.001, 0.0) * A::S(size) * A::S(baby ? 1.0 : 0.5) *
+                    A::T(0.0, (baby ? 1.24 : 0.98) - 1.0 / 16.0, 0.0);
+    const A conj = A::T(0.0, 1.501, 0.0) * chain * A::T(0.0, -1.501, 0.0);
+    const EntityAffine base = LivingBase(pl, 1.0, 1.0) * conj;
+    OutObject& obj = ctx.NewObject("minecraft:sulfur_cube");
+    const std::string tex = baby ? "entity/sulfur_cube/sulfur_cube_outer_small" : "entity/sulfur_cube/sulfur_cube_outer";
+    EmitTextured(ctx, obj, model, base, nullptr, "minecraft:" + tex, ctx.Texture("minecraft", tex));
+    if (BodyArmorStack(e).empty()) {
+        EntityModel inner(fam, baby ? "minecraft:sulfur_cube_small#inner" : "minecraft:sulfur_cube#inner");
+        const std::string itex = baby ? "entity/sulfur_cube/sulfur_cube_inner_small" : "entity/sulfur_cube/sulfur_cube_inner";
+        if (inner.Valid()) EmitTextured(ctx, obj, inner, base, nullptr, "minecraft:" + itex, ctx.Texture("minecraft", itex));
+    }
+}
 // ---- end batch4 B ----
 
 // ==== batch4 C renderers (insert below) ====
@@ -3843,6 +3978,12 @@ size_t Export(const std::string& name) {
         else if (id == "minecraft:end_crystal") RenderEndCrystal(ctx, e);
         // ---- end batch4 A ----
         // ==== batch4 B dispatch (insert below) ====
+        else if (id == "minecraft:happy_ghast") RenderHappyGhast(ctx, e);
+        else if (id == "minecraft:copper_golem") RenderCopperGolem(ctx, e);
+        else if (id == "minecraft:nautilus") RenderNautilus(ctx, e);
+        else if (id == "minecraft:zombie_nautilus") RenderZombieNautilus(ctx, e);
+        else if (id == "minecraft:parched") RenderParched(ctx, e);
+        else if (id == "minecraft:sulfur_cube") RenderSulfurCube(ctx, e);
         // ---- end batch4 B ----
         // ==== batch4 C dispatch (insert below) ====
         // ---- end batch4 C ----
