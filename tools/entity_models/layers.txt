@@ -416,6 +416,10 @@ modern minecraft:parched#helmet
 modern minecraft:parched#chestplate
 modern minecraft:parched#leggings
 modern minecraft:parched#boots
+modern minecraft:sulfur_cube#main
+modern minecraft:sulfur_cube#inner
+modern minecraft:sulfur_cube_small#main
+modern minecraft:sulfur_cube_small#inner
 # ---- end batch4 B ----
 # ==== batch4 C layers (insert below) ====
 # ---- end batch4 C ----

@@ -3455,6 +3455,34 @@ void RenderZombieNautilus(Ctx& ctx, const NbtTagPtr& e) {
 // path is used. The parched#outer layer is not drawn because the renderer adds no overlay. 1.74 is the skeleton eye height
 // (used only for the sleeping offset).
 void RenderParched(Ctx& ctx, const NbtTagPtr& e) { RenderHumanoidMob(ctx, e, "parched", "entity/skeleton/parched", 1.74, false); }
+
+// ---------- sulfur_cube (batch4 B, 26.x only) ----------
+// SulfurCubeModel has no setupAnim, so the dump rest pose is used. SulfurCubeRenderer.scale at rest, applied between the
+// flip and the model draw (like the renderer scale slot of LivingBase): downscaleSlightly (0.999, y +0.001), size from
+// applySizeAndSquish with squish 0, then adult 0.5 / baby 1.0 and y offset 0.98 / 1.24 minus one pixel. Squish and fuse
+// are runtime and taken as 0. Size is NBT "Size" + 1. The chain is conjugated around the -1.501 model offset.
+// Inner layer is drawn only when no body item is carried (a carried block or skull replaces it and is not drawn).
+void RenderSulfurCube(Ctx& ctx, const NbtTagPtr& e) {
+    const std::string fam = ctx.modern ? "modern" : "legacy";
+    const bool baby = IsBaby(e);
+    EntityModel model(fam, baby ? "minecraft:sulfur_cube_small#main" : "minecraft:sulfur_cube#main");
+    if (!model.Valid()) return;  // 1.21.1 has no sulfur cube
+    Placement pl = ReadPlacement(e);
+    using A = EntityAffine;
+    const double size = NumOr(e, "Size", 0) + 1;
+    const A chain = A::S(0.999) * A::T(0.0, 0.001, 0.0) * A::S(size) * A::S(baby ? 1.0 : 0.5) *
+                    A::T(0.0, (baby ? 1.24 : 0.98) - 1.0 / 16.0, 0.0);
+    const A conj = A::T(0.0, 1.501, 0.0) * chain * A::T(0.0, -1.501, 0.0);
+    const EntityAffine base = LivingBase(pl, 1.0, 1.0) * conj;
+    OutObject& obj = ctx.NewObject("minecraft:sulfur_cube");
+    const std::string tex = baby ? "entity/sulfur_cube/sulfur_cube_outer_small" : "entity/sulfur_cube/sulfur_cube_outer";
+    EmitTextured(ctx, obj, model, base, nullptr, "minecraft:" + tex, ctx.Texture("minecraft", tex));
+    if (BodyArmorStack(e).empty()) {
+        EntityModel inner(fam, baby ? "minecraft:sulfur_cube_small#inner" : "minecraft:sulfur_cube#inner");
+        const std::string itex = baby ? "entity/sulfur_cube/sulfur_cube_inner_small" : "entity/sulfur_cube/sulfur_cube_inner";
+        if (inner.Valid()) EmitTextured(ctx, obj, inner, base, nullptr, "minecraft:" + itex, ctx.Texture("minecraft", itex));
+    }
+}
 // ---- end batch4 B ----
 
 // ==== batch4 C renderers (insert below) ====
@@ -3797,6 +3825,7 @@ size_t Export(const std::string& name) {
         else if (id == "minecraft:nautilus") RenderNautilus(ctx, e);
         else if (id == "minecraft:zombie_nautilus") RenderZombieNautilus(ctx, e);
         else if (id == "minecraft:parched") RenderParched(ctx, e);
+        else if (id == "minecraft:sulfur_cube") RenderSulfurCube(ctx, e);
         // ---- end batch4 B ----
         // ==== batch4 C dispatch (insert below) ====
         // ---- end batch4 C ----
