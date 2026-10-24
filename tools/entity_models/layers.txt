@@ -407,6 +407,10 @@ modern minecraft:happy_ghast_baby#main
 modern minecraft:happy_ghast_harness#main
 modern minecraft:happy_ghast_baby_harness#main
 modern minecraft:copper_golem#main
+modern minecraft:nautilus#main
+modern minecraft:nautilus_baby#main
+modern minecraft:zombie_nautilus#main
+modern minecraft:zombie_nautilus_coral#main
 # ---- end batch4 B ----
 # ==== batch4 C layers (insert below) ====
 # ---- end batch4 C ----

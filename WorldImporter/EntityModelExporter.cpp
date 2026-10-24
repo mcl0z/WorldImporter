@@ -3410,6 +3410,45 @@ void RenderCopperGolem(Ctx& ctx, const NbtTagPtr& e) {
     const std::string eyes = "entity/copper_golem/copper_golem_eyes" + suffix;
     EmitTextured(ctx, obj, model, base, nullptr, "minecraft:" + eyes, ctx.Texture("minecraft", eyes));
 }
+
+// ---------- nautilus / zombie_nautilus (batch4 B, 26.x only) ----------
+// NautilusModel.setupAnim at rest: body yRot 0 and body xRot = pitch clamped to [-10, 10] (netHeadYaw 0 for NoAI).
+// The swim keyframes run at walk speed + 0.2 at runtime, so the dump rest pose is used.
+// Body armor and saddle are not drawn: both layers are full-body geometry, so emitting them would redraw the whole body.
+// ZombieNautilusCoralModel hides the corals while body armor is worn (the armor itself is not drawn).
+// Nautilus and ZombieNautilusRenderer's 0.7 is the shadow radius, so there is no renderer scale.
+void PoseNautilusRest(EntityModel& model, const Placement& pl, bool armored) {
+    const float x = static_cast<float>(std::clamp(pl.pitch, -10.0, 10.0) * kPi / 180.0);
+    model.SetRot("body", x, 0.0f, 0.0f);
+    if (model.Find("corals") >= 0) model.SetVisible("corals", !armored);
+}
+void RenderNautilus(Ctx& ctx, const NbtTagPtr& e) {
+    const std::string fam = ctx.modern ? "modern" : "legacy";
+    const bool baby = IsBaby(e);
+    EntityModel model(fam, MobLayer(ctx, "nautilus", baby));
+    if (!model.Valid()) return;  // 1.21.1 has no nautilus
+    Placement pl = ReadPlacement(e);
+    PoseNautilusRest(model, pl, false);
+    const EntityAffine base = LivingBase(pl, 1.0, 1.0);
+    OutObject& obj = ctx.NewObject("minecraft:nautilus");
+    const std::string tex = baby ? "entity/nautilus/nautilus_baby" : "entity/nautilus/nautilus";
+    EmitTextured(ctx, obj, model, base, nullptr, "minecraft:" + tex, ctx.Texture("minecraft", tex));
+}
+// ZombieNautilusVariant: "warm" uses ZombieNautilusCoralModel and zombie_nautilus_coral.png, temperate (default) the normal model.
+void RenderZombieNautilus(Ctx& ctx, const NbtTagPtr& e) {
+    const std::string fam = ctx.modern ? "modern" : "legacy";
+    std::string variant = SplitId(Str(e, "variant")).second;
+    if (variant.empty()) variant = "temperate";
+    const bool warm = variant == "warm";
+    EntityModel model(fam, warm ? "minecraft:zombie_nautilus_coral#main" : "minecraft:zombie_nautilus#main");
+    if (!model.Valid()) return;  // 1.21.1 has no zombie nautilus
+    Placement pl = ReadPlacement(e);
+    PoseNautilusRest(model, pl, !BodyArmorStack(e).empty());
+    const EntityAffine base = LivingBase(pl, 1.0, 1.0);
+    OutObject& obj = ctx.NewObject("minecraft:zombie_nautilus");
+    const std::string tex = warm ? "entity/nautilus/zombie_nautilus_coral" : "entity/nautilus/zombie_nautilus";
+    EmitTextured(ctx, obj, model, base, nullptr, "minecraft:" + tex, ctx.Texture("minecraft", tex));
+}
 // ---- end batch4 B ----
 
 // ==== batch4 C renderers (insert below) ====
@@ -3749,6 +3788,8 @@ size_t Export(const std::string& name) {
         // ==== batch4 B dispatch (insert below) ====
         else if (id == "minecraft:happy_ghast") RenderHappyGhast(ctx, e);
         else if (id == "minecraft:copper_golem") RenderCopperGolem(ctx, e);
+        else if (id == "minecraft:nautilus") RenderNautilus(ctx, e);
+        else if (id == "minecraft:zombie_nautilus") RenderZombieNautilus(ctx, e);
         // ---- end batch4 B ----
         // ==== batch4 C dispatch (insert below) ====
         // ---- end batch4 C ----
