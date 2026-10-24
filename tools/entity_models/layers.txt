@@ -318,6 +318,14 @@ modern minecraft:armadillo_baby#main
 legacy minecraft:axolotl#main
 modern minecraft:axolotl#main
 modern minecraft:axolotl_baby#main
+legacy minecraft:tropical_fish_small#main
+legacy minecraft:tropical_fish_small#pattern
+legacy minecraft:tropical_fish_large#main
+legacy minecraft:tropical_fish_large#pattern
+modern minecraft:tropical_fish_small#main
+modern minecraft:tropical_fish_small#pattern
+modern minecraft:tropical_fish_large#main
+modern minecraft:tropical_fish_large#pattern
 # ---- end batch3 C ----
 # ==== batch3 D layers (insert below) ====
 # ---- end batch3 D ----

@@ -2939,6 +2939,40 @@ void RenderAxolotl(Ctx& ctx, const NbtTagPtr& e) {
     EmitTextured(ctx, obj, model, LivingBase(pl, 0.3, 1.0), pre, "minecraft:" + texPath, ctx.Texture("minecraft", texPath));
 }
 // ---- end batch3 C axolotl ----
+// ---- batch3 C: tropical fish ----
+// Variant 位域: shape = v & 0xFF (0 small, 1 large), pattern = (v >> 8) & 0xFF (花纹下标 0-5 -> 1-6),
+// baseColor = (v >> 16) & 0xFF, patternColor = (v >> 24) & 0xFF (DyeColor id)。
+// TropicalFishRenderer: 底层 tropical_a (small) / tropical_b (large) 乘 baseColor;
+// TropicalFishPatternLayer: tropical_{a,b}_pattern_<n> 乘 patternColor, 几何是 #pattern layer。
+// 静止: setupAnim 的 tail = -amp * 0.45 * sin(0) = 0, bodyZRot = 0, 即烘焙姿态。
+// 离水侧躺 (setupRotations: translate(0.2, 0.1, 0) 再绕 Z 转 90°), 同 RenderCod。
+void RenderTropicalFish(Ctx& ctx, const NbtTagPtr& e) {
+    using A = EntityAffine;
+    const std::string fam = ctx.modern ? "modern" : "legacy";
+    const uint32_t v = static_cast<uint32_t>(static_cast<int64_t>(NumOr(e, "Variant", 0)));
+    const bool large = (v & 0xFFu) == 1;
+    const int patternIdx = static_cast<int>((v >> 8) & 0xFFu);
+    const int baseColor = static_cast<int>((v >> 16) & 0xFFu);
+    const int patternColor = static_cast<int>((v >> 24) & 0xFFu);
+    const std::string kind = large ? "tropical_fish_large" : "tropical_fish_small";
+    EntityModel model(fam, "minecraft:" + kind + "#main");
+    if (!model.Valid()) return;
+    Placement pl = ReadPlacement(e);
+    A rot = BodyRot(pl);
+    if (!InWater(ctx, pl)) rot = rot * A::T(0.2, 0.1, 0.0) * A::RZDeg(90.0);
+    const A base = MobBase(pl, rot, 1.0);
+    OutObject& obj = ctx.NewObject("minecraft:tropical_fish");
+    EmitDyedLayer(ctx, obj, model, base, nullptr, large ? "entity/fish/tropical_b" : "entity/fish/tropical_a",
+                  static_cast<uint32_t>(DyeRgb(baseColor)));
+    EntityModel pattern(fam, "minecraft:" + kind + "#pattern");
+    if (!pattern.Valid()) return;
+    pattern.CopyPoseFrom(model, { "body", "tail", "left_fin", "right_fin", "top_fin" }, true);
+    const int n = std::clamp(patternIdx + 1, 1, 6);
+    const std::string patTex = std::string(large ? "entity/fish/tropical_b_pattern_" : "entity/fish/tropical_a_pattern_") +
+                               std::to_string(n);
+    EmitDyedLayer(ctx, obj, pattern, base, nullptr, patTex, static_cast<uint32_t>(DyeRgb(patternColor)));
+}
+// ---- end batch3 C tropical fish ----
 // ---- end batch3 C ----
 
 // ==== batch3 D renderers (insert below) ====
@@ -3246,6 +3280,7 @@ size_t Export(const std::string& name) {
         else if (id == "minecraft:frog") RenderFrog(ctx, e);
         else if (id == "minecraft:armadillo") RenderArmadillo(ctx, e);
         else if (id == "minecraft:axolotl") RenderAxolotl(ctx, e);
+        else if (id == "minecraft:tropical_fish") RenderTropicalFish(ctx, e);
         // ---- end batch3 C ----
         // ==== batch3 D dispatch (insert below) ====
         // ---- end batch3 D ----
