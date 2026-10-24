@@ -400,6 +400,7 @@ modern minecraft:camel_baby#main
 modern minecraft:camel#saddle
 # ---- end batch3 D ----
 # ==== batch4 A layers (insert below) ====
+modern minecraft:ender_dragon#main
 legacy minecraft:wither#main
 modern minecraft:wither#main
 legacy minecraft:end_crystal#main

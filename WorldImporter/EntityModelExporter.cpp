@@ -3346,6 +3346,74 @@ void RenderCamel(Ctx& ctx, const NbtTagPtr& e) {
 
 // ==== batch4 A renderers (insert below) ====
 
+// ---------- ender dragon (batch4 A) ----------
+// EnderDragonModel at rest. Its pose comes from flight history and flapTime, neither saved: the history is taken as
+// samples all equal to the entity's yaw and y (no bend in neck, head or tail), flapTime 0, and the default hovering
+// phase (head offset 0). EnderDragonRenderer rotates by -yaw, flips, and drops by 1.501; the eyes layer uses the same
+// model. 26.x only: 1.21.1 draws its neck and tail segments inline, not as dump parts, so it is not reproduced.
+void RenderEnderDragon(Ctx& ctx, const NbtTagPtr& e) {
+    EntityModel model("modern", "minecraft:ender_dragon#main");
+    if (!model.Valid()) return;
+    Placement pl = ReadPlacement(e);
+    const float flapTime = 0.0f;  // runtime flap phase, not saved
+    float bounce = std::sin(flapTime * 2.0f * kPi - 1.0f) + 1.0f;
+    bounce = (bounce * bounce + bounce * 2.0f) * 0.05f;
+    model.SetPose("root", 0.0f, (bounce - 2.0f) * 16.0f, -48.0f);
+    model.SetRot("root", bounce * 2.0f * kPi / 180.0f, 0.0f, 0.0f);
+    model.SetRot("jaw", (std::sin(flapTime * 2.0f * kPi) + 1.0f) * 0.2f, 0.0f, 0.0f);
+    // neck: each segment starts where the previous one ends; no yaw or roll without history
+    const float* n0 = model.Pose(model.Find("neck0"));
+    float xx = n0[0], yy = n0[1], zz = n0[2];
+    for (int i = 0; i < 5; ++i) {
+        const std::string name = "neck" + std::to_string(i);
+        const float xRot = std::cos(i * 0.45f + flapTime) * 0.15f;
+        model.SetPose(name, xx, yy, zz);
+        model.SetRot(name, xRot, 0.0f, 0.0f);
+        yy += std::sin(xRot) * 10.0f;
+        zz -= std::cos(xRot) * 10.0f;
+    }
+    model.SetPose("head", xx, yy, zz);
+    model.SetRot("head", 0.0f, 0.0f, 0.0f);
+    // tail: each segment yaws 180 deg; the pitch sway accumulates along the chain
+    const float* t0 = model.Pose(model.Find("tail0"));
+    xx = t0[0]; yy = t0[1]; zz = t0[2];
+    float tailX = 0.0f;
+    for (int i = 0; i < 12; ++i) {
+        const std::string name = "tail" + std::to_string(i);
+        tailX += std::sin(i * 0.45f + flapTime) * 0.05f;
+        model.SetPose(name, xx, yy, zz);
+        model.SetRot(name, tailX, kPi, 0.0f);
+        yy += std::sin(tailX) * 10.0f;
+        zz -= std::cos(kPi) * std::cos(tailX) * 10.0f;
+        xx -= std::sin(kPi) * std::cos(tailX) * 10.0f;
+    }
+    // wings (flap 0)
+    const float wingX = 0.125f - std::cos(flapTime) * 0.2f;
+    const float wingZ = -(std::sin(flapTime) + 0.125f) * 0.8f;
+    const float tipZ = (std::sin(flapTime + 2.0f) + 0.5f) * 0.75f;
+    model.SetRot("left_wing", wingX, -0.25f, wingZ);
+    model.SetRot("left_wing_tip", 0.0f, 0.0f, tipZ);
+    model.SetRot("right_wing", wingX, 0.25f, -wingZ);
+    model.SetRot("right_wing_tip", 0.0f, 0.0f, -tipZ);
+    // legs (EnderDragonModel.poseLimbs)
+    for (const std::string side : { std::string("left_"), std::string("right_") }) {
+        model.SetRot(side + "hind_leg", 1.0f + bounce * 0.1f, 0.0f, 0.0f);
+        model.SetRot(side + "hind_leg_tip", 0.5f + bounce * 0.1f, 0.0f, 0.0f);
+        model.SetRot(side + "hind_foot", 0.75f + bounce * 0.1f, 0.0f, 0.0f);
+        model.SetRot(side + "front_leg", 1.3f + bounce * 0.1f, 0.0f, 0.0f);
+        model.SetRot(side + "front_leg_tip", -0.5f - bounce * 0.1f, 0.0f, 0.0f);
+        model.SetRot(side + "front_foot", 0.75f + bounce * 0.1f, 0.0f, 0.0f);
+    }
+    const EntityAffine base = EntityAffine::T(pl.x, pl.y, pl.z) * EntityAffine::RYDeg(-pl.yaw) *
+                              EntityAffine::T(0.0, 0.0, 1.0) * EntityAffine::S(-1.0, -1.0, 1.0) *
+                              EntityAffine::T(0.0, -1.501, 0.0);
+    OutObject& obj = ctx.NewObject("minecraft:ender_dragon");
+    const std::string tex = "entity/enderdragon/dragon";
+    EmitTextured(ctx, obj, model, base, nullptr, "minecraft:" + tex, ctx.Texture("minecraft", tex));
+    const std::string eyes = "entity/enderdragon/dragon_eyes";
+    EmitTextured(ctx, obj, model, base, nullptr, "minecraft:" + eyes, ctx.Texture("minecraft", eyes));
+}
+
 // ---------- wither (batch4 A) ----------
 // WitherBossModel at age 0 (the ribcage/tail sway is cos(0) = 1): ribcage.xRot = 0.115 pi, tail.xRot = 0.365 pi, and the
 // tail pivot follows the ribcage. Head rotations are not saved; the center head takes the entity pitch and yaw 0 (facing
@@ -3373,39 +3441,65 @@ void RenderWither(Ctx& ctx, const NbtTagPtr& e) {
 }
 
 // ---------- end crystal (batch4 A) ----------
-// Axis-angle -> Euler angles in ModelPart's ZYX order (R = Rz * Ry * Rx). Vanilla composes these as quaternions.
-void AxisAngleToEulerZYX(double rad, double ax, double ay, double az, float& x, float& y, float& z) {
+// Rotation matrix for `rad` about the unit axis (ax, ay, az) (Rodrigues).
+void AxisAngleMatrix(double rad, double ax, double ay, double az, double r[3][3]) {
     const double c = std::cos(rad), s = std::sin(rad), t = 1.0 - c;
-    const double r[3][3] = {
+    const double m[3][3] = {
         { c + t * ax * ax, t * ax * ay - s * az, t * ax * az + s * ay },
         { t * ax * ay + s * az, c + t * ay * ay, t * ay * az - s * ax },
         { t * ax * az - s * ay, t * ay * az + s * ax, c + t * az * az } };
+    for (int i = 0; i < 3; ++i)
+        for (int j = 0; j < 3; ++j) r[i][j] = m[i][j];
+}
+// Euler angles in ModelPart's ZYX order (R = Rz * Ry * Rx). Vanilla composes these rotations as quaternions.
+void AxisAngleToEulerZYX(double rad, double ax, double ay, double az, float& x, float& y, float& z) {
+    double r[3][3];
+    AxisAngleMatrix(rad, ax, ay, az, r);
     y = static_cast<float>(std::asin(std::clamp(-r[2][0], -1.0, 1.0)));
     x = static_cast<float>(std::atan2(r[2][1], r[2][2]));
     z = static_cast<float>(std::atan2(r[1][0], r[0][0]));
 }
 // EndCrystalRenderer: scale 2, translate (0, -0.5, 0); base only when ShowBottom. EndCrystalModel.setupAnim at age 0:
-// spin is 0, the glass pivot moves by getY(0) * 8 px (getY(0) = -1.1), outer glass, inner glass and cube are tilted
-// 60 deg about (1, 0, 1)/sqrt2. The beam (BeamTarget) is not drawn.
+// spin is 0, the glass pivot moves by getY(0) * 8 px (getY(0) = -1.1), and the outer glass, inner glass and cube are
+// tilted 60 deg about (1, 0, 1)/sqrt2. The beam (BeamTarget) is not drawn.
+// 1.21.1 has one glass part drawn at three nested transforms (outer, scale 0.875, scale 0.875 again for the cube).
 void RenderEndCrystal(Ctx& ctx, const NbtTagPtr& e) {
-    const std::string fam = ctx.modern ? "modern" : "legacy";
-    EntityModel model(fam, "minecraft:end_crystal#main");
-    if (!model.Valid()) return;
     auto pos = NumList(getChildByName(e, "Pos"));
     if (pos.size() < 3) return;
     const float getY0 = (0.5f * 0.5f + 0.5f) * 0.4f - 1.4f;
-    AddPos(model, "outer_glass", 0.0f, getY0 * 8.0f, 0.0f);
     const double s45 = std::sqrt(0.5);
-    float rx = 0.0f, ry = 0.0f, rz = 0.0f;
-    AxisAngleToEulerZYX(kPi / 3.0, s45, 0.0, s45, rx, ry, rz);
-    for (const char* part : { "outer_glass", "inner_glass", "cube" }) model.SetRot(part, rx, ry, rz);
-    model.SetVisible("base", NumOr(e, "ShowBottom", 0) != 0);
+    const bool showBottom = NumOr(e, "ShowBottom", 0) != 0;
     const EntityAffine base = EntityAffine::T(pos[0], pos[1], pos[2]) * EntityAffine::S(2.0) *
                               EntityAffine::T(0.0, -0.5, 0.0);
-    OutObject& obj = ctx.NewObject("minecraft:end_crystal");
     const std::string tex = "entity/end_crystal/end_crystal";
-    EmitTextured(ctx, obj, model, base, nullptr, "minecraft:" + tex, ctx.Texture("minecraft", tex));
+    OutObject& obj = ctx.NewObject("minecraft:end_crystal");
+    if (ctx.modern) {  // 26.x: the pivots and tilts live in the part poses
+        EntityModel model("modern", "minecraft:end_crystal#main");
+        if (!model.Valid()) return;
+        AddPos(model, "outer_glass", 0.0f, getY0 * 8.0f, 0.0f);
+        float rx = 0.0f, ry = 0.0f, rz = 0.0f;
+        AxisAngleToEulerZYX(kPi / 3.0, s45, 0.0, s45, rx, ry, rz);
+        for (const char* part : { "outer_glass", "inner_glass", "cube" }) model.SetRot(part, rx, ry, rz);
+        model.SetVisible("base", showBottom);
+        EmitTextured(ctx, obj, model, base, nullptr, "minecraft:" + tex, ctx.Texture("minecraft", tex));
+        return;
+    }
+    EntityModel model("legacy", "minecraft:end_crystal#main");  // glass, cube and base all have zero poses
+    if (!model.Valid()) return;
+    double t[3][3];
+    AxisAngleMatrix(kPi / 3.0, s45, 0.0, s45, t);
+    EntityAffine tilt;
+    for (int i = 0; i < 3; ++i)
+        for (int j = 0; j < 3; ++j) tilt.m[i][j] = t[i][j];
+    const EntityAffine outer = base * EntityAffine::T(0.0, 1.5 + getY0 / 2.0, 0.0) * tilt;
+    const EntityAffine inner = outer * EntityAffine::S(0.875) * tilt;
+    const EntityAffine cube = inner * EntityAffine::S(0.875) * tilt;
+    BatchD_EmitParts(ctx, obj, model, outer, tex, { "glass" });
+    BatchD_EmitParts(ctx, obj, model, inner, tex, { "glass" });
+    BatchD_EmitParts(ctx, obj, model, cube, tex, { "cube" });
+    if (showBottom) BatchD_EmitParts(ctx, obj, model, base, tex, { "base" });
 }
+
 // ---- end batch4 A ----
 
 // ==== batch4 B renderers (insert below) ====
@@ -3744,6 +3838,7 @@ size_t Export(const std::string& name) {
         else if (id == "minecraft:camel") RenderCamel(ctx, e);
         // ---- end batch3 D ----
         // ==== batch4 A dispatch (insert below) ====
+        else if (id == "minecraft:ender_dragon" && ctx.modern) RenderEnderDragon(ctx, e);
         else if (id == "minecraft:wither") RenderWither(ctx, e);
         else if (id == "minecraft:end_crystal") RenderEndCrystal(ctx, e);
         // ---- end batch4 A ----
