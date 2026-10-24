@@ -281,4 +281,6 @@ modern minecraft:magma_cube#main
 # ==== batch2 B layers (insert below) ====
 # ---- end batch2 B ----
 # ==== batch2 C layers (insert below) ====
+legacy minecraft:witch#main
+modern minecraft:witch#main
 # ---- end batch2 C ----

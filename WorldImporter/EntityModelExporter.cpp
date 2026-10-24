@@ -2612,6 +2612,27 @@ void RenderMagmaCube(Ctx& ctx, const NbtTagPtr& e) {
 // ---- end batch2 B ----
 
 // ==== batch2 C renderers (insert below) ====
+// ---------- witch ----------
+// WitchModel (VillagerModel 身体 + 帽子 + 鼻子) / WitchRenderer: 无 renderer scale (26.x 根节点已烘焙 0.9375)。
+// setupAnim at age 0: 鼻子 zRot = cos(0)*2.5°; 手持物品时鼻子下垂 (setPos(0,1,-1.5), xRot -0.9)。
+// 手持物品 (WitchItemLayer) 暂未渲染。
+void RenderWitch(Ctx& ctx, const NbtTagPtr& e) {
+    const std::string fam = ctx.modern ? "modern" : "legacy";
+    EntityModel model(fam, "minecraft:witch#main");
+    if (!model.Valid()) return;
+    Placement pl = ReadPlacement(e);
+    ApplyHeadLook(model, pl);
+    const bool holding = !ReadEquipment(e).mainhand.empty();
+    if (int nose = model.Find("nose"); nose >= 0) {
+        float* p = model.Pose(nose);
+        p[5] = static_cast<float>(2.5 * kPi / 180.0);
+        if (holding) { p[0] = 0.0f; p[1] = 1.0f; p[2] = -1.5f; p[3] = -0.9f; }
+    }
+    const std::string texPath = "entity/witch/witch";
+    OutObject& obj = ctx.NewObject("minecraft:witch");
+    EmitTextured(ctx, obj, model, MobBase(pl, BodyRot(pl), 1.0), nullptr, "minecraft:" + texPath, ctx.Texture("minecraft", texPath));
+}
+
 
 // ---- end batch2 C ----
 
@@ -2896,6 +2917,7 @@ size_t Export(const std::string& name) {
         // ==== batch2 B dispatch (insert below) ====
         // ---- end batch2 B ----
         // ==== batch2 C dispatch (insert below) ====
+        else if (id == "minecraft:witch") RenderWitch(ctx, e);
         // ---- end batch2 C ----
         else if (id != "minecraft:painting") ctx.skippedEntities[id]++;  // 画由 PaintingExporter 导出
     });
