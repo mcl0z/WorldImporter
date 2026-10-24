@@ -3761,6 +3761,16 @@ void RenderBoat(Ctx& ctx, const NbtTagPtr& e, const std::string& id, const std::
     const std::string tex = "entity/" + layer;
     EmitTextured(ctx, obj, model, base, nullptr, "minecraft:" + tex, ctx.Texture("minecraft", tex));
 }
+// 1.21.1 and older: one entity id per boat kind, the wood comes from the "Type" string (unknown -> oak).
+void RenderLegacyBoat(Ctx& ctx, const NbtTagPtr& e, const std::string& id) {
+    static const char* kTypes[] = { "oak", "spruce", "birch", "jungle", "acacia", "cherry", "dark_oak", "mangrove", "bamboo" };
+    std::string type = Str(e, "Type");
+    if (type.rfind("minecraft:", 0) == 0) type = type.substr(10);
+    bool known = false;
+    for (const char* t : kTypes) known = known || type == t;
+    if (!known) type = "oak";
+    RenderBoat(ctx, e, id, (id == "minecraft:chest_boat" ? "chest_boat/" : "boat/") + type);
+}
 // ---------- minecarts (batch4 C) ----------
 // AbstractMinecartRenderer.submit at rest (no hurt, rails not followed): T(0, 0.375, 0) * RY(180 - yaw) * RZ(-pitch),
 // then the display block (scale 0.75, T(-0.5, (offset - 8) / 16, 0.5), RY 90) and the cart model with S(-1, -1, 1).
@@ -4227,6 +4237,7 @@ size_t Export(const std::string& name) {
         else if (id == "minecraft:sulfur_cube") RenderSulfurCube(ctx, e);
         // ---- end batch4 B ----
         // ==== batch4 C dispatch (insert below) ====
+        else if (!ctx.modern && (id == "minecraft:boat" || id == "minecraft:chest_boat")) RenderLegacyBoat(ctx, e, id);
         else if (id == "minecraft:oak_boat") RenderBoat(ctx, e, id, "boat/oak");
         else if (id == "minecraft:spruce_boat") RenderBoat(ctx, e, id, "boat/spruce");
         else if (id == "minecraft:birch_boat") RenderBoat(ctx, e, id, "boat/birch");
