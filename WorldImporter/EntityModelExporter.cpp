@@ -2842,7 +2842,6 @@ void RenderWitch(Ctx& ctx, const NbtTagPtr& e) {
 
 // ==== batch3 D renderers (insert below) ====
 
-// ---------- breeze (batch3 D) ----------
 // Emit only the listed parts' own polys (a child part is skipped unless listed). Visibility is not used,
 // because Emit hides children of hidden parents.
 void BatchD_EmitParts(Ctx& ctx, OutObject& obj, EntityModel& model, const EntityAffine& base,
@@ -2855,6 +2854,40 @@ void BatchD_EmitParts(Ctx& ctx, OutObject& obj, EntityModel& model, const Entity
         return std::find(parts.begin(), parts.end(), n) != parts.end() ? mat : -1;
     }, nullptr);
 }
+
+// ---------- warden (batch3 D) ----------
+// WardenModel rest pose (age 0, walk speed 0): head look (pitch, yaw 0) + idle head.zRot 0.06. The walk step zeroes
+// body, then the idle step sets body.xRot 0.025. Arms, legs and tendrils keep the dump rest pose. Keyframes are not applied.
+// Glow layers: bioluminescent (alpha 1.0) is drawn. Pulsating spots (alpha max(0, 0.25 cos(age)), runtime), heart and
+// tendril glows (runtime values) are not drawn.
+void PoseWardenRest(EntityModel& model, const Placement& pl) {
+    model.SetRot("head", HeadPitch(pl), 0.0f, 0.06f);
+    model.SetRot("body", 0.025f, 0.0f, 0.0f);
+}
+void RenderWarden(Ctx& ctx, const NbtTagPtr& e) {
+    const std::string fam = ctx.modern ? "modern" : "legacy";
+    EntityModel model(fam, "minecraft:warden#main");
+    if (!model.Valid()) return;
+    Placement pl = ReadPlacement(e);
+    PoseWardenRest(model, pl);
+    const EntityAffine base = LivingBase(pl, 1.0, 1.0);  // WardenRenderer's 0.9 is the shadow radius
+    OutObject& obj = ctx.NewObject("minecraft:warden");
+    const std::string tex = "entity/warden/warden";
+    EmitTextured(ctx, obj, model, base, nullptr, "minecraft:" + tex, ctx.Texture("minecraft", tex));
+    const std::string glow = "entity/warden/warden_bioluminescent_layer";
+    if (ctx.modern) {
+        EntityModel bio(fam, "minecraft:warden#bioluminescent");
+        if (bio.Valid()) {
+            PoseWardenRest(bio, pl);
+            EmitTextured(ctx, obj, bio, base, nullptr, "minecraft:" + glow, ctx.Texture("minecraft", glow));
+        }
+    } else {  // 1.21.1: the same body model, bioluminescent = head, arms, legs
+        BatchD_EmitParts(ctx, obj, model, base, glow, { "head", "left_arm", "right_arm", "left_leg", "right_leg" });
+    }
+}
+
+
+// ---------- breeze (batch3 D) ----------
 
 // BreezeModel has no head look. 26.x: three layer models (main = head + rods, wind = wind_body, eyes) with the dump
 // rest pose; keyframes are not applied. 1.21.1: one model switched per pass (base = head + rods, wind = wind_body
@@ -3264,6 +3297,7 @@ size_t Export(const std::string& name) {
         // ==== batch3 C dispatch (insert below) ====
         // ---- end batch3 C ----
         // ==== batch3 D dispatch (insert below) ====
+        else if (id == "minecraft:warden") RenderWarden(ctx, e);
         else if (id == "minecraft:breeze") RenderBreeze(ctx, e);
         else if (id == "minecraft:sniffer") RenderSniffer(ctx, e);
         else if (id == "minecraft:camel") RenderCamel(ctx, e);

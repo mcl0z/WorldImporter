@@ -312,6 +312,9 @@ modern minecraft:witch#main
 # ==== batch3 C layers (insert below) ====
 # ---- end batch3 C ----
 # ==== batch3 D layers (insert below) ====
+legacy minecraft:warden#main
+modern minecraft:warden#main
+modern minecraft:warden#bioluminescent
 legacy minecraft:breeze#main
 legacy minecraft:breeze_wind#main
 modern minecraft:breeze#main
