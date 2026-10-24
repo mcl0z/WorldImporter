@@ -402,6 +402,10 @@ modern minecraft:camel#saddle
 # ==== batch4 A layers (insert below) ====
 # ---- end batch4 A ----
 # ==== batch4 B layers (insert below) ====
+modern minecraft:happy_ghast#main
+modern minecraft:happy_ghast_baby#main
+modern minecraft:happy_ghast_harness#main
+modern minecraft:happy_ghast_baby_harness#main
 # ---- end batch4 B ----
 # ==== batch4 C layers (insert below) ====
 # ---- end batch4 C ----

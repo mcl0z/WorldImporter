@@ -3348,6 +3348,47 @@ void RenderCamel(Ctx& ctx, const NbtTagPtr& e) {
 // ---- end batch4 A ----
 
 // ==== batch4 B renderers (insert below) ====
+// ---------- happy_ghast (batch4 B, 26.x only) ----------
+// HappyGhastModel.setupAnim at rest: GhastModel.animateTentacles at age 0 (as RenderGhast). A body item (harness) scales
+// body to 0.9375, which the tentacles inherit. The baby layer is baked with BABY_TRANSFORMER.
+// Harness (SimpleEquipmentLayer HAPPY_GHAST_BODY): goggles follow isRidden (passengers) via y / xRot.
+// Ropes are drawn only while the ghast is a leash holder (runtime state, not saved on this entity), so they are skipped.
+// HappyGhastRenderer's 2.0 is the shadow radius, so there is no renderer scale.
+void RenderHappyGhast(Ctx& ctx, const NbtTagPtr& e) {
+    const std::string fam = ctx.modern ? "modern" : "legacy";
+    const bool baby = IsBaby(e);
+    EntityModel model(fam, MobLayer(ctx, "happy_ghast", baby));
+    if (!model.Valid()) return;  // 1.21.1 has no happy ghast
+    for (int i = 0; i < 9; ++i)
+        SetXRot(model, ("tentacle" + std::to_string(i)).c_str(), 0.2f * std::sin(static_cast<float>(i)) + 0.4f);
+    const ItemStackInfo bodyItem = BodyArmorStack(e);
+    if (!bodyItem.empty()) {
+        const int body = model.Find("body");
+        if (body >= 0) { float* q = model.Pose(body); q[6] = q[7] = q[8] = 0.9375f; }
+    }
+    Placement pl = ReadPlacement(e);
+    const EntityAffine base = MobBase(pl, BodyRot(pl), 1.0);
+    OutObject& obj = ctx.NewObject("minecraft:happy_ghast");
+    const std::string tex = baby ? "entity/ghast/happy_ghast_baby" : "entity/ghast/happy_ghast";
+    EmitTextured(ctx, obj, model, base, nullptr, "minecraft:" + tex, ctx.Texture("minecraft", tex));
+
+    // Harness: only when the saved body item resolves to a happy_ghast_body equipment layer.
+    const std::string asset = bodyItem.equipAsset;
+    const std::vector<ArmorTexLayer> layers = asset.empty() ? std::vector<ArmorTexLayer>()
+                                                            : EquipmentTexLayers(bodyItem, asset, "happy_ghast_body");
+    const int mat = ArmorMaterial(ctx, layers);
+    if (mat < 0) return;
+    EntityModel harness(fam, baby ? "minecraft:happy_ghast_baby_harness#main" : "minecraft:happy_ghast_harness#main");
+    if (!harness.Valid()) return;
+    const bool ridden = HasPassengers(e);
+    const int goggles = harness.Find("goggles");
+    if (goggles >= 0) {
+        float* q = harness.Pose(goggles);
+        q[1] = ridden ? 14.0f : 9.0f;
+        q[3] = ridden ? 0.0f : -0.7854f;
+    }
+    harness.Emit(obj.mesh, base, [mat](int) { return mat; }, nullptr);
+}
 // ---- end batch4 B ----
 
 // ==== batch4 C renderers (insert below) ====
@@ -3685,6 +3726,7 @@ size_t Export(const std::string& name) {
         // ==== batch4 A dispatch (insert below) ====
         // ---- end batch4 A ----
         // ==== batch4 B dispatch (insert below) ====
+        else if (id == "minecraft:happy_ghast") RenderHappyGhast(ctx, e);
         // ---- end batch4 B ----
         // ==== batch4 C dispatch (insert below) ====
         // ---- end batch4 C ----
