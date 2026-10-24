@@ -2706,7 +2706,22 @@ void RenderVex(Ctx& ctx, const NbtTagPtr& e) {
     model.SetRot("right_wing", 0.47123888f, -wingY, 0.47123888f);
     const std::string texPath = "entity/illager/vex";
     OutObject& obj = ctx.NewObject("minecraft:vex");
-    EmitTextured(ctx, obj, model, MobBase(pl, BodyRot(pl), 1.0), nullptr, "minecraft:" + texPath, ctx.Texture("minecraft", texPath));
+    const EntityAffine vexBase = MobBase(pl, BodyRot(pl), 1.0);
+    EmitTextured(ctx, obj, model, vexBase, nullptr, "minecraft:" + texPath, ctx.Texture("minecraft", texPath));
+    // ItemInHandLayer with VexModel.translateToHand: the arm, scale 0.55, then the hand offset (x flipped for the left hand)
+    const Equipment eq = ReadEquipment(e);
+    for (int side = 0; side < 2; ++side) {
+        const bool isLeft = side == 1;
+        const ItemStackInfo& item = side == 0 ? (eq.leftHanded ? eq.offhand : eq.mainhand)
+                                              : (eq.leftHanded ? eq.mainhand : eq.offhand);
+        if (item.empty()) continue;
+        const int arm = model.Find(isLeft ? "left_arm" : "right_arm");
+        if (arm < 0) continue;
+        using A = EntityAffine;
+        A m = model.PartTransform(arm, vexBase) * A::S(0.55) * A::T(isLeft ? -0.046875 : 0.046875, -0.15625, 0.078125);
+        m = m * A::RX(-kPi / 2) * A::RY(kPi) * A::T((isLeft ? -1.0 : 1.0) / 16.0, 2.0 / 16.0, -10.0 / 16.0);
+        AppendItem(ctx, obj, item, isLeft ? ItemDisplay::ThirdPersonLeftHand : ItemDisplay::ThirdPersonRightHand, isLeft, m);
+    }
 }
 
 // AllayModel.setupAnim at age 0, not moving, dancing or holding: the wings flap at amplitude 0.15*pi,
@@ -2729,7 +2744,25 @@ void RenderAllay(Ctx& ctx, const NbtTagPtr& e) {
     AddPos(model, "root", 0.0f, 0.25f, 0.0f);
     const std::string texPath = "entity/allay/allay";
     OutObject& obj = ctx.NewObject("minecraft:allay");
-    EmitTextured(ctx, obj, model, MobBase(pl, BodyRot(pl), 1.0), nullptr, "minecraft:" + texPath, ctx.Texture("minecraft", texPath));
+    const EntityAffine allayBase = MobBase(pl, BodyRot(pl), 1.0);
+    EmitTextured(ctx, obj, model, allayBase, nullptr, "minecraft:" + texPath, ctx.Texture("minecraft", texPath));
+    // ItemInHandLayer with AllayModel.translateToHand. Arm holding raise is runtime (progress 0 -> xRot 0 here).
+    ItemStackInfo held;
+    if (auto inv = getChildByName(e, "Inventory"); inv && inv->type == TagType::LIST) {
+        for (const auto& c : inv->children) {
+            if (NumOr(c, "Slot", -1) == 0) held = ItemRender::ParseItemStack(c);
+        }
+    }
+    if (!held.empty()) {
+        using A = EntityAffine;
+        const int body = model.Find("body"), arm = model.Find("right_arm");
+        if (body >= 0 && arm >= 0) {
+            A m = model.PartTransform(body, allayBase) * A::T(0.0, 1.0 / 16.0, 3.0 / 16.0) * A::RX(model.Pose(arm)[3]) *
+                  A::S(0.7) * A::T(1.0 / 16.0, 0.0, 0.0);
+            m = m * A::RX(-kPi / 2) * A::RY(kPi) * A::T(1.0 / 16.0, 2.0 / 16.0, -10.0 / 16.0);
+            AppendItem(ctx, obj, held, ItemDisplay::ThirdPersonRightHand, false, m);
+        }
+    }
 }
 
 // PhantomRenderer: setupRotations is the body yaw plus RX(pitch) (before the -1,-1,1 flip), then scale(1 + 0.15*size) and
@@ -2842,11 +2875,12 @@ void RenderWitch(Ctx& ctx, const NbtTagPtr& e) {
 //   pillager: 手里有弩 (主手/副手) -> CROSSBOW_HOLD (animateCrossbowHold(right, left, head, true)); 否则 NEUTRAL (双臂下垂)
 //   vindicator / evoker / illusioner: 默认 CROSSED (双手交叉, 只显示 arms, 隐藏 left_arm / right_arm)
 // IllagerModel 构造函数会把 hat 设为不可见; IllusionerRenderer 再把 hat 打开。
-// 手持物品 / 盔甲层 (IllagerRenderer 只有 CustomHeadLayer) / 隐身镜像分身 不画。
+// 手持物品: 只有 pillager / vindicator / evoker 有 ItemInHandLayer (heldItems); illusioner 与 IllagerRenderer 本身只有 CustomHeadLayer。
+// 盔甲层 / 隐身镜像分身 不画。
 // 旧版 IllagerRenderer.scale(0.9375); 26.x 的 root 已烘焙 0.9375, renderer 不再缩放。
 enum class IllagerArms { Neutral, Crossed, CrossbowHold };
 void RenderIllager(Ctx& ctx, const NbtTagPtr& e, const char* kind, const char* objId, IllagerArms arms,
-                   bool hatVisible, const char* texPath) {
+                   bool hatVisible, const char* texPath, bool heldItems = false) {
     const std::string fam = ctx.modern ? "modern" : "legacy";
     EntityModel model(fam, std::string("minecraft:") + kind + "#main");
     if (!model.Valid()) return;
@@ -2868,6 +2902,8 @@ void RenderIllager(Ctx& ctx, const NbtTagPtr& e, const char* kind, const char* o
     EntityAffine base = LivingBase(pl, 1.62, rendererScale);
     OutObject& obj = ctx.NewObject(objId);
     EmitTextured(ctx, obj, model, base, nullptr, std::string("minecraft:") + texPath, ctx.Texture("minecraft", texPath));
+    // IllagerModel.translateToHand = root + arm, the same as RenderHeldItems' humanoid transform
+    if (heldItems) RenderHeldItems(ctx, obj, model, ReadEquipment(e), base, false, false);
 }
 
 // PillagerRenderer / PillagerModel(IllagerModel): 手持弩时为 CROSSBOW_HOLD, 否则 NEUTRAL
@@ -2875,17 +2911,17 @@ void RenderPillager(Ctx& ctx, const NbtTagPtr& e) {
     const Equipment eq = ReadEquipment(e);
     const bool crossbow = eq.mainhand.id == "minecraft:crossbow" || eq.offhand.id == "minecraft:crossbow";
     RenderIllager(ctx, e, "pillager", "minecraft:pillager",
-                  crossbow ? IllagerArms::CrossbowHold : IllagerArms::Neutral, false, "entity/illager/pillager");
+                  crossbow ? IllagerArms::CrossbowHold : IllagerArms::Neutral, false, "entity/illager/pillager", true);
 }
 
 // VindicatorRenderer: 默认 CROSSED (非攻击状态, 攻击状态不在 NBT 里)
 void RenderVindicator(Ctx& ctx, const NbtTagPtr& e) {
-    RenderIllager(ctx, e, "vindicator", "minecraft:vindicator", IllagerArms::Crossed, false, "entity/illager/vindicator");
+    RenderIllager(ctx, e, "vindicator", "minecraft:vindicator", IllagerArms::Crossed, false, "entity/illager/vindicator", true);
 }
 
 // EvokerRenderer: SpellcasterIllager.getArmPose 默认 CROSSED (施法状态不在 NBT 里)
 void RenderEvoker(Ctx& ctx, const NbtTagPtr& e) {
-    RenderIllager(ctx, e, "evoker", "minecraft:evoker", IllagerArms::Crossed, false, "entity/illager/evoker");
+    RenderIllager(ctx, e, "evoker", "minecraft:evoker", IllagerArms::Crossed, false, "entity/illager/evoker", true);
 }
 
 // IllusionerRenderer: hat 可见; 默认 CROSSED. 只画本体 (isInvisible 的镜像分身不画)
@@ -2966,6 +3002,8 @@ void BRenderPiglinCommon(Ctx& ctx, const NbtTagPtr& e, const std::string& kind, 
     EmitTextured(ctx, obj, model, base, pre, "minecraft:" + texPath, ctx.Texture("minecraft", texPath));
     Equipment eq = ReadEquipment(e);
     RenderArmor(ctx, obj, "minecraft:" + kind, model, eq, base, pre, young, false);
+    // ItemInHandLayer. A 1.21.1 baby is scaled by pre, which RenderHeldItems does not apply, so it is skipped.
+    if (ctx.modern || !baby) RenderHeldItems(ctx, obj, model, eq, base, false, ctx.modern && young);
     RenderHeadItem(ctx, obj, model, eq, base, young, false, 0.0);
 }
 
