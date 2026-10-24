@@ -3025,6 +3025,141 @@ void RenderBat(Ctx& ctx, const NbtTagPtr& e) {
 
 // ==== batch3 C renderers (insert below) ====
 
+// ---- batch3 C: frog ----
+// FrogModel.setupAnim: 关键帧 (跳跃/叫/舌头/游泳/行走) 在没有启动时不改姿态, 静止就是烘焙姿态。
+// croaking_body 只在叫动画中可见, 静止时隐藏。头部不做朝向 (原版 setupAnim 不读 head)。
+// 贴图按 variant (temperate/warm/cold): 26.x entity/frog/frog_<v>, 1.21.1 entity/frog/<v>_frog。
+void RenderFrog(Ctx& ctx, const NbtTagPtr& e) {
+    const std::string fam = ctx.modern ? "modern" : "legacy";
+    EntityModel model(fam, "minecraft:frog#main");
+    if (!model.Valid()) return;
+    Placement pl = ReadPlacement(e);
+    model.SetVisible("croaking_body", false);
+    const std::string v = ClimateVariant(e);
+    std::string tex = ctx.modern ? "entity/frog/frog_" + v : "entity/frog/" + v + "_frog";
+    const std::string alt = ctx.modern ? "entity/frog/" + v + "_frog" : "entity/frog/frog_" + v;
+    if (!TextureExists("minecraft", tex) && TextureExists("minecraft", alt)) tex = alt;
+    OutObject& obj = ctx.NewObject("minecraft:frog");
+    EmitTextured(ctx, obj, model, LivingBase(pl, 0.3, 1.0), nullptr, "minecraft:" + tex, ctx.Texture("minecraft", tex));
+}
+// ---- end batch3 C frog ----
+// ---- batch3 C: armadillo ----
+// ArmadilloModel.setupAnim (未缩球): cube 隐藏; 头俯仰 clamp 到 [-22.5°, 25°], 头 yaw 取 0 (NBT 没有头部朝向)。
+// 行走 / 滚动 / 偷看关键帧未启动, 静止即烘焙姿态。缩球状态 (state NBT) 未做, 一律按未缩球渲染。
+// 26.x 幼体有独立 layer 和贴图 (armadillo_baby); 1.21.1 没有幼体, 按成年体渲染。
+void RenderArmadillo(Ctx& ctx, const NbtTagPtr& e) {
+    const std::string fam = ctx.modern ? "modern" : "legacy";
+    const bool baby = IsBaby(e);
+    EntityModel model(fam, MobLayer(ctx, "armadillo", baby));
+    if (!model.Valid()) return;
+    Placement pl = ReadPlacement(e);
+    model.SetVisible("cube", false);
+    model.SetRot("head", static_cast<float>(std::clamp(pl.pitch, -22.5, 25.0) * kPi / 180.0), 0.0f, 0.0f);
+    const bool modernBaby = ctx.modern && baby;
+    const std::string texPath = modernBaby ? "entity/armadillo/armadillo_baby"
+                                           : PickTex({ "entity/armadillo/armadillo", "entity/armadillo" });
+    OutObject& obj = ctx.NewObject("minecraft:armadillo");
+    EmitTextured(ctx, obj, model, LivingBase(pl, 0.4, 1.0), nullptr, "minecraft:" + texPath, ctx.Texture("minecraft", texPath));
+}
+// ---- end batch3 C armadillo ----
+// ---- batch3 C: axolotl ----
+// 静止姿态 (年龄 0, 无速度, 无头部 yaw; 水里 = 脚下方块是水, 否则视为趴在陆地上)。
+// 26.x 成年体 AdultAxolotlModel.setupAnim: 水里 -> 悬停 (factor 1); 陆地 -> laystill (factor 1); 再把左腿镜像到右腿。
+// 26.x 幼体 BabyAxolotlModel: 静止动画全是关键帧 (idle/swim/walk 未启动), 用烘焙姿态。
+// 1.21.1 AxolotlModel 与 26.x 常数相同, 但每帧先把姿态重置再按 5% 插值, 导出无法复现; 用烘焙姿态 +
+// 空映射分支的 body 俯仰 (body = (headPitch, netHeadYaw, 0)), 幼体同样 (AgeableListModel 参数见 kC3AgeAxolotl)。
+const AgeableParams kC3AgeAxolotl { true, 8.0f, 3.35f, 2.0f, 2.0f, 24.0f, { "head" } };
+
+// AdultAxolotlModel.setupWaterHoveringAnimation, 年龄 0, factor 1 (sin 0 = 0, cos 0 = 1)
+void C3AxolotlHover(EntityModel& m) {
+    m.AddRot("body", -0.075f, 0.0f, 0.0f);
+    m.AddRot("head", 0.075f, 0.0f, 0.0f);
+    m.AddRot("top_gills", 0.2f, 0.0f, 0.0f);
+    m.AddRot("left_gills", 0.0f, -0.49f, 0.0f);
+    m.AddRot("right_gills", 0.0f, 0.49f, 0.0f);
+    m.AddRot("left_hind_leg", static_cast<float>(3.0 * kPi / 4.0 - 0.11), 0.47123894f, 1.7278761f);
+    m.AddRot("left_front_leg", static_cast<float>(kPi / 4.0 - 0.2), 2.042035f, 0.0f);
+    m.AddRot("tail", 0.0f, 0.5f, 0.0f);
+}
+// AdultAxolotlModel.setupLayStillOnGroundAnimation, 年龄 0, factor 1 (movement = 0, movement2 = 1)
+void C3AxolotlLayStill(EntityModel& m) {
+    m.AddRot("head", 0.0f, 0.0f, -0.2f);
+    m.AddRot("tail", 0.0f, -0.1f, 0.0f);
+    m.AddRot("top_gills", 0.65f, 0.0f, 0.0f);
+    m.AddRot("left_gills", 0.0f, -0.65f, 0.0f);
+    m.AddRot("right_gills", 0.0f, 0.65f, 0.0f);
+    m.AddRot("left_hind_leg", 1.1f, 1.0f, 0.0f);
+    m.AddRot("left_front_leg", 0.8f, 2.3f, -0.5f);
+}
+// applyMirrorLegRotations (factor 1): right += (x, -y, -z) of left
+void C3AxolotlMirror(EntityModel& m, const char* left, const char* right) {
+    const int l = m.Find(left), r = m.Find(right);
+    if (l < 0 || r < 0) return;
+    const float* a = m.Pose(l);
+    float* b = m.Pose(r);
+    b[3] += a[3];
+    b[4] += -a[4];
+    b[5] += -a[5];
+}
+
+void RenderAxolotl(Ctx& ctx, const NbtTagPtr& e) {
+    const std::string fam = ctx.modern ? "modern" : "legacy";
+    const bool baby = IsBaby(e);
+    EntityModel model(fam, MobLayer(ctx, "axolotl", baby));
+    if (!model.Valid()) return;
+    Placement pl = ReadPlacement(e);
+    const bool modernBaby = ctx.modern && baby;
+    if (ctx.modern && !baby) {
+        if (InWater(ctx, pl)) C3AxolotlHover(model);
+        else C3AxolotlLayStill(model);
+        C3AxolotlMirror(model, "left_hind_leg", "right_hind_leg");
+        C3AxolotlMirror(model, "left_front_leg", "right_front_leg");
+    } else if (!ctx.modern) {
+        model.SetRot("body", static_cast<float>(pl.pitch * kPi / 180.0), 0.0f, 0.0f);
+    }
+    // Variant: 0 lucy, 1 wild, 2 gold, 3 cyan, 4 blue
+    static const char* kNames[] = { "lucy", "wild", "gold", "cyan", "blue" };
+    const int variant = std::clamp(static_cast<int>(NumOr(e, "Variant", 0)), 0, 4);
+    const std::string texPath = std::string("entity/axolotl/axolotl_") + kNames[variant] + (modernBaby ? "_baby" : "");
+    TopPre pre = (!ctx.modern && baby) ? LegacyAgeablePre(kC3AgeAxolotl) : nullptr;
+    OutObject& obj = ctx.NewObject("minecraft:axolotl");
+    EmitTextured(ctx, obj, model, LivingBase(pl, 0.3, 1.0), pre, "minecraft:" + texPath, ctx.Texture("minecraft", texPath));
+}
+// ---- end batch3 C axolotl ----
+// ---- batch3 C: tropical fish ----
+// Variant 位域: shape = v & 0xFF (0 small, 1 large), pattern = (v >> 8) & 0xFF (花纹下标 0-5 -> 1-6),
+// baseColor = (v >> 16) & 0xFF, patternColor = (v >> 24) & 0xFF (DyeColor id)。
+// TropicalFishRenderer: 底层 tropical_a (small) / tropical_b (large) 乘 baseColor;
+// TropicalFishPatternLayer: tropical_{a,b}_pattern_<n> 乘 patternColor, 几何是 #pattern layer。
+// 静止: setupAnim 的 tail = -amp * 0.45 * sin(0) = 0, bodyZRot = 0, 即烘焙姿态。
+// 离水侧躺 (setupRotations: translate(0.2, 0.1, 0) 再绕 Z 转 90°), 同 RenderCod。
+void RenderTropicalFish(Ctx& ctx, const NbtTagPtr& e) {
+    using A = EntityAffine;
+    const std::string fam = ctx.modern ? "modern" : "legacy";
+    const uint32_t v = static_cast<uint32_t>(static_cast<int64_t>(NumOr(e, "Variant", 0)));
+    const bool large = (v & 0xFFu) == 1;
+    const int patternIdx = static_cast<int>((v >> 8) & 0xFFu);
+    const int baseColor = static_cast<int>((v >> 16) & 0xFFu);
+    const int patternColor = static_cast<int>((v >> 24) & 0xFFu);
+    const std::string kind = large ? "tropical_fish_large" : "tropical_fish_small";
+    EntityModel model(fam, "minecraft:" + kind + "#main");
+    if (!model.Valid()) return;
+    Placement pl = ReadPlacement(e);
+    A rot = BodyRot(pl);
+    if (!InWater(ctx, pl)) rot = rot * A::T(0.2, 0.1, 0.0) * A::RZDeg(90.0);
+    const A base = MobBase(pl, rot, 1.0);
+    OutObject& obj = ctx.NewObject("minecraft:tropical_fish");
+    EmitDyedLayer(ctx, obj, model, base, nullptr, large ? "entity/fish/tropical_b" : "entity/fish/tropical_a",
+                  static_cast<uint32_t>(DyeRgb(baseColor)));
+    EntityModel pattern(fam, "minecraft:" + kind + "#pattern");
+    if (!pattern.Valid()) return;
+    pattern.CopyPoseFrom(model, { "body", "tail", "left_fin", "right_fin", "top_fin" }, true);
+    const int n = std::clamp(patternIdx + 1, 1, 6);
+    const std::string patTex = std::string(large ? "entity/fish/tropical_b_pattern_" : "entity/fish/tropical_a_pattern_") +
+                               std::to_string(n);
+    EmitDyedLayer(ctx, obj, pattern, base, nullptr, patTex, static_cast<uint32_t>(DyeRgb(patternColor)));
+}
+// ---- end batch3 C tropical fish ----
 // ---- end batch3 C ----
 
 // ==== batch3 D renderers (insert below) ====
@@ -3339,6 +3474,10 @@ size_t Export(const std::string& name) {
         else if (id == "minecraft:giant") RenderGiant(ctx, e);
         // ---- end batch3 B ----
         // ==== batch3 C dispatch (insert below) ====
+        else if (id == "minecraft:frog") RenderFrog(ctx, e);
+        else if (id == "minecraft:armadillo") RenderArmadillo(ctx, e);
+        else if (id == "minecraft:axolotl") RenderAxolotl(ctx, e);
+        else if (id == "minecraft:tropical_fish") RenderTropicalFish(ctx, e);
         // ---- end batch3 C ----
         // ==== batch3 D dispatch (insert below) ====
         // ---- end batch3 D ----
