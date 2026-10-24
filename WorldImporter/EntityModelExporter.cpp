@@ -2605,6 +2605,22 @@ void RenderMagmaCube(Ctx& ctx, const NbtTagPtr& e) {
 
 // ==== batch2 A renderers (insert below) ====
 
+// RavagerModel.setupAnim at rest: not stunned and not attacking or roaring (none of which is saved), so the
+// neck and mouth keep their rest values. RavagerRenderer's 1.1 is the shadow radius, not a scale.
+// Adults only in both families. The head follows the pitch, and the mouth's rest xRot is pi * 0.01.
+void RenderRavager(Ctx& ctx, const NbtTagPtr& e) {
+    const std::string fam = ctx.modern ? "modern" : "legacy";
+    EntityModel model(fam, "minecraft:ravager#main");
+    if (!model.Valid()) return;
+    Placement pl = ReadPlacement(e);
+    ApplyHeadLook(model, pl);
+    SetXRot(model, "mouth", static_cast<float>(kPi * 0.01));
+    const std::string texPath = "entity/illager/ravager";
+    OutObject& obj = ctx.NewObject("minecraft:ravager");
+    EmitTextured(ctx, obj, model, MobBase(pl, BodyRot(pl), 1.0), nullptr,
+                 "minecraft:" + texPath, ctx.Texture("minecraft", texPath));
+}
+
 // ---- end batch2 A ----
 
 // ==== batch2 B renderers (insert below) ====
@@ -2892,6 +2908,7 @@ size_t Export(const std::string& name) {
         else if (id == "minecraft:ghast") RenderGhast(ctx, e);
         else if (id == "minecraft:magma_cube") RenderMagmaCube(ctx, e);
         // ==== batch2 A dispatch (insert below) ====
+        else if (id == "minecraft:ravager") RenderRavager(ctx, e);
         // ---- end batch2 A ----
         // ==== batch2 B dispatch (insert below) ====
         // ---- end batch2 B ----

@@ -277,6 +277,8 @@ modern minecraft:blaze#main
 modern minecraft:ghast#main
 modern minecraft:magma_cube#main
 # ==== batch2 A layers (insert below) ====
+legacy minecraft:ravager#main
+modern minecraft:ravager#main
 # ---- end batch2 A ----
 # ==== batch2 B layers (insert below) ====
 # ---- end batch2 B ----
