@@ -399,3 +399,15 @@ modern minecraft:camel#main
 modern minecraft:camel_baby#main
 modern minecraft:camel#saddle
 # ---- end batch3 D ----
+# ==== batch4 A layers (insert below) ====
+# ---- end batch4 A ----
+# ==== batch4 B layers (insert below) ====
+# ---- end batch4 B ----
+# ==== batch4 C layers (insert below) ====
+# ---- end batch4 C ----
+# ==== batch4 D layers (insert below) ====
+# ---- end batch4 D ----
+# ==== batch4 E layers (insert below) ====
+# ---- end batch4 E ----
+# ==== batch4 F layers (insert below) ====
+# ---- end batch4 F ----

@@ -3344,6 +3344,24 @@ void RenderCamel(Ctx& ctx, const NbtTagPtr& e) {
 
 // ---- end batch3 D ----
 
+// ==== batch4 A renderers (insert below) ====
+// ---- end batch4 A ----
+
+// ==== batch4 B renderers (insert below) ====
+// ---- end batch4 B ----
+
+// ==== batch4 C renderers (insert below) ====
+// ---- end batch4 C ----
+
+// ==== batch4 D renderers (insert below) ====
+// ---- end batch4 D ----
+
+// ==== batch4 E renderers (insert below) ====
+// ---- end batch4 E ----
+
+// ==== batch4 F renderers (insert below) ====
+// ---- end batch4 F ----
+
 
 // ---------- armor stand ----------
 // ArmorStandRenderer + ArmorStandModel(setupAnim) + 盔甲/手持/头部物品层
@@ -3664,6 +3682,18 @@ size_t Export(const std::string& name) {
         else if (id == "minecraft:sniffer") RenderSniffer(ctx, e);
         else if (id == "minecraft:camel") RenderCamel(ctx, e);
         // ---- end batch3 D ----
+        // ==== batch4 A dispatch (insert below) ====
+        // ---- end batch4 A ----
+        // ==== batch4 B dispatch (insert below) ====
+        // ---- end batch4 B ----
+        // ==== batch4 C dispatch (insert below) ====
+        // ---- end batch4 C ----
+        // ==== batch4 D dispatch (insert below) ====
+        // ---- end batch4 D ----
+        // ==== batch4 E dispatch (insert below) ====
+        // ---- end batch4 E ----
+        // ==== batch4 F dispatch (insert below) ====
+        // ---- end batch4 F ----
         else if (id != "minecraft:painting") ctx.skippedEntities[id]++;  // 画由 PaintingExporter 导出
     });
     if (!ctx.skippedEntities.empty()) {
