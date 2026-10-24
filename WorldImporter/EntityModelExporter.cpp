@@ -2877,6 +2877,11 @@ void RenderVindicator(Ctx& ctx, const NbtTagPtr& e) {
     RenderIllager(ctx, e, "vindicator", "minecraft:vindicator", IllagerArms::Crossed, false, "entity/illager/vindicator");
 }
 
+// EvokerRenderer: SpellcasterIllager.getArmPose 默认 CROSSED (施法状态不在 NBT 里)
+void RenderEvoker(Ctx& ctx, const NbtTagPtr& e) {
+    RenderIllager(ctx, e, "evoker", "minecraft:evoker", IllagerArms::Crossed, false, "entity/illager/evoker");
+}
+
 // ---- end batch3 A ----
 
 // ==== batch3 B renderers (insert below) ====
@@ -3187,6 +3192,7 @@ size_t Export(const std::string& name) {
         // ==== batch3 A dispatch (insert below) ====
         else if (id == "minecraft:pillager") RenderPillager(ctx, e);
         else if (id == "minecraft:vindicator") RenderVindicator(ctx, e);
+        else if (id == "minecraft:evoker") RenderEvoker(ctx, e);
         // ---- end batch3 A ----
         // ==== batch3 B dispatch (insert below) ====
         // ---- end batch3 B ----
