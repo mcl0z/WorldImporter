@@ -2644,6 +2644,26 @@ void RenderHoglinLike(Ctx& ctx, const NbtTagPtr& e, const std::string& kind, con
 void RenderHoglin(Ctx& ctx, const NbtTagPtr& e) { RenderHoglinLike(ctx, e, "hoglin", "minecraft:hoglin"); }
 void RenderZoglin(Ctx& ctx, const NbtTagPtr& e) { RenderHoglinLike(ctx, e, "zoglin", "minecraft:zoglin"); }
 
+// OcelotModel (1.21.1) / AdultOcelotModel, BabyOcelotModel (26.x). Crouching and sprinting are not saved,
+// so the standing pose applies: setupAnim p == 1 gives tail2 xRot 1.7278761, all else stays baked.
+// OcelotRenderer's 0.4 is the shadow radius. Legacy babies use the AgeableList scaling of kAgeOcelot.
+// 1.21.1 has no ocelot_baby texture, so legacy babies use ocelot.png.
+void RenderOcelot(Ctx& ctx, const NbtTagPtr& e) {
+    const std::string fam = ctx.modern ? "modern" : "legacy";
+    const bool baby = IsBaby(e);
+    EntityModel model(fam, MobLayer(ctx, "ocelot", baby));
+    if (!model.Valid()) return;
+    Placement pl = ReadPlacement(e);
+    SetXRot(model, "tail2", 1.7278761f);
+    ApplyHeadLook(model, pl);
+    const std::string adultTex = "entity/cat/ocelot";
+    const std::string babyTex = "entity/cat/ocelot_baby";
+    const std::string texPath = (ctx.modern && baby) ? PickTex({ babyTex.c_str(), adultTex.c_str() }) : adultTex;
+    TopPre pre = (!ctx.modern && baby) ? LegacyAgeablePre(kAgeOcelot) : nullptr;
+    OutObject& obj = ctx.NewObject("minecraft:ocelot");
+    EmitTextured(ctx, obj, model, MobBase(pl, BodyRot(pl), 1.0), pre, "minecraft:" + texPath, ctx.Texture("minecraft", texPath));
+}
+
 // ---- end batch2 A ----
 
 // ==== batch2 B renderers (insert below) ====
@@ -2934,6 +2954,7 @@ size_t Export(const std::string& name) {
         else if (id == "minecraft:ravager") RenderRavager(ctx, e);
         else if (id == "minecraft:hoglin") RenderHoglin(ctx, e);
         else if (id == "minecraft:zoglin") RenderZoglin(ctx, e);
+        else if (id == "minecraft:ocelot") RenderOcelot(ctx, e);
         // ---- end batch2 A ----
         // ==== batch2 B dispatch (insert below) ====
         // ---- end batch2 B ----
