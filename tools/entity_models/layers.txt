@@ -382,4 +382,20 @@ modern minecraft:tropical_fish_large#main
 modern minecraft:tropical_fish_large#pattern
 # ---- end batch3 C ----
 # ==== batch3 D layers (insert below) ====
+modern minecraft:creaking#main
+legacy minecraft:warden#main
+modern minecraft:warden#main
+modern minecraft:warden#bioluminescent
+legacy minecraft:breeze#main
+legacy minecraft:breeze_wind#main
+modern minecraft:breeze#main
+modern minecraft:breeze#wind
+modern minecraft:breeze#eyes
+legacy minecraft:sniffer#main
+modern minecraft:sniffer#main
+modern minecraft:sniffer_baby#main
+legacy minecraft:camel#main
+modern minecraft:camel#main
+modern minecraft:camel_baby#main
+modern minecraft:camel#saddle
 # ---- end batch3 D ----

@@ -3164,6 +3164,175 @@ void RenderTropicalFish(Ctx& ctx, const NbtTagPtr& e) {
 
 // ==== batch3 D renderers (insert below) ====
 
+// ---------- creaking (batch3 D, 26.x only) ----------
+// CreakingModel.setupAnim at rest: head.xRot = pitch, head.yRot = 0. The walk step has no effect at speed 0.
+// The eyes glow comes from runtime state (isActive / tearing down), which is not saved, so the eyes layer is not drawn.
+// CreakingRenderer's 0.6 is the shadow radius.
+void RenderCreaking(Ctx& ctx, const NbtTagPtr& e) {
+    EntityModel model(ctx.modern ? "modern" : "legacy", "minecraft:creaking#main");  // 1.21.1 has no creaking
+    if (!model.Valid()) return;
+    Placement pl = ReadPlacement(e);
+    ApplyHeadLook(model, pl);
+    const EntityAffine base = LivingBase(pl, 1.0, 1.0);
+    OutObject& obj = ctx.NewObject("minecraft:creaking");
+    const std::string tex = "entity/creaking/creaking";
+    EmitTextured(ctx, obj, model, base, nullptr, "minecraft:" + tex, ctx.Texture("minecraft", tex));
+}
+
+
+// Emit only the listed parts' own polys (a child part is skipped unless listed). Visibility is not used,
+// because Emit hides children of hidden parents.
+void BatchD_EmitParts(Ctx& ctx, OutObject& obj, EntityModel& model, const EntityAffine& base,
+                      const std::string& texPath, const std::vector<std::string>& parts) {
+    const std::string tex = ctx.Texture("minecraft", texPath);
+    if (tex.empty()) return;
+    const int mat = ctx.Material("minecraft:" + texPath, tex);
+    model.Emit(obj.mesh, base, [&](int part) {
+        const std::string& n = model.Name(part);
+        return std::find(parts.begin(), parts.end(), n) != parts.end() ? mat : -1;
+    }, nullptr);
+}
+
+// ---------- warden (batch3 D) ----------
+// WardenModel rest pose (age 0, walk speed 0): head look (pitch, yaw 0) + idle head.zRot 0.06. The walk step zeroes
+// body, then the idle step sets body.xRot 0.025. Arms, legs and tendrils keep the dump rest pose. Keyframes are not applied.
+// Glow layers: bioluminescent (alpha 1.0) is drawn. Pulsating spots (alpha max(0, 0.25 cos(age)), runtime), heart and
+// tendril glows (runtime values) are not drawn.
+void PoseWardenRest(EntityModel& model, const Placement& pl) {
+    model.SetRot("head", HeadPitch(pl), 0.0f, 0.06f);
+    model.SetRot("body", 0.025f, 0.0f, 0.0f);
+}
+void RenderWarden(Ctx& ctx, const NbtTagPtr& e) {
+    const std::string fam = ctx.modern ? "modern" : "legacy";
+    EntityModel model(fam, "minecraft:warden#main");
+    if (!model.Valid()) return;
+    Placement pl = ReadPlacement(e);
+    PoseWardenRest(model, pl);
+    const EntityAffine base = LivingBase(pl, 1.0, 1.0);  // WardenRenderer's 0.9 is the shadow radius
+    OutObject& obj = ctx.NewObject("minecraft:warden");
+    const std::string tex = "entity/warden/warden";
+    EmitTextured(ctx, obj, model, base, nullptr, "minecraft:" + tex, ctx.Texture("minecraft", tex));
+    const std::string glow = "entity/warden/warden_bioluminescent_layer";
+    if (ctx.modern) {
+        EntityModel bio(fam, "minecraft:warden#bioluminescent");
+        if (bio.Valid()) {
+            PoseWardenRest(bio, pl);
+            EmitTextured(ctx, obj, bio, base, nullptr, "minecraft:" + glow, ctx.Texture("minecraft", glow));
+        }
+    } else {  // 1.21.1: the same body model, bioluminescent = head, arms, legs
+        BatchD_EmitParts(ctx, obj, model, base, glow, { "head", "left_arm", "right_arm", "left_leg", "right_leg" });
+    }
+}
+
+
+// ---------- breeze (batch3 D) ----------
+
+// BreezeModel has no head look. 26.x: three layer models (main = head + rods, wind = wind_body, eyes) with the dump
+// rest pose; keyframes are not applied. 1.21.1: one model switched per pass (base = head + rods, wind = wind_body
+// subtree on breeze_wind#main, eyes = eyes). The 1.21.1 setupAnim at age 0 writes absolute values: head.y 4.25,
+// wind_top.x 0.6, wind_mid.z 0.8, wind_bottom.x -0.25. BreezeRenderer's 0.5 is the shadow radius.
+void BreezeLegacyRest(EntityModel& model) {
+    auto set = [&](const char* p, int axis, float v) { int i = model.Find(p); if (i >= 0) model.Pose(i)[axis] = v; };
+    set("head", 1, 4.25f);
+    set("wind_top", 0, 0.6f);
+    set("wind_mid", 2, 0.8f);
+    set("wind_bottom", 0, -0.25f);
+}
+void RenderBreeze(Ctx& ctx, const NbtTagPtr& e) {
+    const std::string fam = ctx.modern ? "modern" : "legacy";
+    EntityModel main(fam, "minecraft:breeze#main");
+    if (!main.Valid()) return;
+    Placement pl = ReadPlacement(e);
+    const EntityAffine base = LivingBase(pl, 1.0, 1.0);
+    OutObject& obj = ctx.NewObject("minecraft:breeze");
+    const std::string body = "entity/breeze/breeze", wind = "entity/breeze/breeze_wind", eyes = "entity/breeze/breeze_eyes";
+    if (ctx.modern) {
+        EmitTextured(ctx, obj, main, base, nullptr, "minecraft:" + body, ctx.Texture("minecraft", body));
+        EntityModel windM(fam, "minecraft:breeze#wind");
+        if (windM.Valid()) EmitTextured(ctx, obj, windM, base, nullptr, "minecraft:" + wind, ctx.Texture("minecraft", wind));
+        EntityModel eyesM(fam, "minecraft:breeze#eyes");
+        if (eyesM.Valid()) EmitTextured(ctx, obj, eyesM, base, nullptr, "minecraft:" + eyes, ctx.Texture("minecraft", eyes));
+    } else {
+        EntityModel windM(fam, "minecraft:breeze_wind#main");
+        BreezeLegacyRest(main);
+        BatchD_EmitParts(ctx, obj, main, base, body, { "head", "rods", "rod_1", "rod_2", "rod_3" });
+        if (windM.Valid()) {
+            BreezeLegacyRest(windM);
+            BatchD_EmitParts(ctx, obj, windM, base, wind, { "wind_body", "wind_bottom", "wind_mid", "wind_top" });
+        }
+        BatchD_EmitParts(ctx, obj, main, base, eyes, { "eyes" });
+    }
+}
+
+
+// ---------- sniffer (batch3 D) ----------
+// SnifferModel.setupAnim at rest: head.xRot = pitch, head.yRot = netHeadYaw (0). Dig/sniff/walk keyframes use the
+// dump rest pose. 26.x snifflet = sniffer_baby + snifflet.png. 1.21.1 has no baby model and no baby scaling.
+// SnifferRenderer's 1.1 is the shadow radius.
+void RenderSniffer(Ctx& ctx, const NbtTagPtr& e) {
+    const std::string fam = ctx.modern ? "modern" : "legacy";
+    const bool baby = IsBaby(e);
+    EntityModel model(fam, MobLayer(ctx, "sniffer", baby));
+    if (!model.Valid()) return;
+    Placement pl = ReadPlacement(e);
+    ApplyHeadLook(model, pl);
+    const EntityAffine base = LivingBase(pl, 1.0, 1.0);
+    OutObject& obj = ctx.NewObject("minecraft:sniffer");
+    const char* babyTex = (ctx.modern && baby) ? "entity/sniffer/snifflet" : nullptr;
+    const std::string tex = PickTex({ babyTex, "entity/sniffer/sniffer" });
+    EmitTextured(ctx, obj, model, base, nullptr, "minecraft:" + tex, ctx.Texture("minecraft", tex));
+}
+
+
+// ---------- camel (batch3 D) ----------
+// CamelModel.setupAnim at rest: applyHeadRotation only (netHeadYaw 0 for NoAI, head pitch clamped to [-25, 45];
+// jumpCooldown is runtime, so no lift). Walk/sit/standup/dash keyframes use the dump rest pose.
+// 1.21.1: saddle + bridle visible when saddled, reins when saddled and ridden (CamelModel.setupAnim).
+// 26.x: camel#saddle layer (CamelSaddleModel) = saddle + bridle, reins only when ridden.
+// CamelRenderer's 0.7 is the shadow radius, so there is no renderer scale.
+void RenderCamel(Ctx& ctx, const NbtTagPtr& e) {
+    const std::string fam = ctx.modern ? "modern" : "legacy";
+    const bool baby = IsBaby(e);  // 26.x only; 1.21.1 has no camel baby model
+    EntityModel model(fam, MobLayer(ctx, "camel", baby));
+    if (!model.Valid()) return;
+    Placement pl = ReadPlacement(e);
+    const float headX = static_cast<float>(std::clamp(pl.pitch, -25.0, 45.0) * kPi / 180.0);
+    model.SetRot("head", headX, 0.0f, 0.0f);
+    const ItemStackInfo saddleItem = SaddleStack(e);
+    const bool saddled = !saddleItem.empty();
+    const bool ridden = HasPassengers(e);
+    if (!ctx.modern) {  // 1.21.1 body-model saddle parts (bridle/reins are children of head)
+        model.SetVisible("saddle", saddled);
+        model.SetVisible("bridle", saddled);
+        model.SetVisible("reins", saddled && ridden);
+    }
+    const EntityAffine base = LivingBase(pl, 1.0, 1.0);
+    OutObject& obj = ctx.NewObject("minecraft:camel");
+    const char* babyTex = (ctx.modern && baby) ? "entity/camel/camel_baby" : nullptr;
+    const std::string tex = PickTex({ babyTex, "entity/camel/camel" });
+    EmitTextured(ctx, obj, model, base, nullptr, "minecraft:" + tex, ctx.Texture("minecraft", tex));
+
+    // 26.x SimpleEquipmentLayer(camel_saddle) with CamelSaddleModel (adult geometry, not drawn for babies here).
+    // Only the saddle/bridle/reins parts are emitted, as for the horse saddle, to avoid the transparent body sheet.
+    if (ctx.modern && saddled && !baby) {
+        const std::string asset = saddleItem.equipAsset.empty() ? "minecraft:saddle" : saddleItem.equipAsset;
+        std::vector<ArmorTexLayer> layers = EquipmentTexLayers(saddleItem, asset, "camel_saddle");
+        if (layers.empty()) layers.push_back({ "minecraft", "entity/equipment/camel_saddle/saddle", -1 });
+        EntityModel saddle(fam, "minecraft:camel#saddle");
+        if (saddle.Valid()) {
+            saddle.SetRot("head", headX, 0.0f, 0.0f);
+            const int mat = ArmorMaterial(ctx, layers);
+            if (mat >= 0) {
+                saddle.Emit(obj.mesh, base, [&](int part) {
+                    const std::string& n = saddle.Name(part);
+                    return (n == "saddle" || n == "bridle" || (n == "reins" && ridden)) ? mat : -1;
+                }, nullptr);
+            }
+        }
+    }
+}
+
+
 // ---- end batch3 D ----
 
 
@@ -3480,6 +3649,11 @@ size_t Export(const std::string& name) {
         else if (id == "minecraft:tropical_fish") RenderTropicalFish(ctx, e);
         // ---- end batch3 C ----
         // ==== batch3 D dispatch (insert below) ====
+        else if (id == "minecraft:creaking") RenderCreaking(ctx, e);
+        else if (id == "minecraft:warden") RenderWarden(ctx, e);
+        else if (id == "minecraft:breeze") RenderBreeze(ctx, e);
+        else if (id == "minecraft:sniffer") RenderSniffer(ctx, e);
+        else if (id == "minecraft:camel") RenderCamel(ctx, e);
         // ---- end batch3 D ----
         else if (id != "minecraft:painting") ctx.skippedEntities[id]++;  // 画由 PaintingExporter 导出
     });
