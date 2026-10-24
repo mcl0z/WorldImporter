@@ -2726,7 +2726,7 @@ void RenderAllay(Ctx& ctx, const NbtTagPtr& e) {
     EmitTextured(ctx, obj, model, MobBase(pl, BodyRot(pl), 1.0), nullptr, "minecraft:" + texPath, ctx.Texture("minecraft", texPath));
 }
 
-// PhantomRenderer: setupRotations is the living flip plus RX(pitch), then scale(1 + 0.15*size) and
+// PhantomRenderer: setupRotations is the body yaw plus RX(pitch) (before the -1,-1,1 flip), then scale(1 + 0.15*size) and
 // translate(0, 1.3125, 0.1875) before the usual -1.501 lift. Size is "size" in 26.x and "Size" in 1.21.1.
 // The wings and tail follow flapTime, which includes a per-entity offset that is not saved, so they keep
 // the dump's rest pose. The eyes are the same posed model with the eyes texture.
@@ -2738,8 +2738,8 @@ void RenderPhantom(Ctx& ctx, const NbtTagPtr& e) {
     Placement pl = ReadPlacement(e);
     const int size = std::clamp(static_cast<int>(NumOr(e, "size", NumOr(e, "Size", 0))), 0, 64);
     const double s = 1.0 + 0.15 * size;
-    const EntityAffine base = A::T(pl.x, pl.y, pl.z) * A::S(pl.scale) * BodyRot(pl) * A::S(-1.0, -1.0, 1.0)
-                            * A::RXDeg(pl.pitch) * A::S(s) * A::T(0.0, 1.3125, 0.1875) * A::T(0.0, -1.501, 0.0);
+    const EntityAffine base = A::T(pl.x, pl.y, pl.z) * A::S(pl.scale) * BodyRot(pl) * A::RXDeg(pl.pitch)
+                            * A::S(-1.0, -1.0, 1.0) * A::S(s) * A::T(0.0, 1.3125, 0.1875) * A::T(0.0, -1.501, 0.0);
     const std::string texPath = PickTex({ "entity/phantom/phantom", "entity/phantom" });
     OutObject& obj = ctx.NewObject("minecraft:phantom");
     EmitTextured(ctx, obj, model, base, nullptr, "minecraft:" + texPath, ctx.Texture("minecraft", texPath));
@@ -2820,7 +2820,7 @@ void RenderWitch(Ctx& ctx, const NbtTagPtr& e) {
         p[5] = static_cast<float>(2.5 * kPi / 180.0);
         if (holding) { p[0] = 0.0f; p[1] = 1.0f; p[2] = -1.5f; p[3] = -0.9f; }
     }
-    const std::string texPath = "entity/witch/witch";
+    const std::string texPath = PickTex({ "entity/witch/witch", "entity/witch" });  // 1.21.1: entity/witch.png
     OutObject& obj = ctx.NewObject("minecraft:witch");
     EmitTextured(ctx, obj, model, MobBase(pl, BodyRot(pl), 1.0), nullptr, "minecraft:" + texPath, ctx.Texture("minecraft", texPath));
 }
