@@ -321,6 +321,14 @@ modern minecraft:piglin_baby#helmet
 modern minecraft:piglin_baby#chestplate
 modern minecraft:piglin_baby#leggings
 modern minecraft:piglin_baby#boots
+legacy minecraft:piglin_brute#main
+legacy minecraft:piglin_brute#inner_armor
+legacy minecraft:piglin_brute#outer_armor
+modern minecraft:piglin_brute#main
+modern minecraft:piglin_brute#helmet
+modern minecraft:piglin_brute#chestplate
+modern minecraft:piglin_brute#leggings
+modern minecraft:piglin_brute#boots
 # ---- end batch3 B ----
 # ==== batch3 C layers (insert below) ====
 # ---- end batch3 C ----

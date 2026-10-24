@@ -2893,6 +2893,11 @@ void RenderPiglin(Ctx& ctx, const NbtTagPtr& e) {
     BRenderPiglinCommon(ctx, e, "piglin", "entity/piglin/piglin", "entity/piglin/piglin_baby", false);
 }
 
+// Brute: same adult model (no baby layer), brute texture.
+void RenderPiglinBrute(Ctx& ctx, const NbtTagPtr& e) {
+    BRenderPiglinCommon(ctx, e, "piglin_brute", "entity/piglin/piglin_brute", "", false);
+}
+
 // ---- end batch3 B ----
 
 // ==== batch3 C renderers (insert below) ====
@@ -3200,6 +3205,7 @@ size_t Export(const std::string& name) {
         // ---- end batch3 A ----
         // ==== batch3 B dispatch (insert below) ====
         else if (id == "minecraft:piglin") RenderPiglin(ctx, e);
+        else if (id == "minecraft:piglin_brute") RenderPiglinBrute(ctx, e);
         // ---- end batch3 B ----
         // ==== batch3 C dispatch (insert below) ====
         // ---- end batch3 C ----
