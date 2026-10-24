@@ -3345,6 +3345,41 @@ void RenderCamel(Ctx& ctx, const NbtTagPtr& e) {
 // ---- end batch3 D ----
 
 // ==== batch4 A renderers (insert below) ====
+
+// ---------- end crystal (batch4 A) ----------
+// Axis-angle -> Euler angles in ModelPart's ZYX order (R = Rz * Ry * Rx). Vanilla composes these as quaternions.
+void AxisAngleToEulerZYX(double rad, double ax, double ay, double az, float& x, float& y, float& z) {
+    const double c = std::cos(rad), s = std::sin(rad), t = 1.0 - c;
+    const double r[3][3] = {
+        { c + t * ax * ax, t * ax * ay - s * az, t * ax * az + s * ay },
+        { t * ax * ay + s * az, c + t * ay * ay, t * ay * az - s * ax },
+        { t * ax * az - s * ay, t * ay * az + s * ax, c + t * az * az } };
+    y = static_cast<float>(std::asin(std::clamp(-r[2][0], -1.0, 1.0)));
+    x = static_cast<float>(std::atan2(r[2][1], r[2][2]));
+    z = static_cast<float>(std::atan2(r[1][0], r[0][0]));
+}
+// EndCrystalRenderer: scale 2, translate (0, -0.5, 0); base only when ShowBottom. EndCrystalModel.setupAnim at age 0:
+// spin is 0, the glass pivot moves by getY(0) * 8 px (getY(0) = -1.1), outer glass, inner glass and cube are tilted
+// 60 deg about (1, 0, 1)/sqrt2. The beam (BeamTarget) is not drawn.
+void RenderEndCrystal(Ctx& ctx, const NbtTagPtr& e) {
+    const std::string fam = ctx.modern ? "modern" : "legacy";
+    EntityModel model(fam, "minecraft:end_crystal#main");
+    if (!model.Valid()) return;
+    auto pos = NumList(getChildByName(e, "Pos"));
+    if (pos.size() < 3) return;
+    const float getY0 = (0.5f * 0.5f + 0.5f) * 0.4f - 1.4f;
+    AddPos(model, "outer_glass", 0.0f, getY0 * 8.0f, 0.0f);
+    const double s45 = std::sqrt(0.5);
+    float rx = 0.0f, ry = 0.0f, rz = 0.0f;
+    AxisAngleToEulerZYX(kPi / 3.0, s45, 0.0, s45, rx, ry, rz);
+    for (const char* part : { "outer_glass", "inner_glass", "cube" }) model.SetRot(part, rx, ry, rz);
+    model.SetVisible("base", NumOr(e, "ShowBottom", 0) != 0);
+    const EntityAffine base = EntityAffine::T(pos[0], pos[1], pos[2]) * EntityAffine::S(2.0) *
+                              EntityAffine::T(0.0, -0.5, 0.0);
+    OutObject& obj = ctx.NewObject("minecraft:end_crystal");
+    const std::string tex = "entity/end_crystal/end_crystal";
+    EmitTextured(ctx, obj, model, base, nullptr, "minecraft:" + tex, ctx.Texture("minecraft", tex));
+}
 // ---- end batch4 A ----
 
 // ==== batch4 B renderers (insert below) ====
@@ -3683,6 +3718,7 @@ size_t Export(const std::string& name) {
         else if (id == "minecraft:camel") RenderCamel(ctx, e);
         // ---- end batch3 D ----
         // ==== batch4 A dispatch (insert below) ====
+        else if (id == "minecraft:end_crystal") RenderEndCrystal(ctx, e);
         // ---- end batch4 A ----
         // ==== batch4 B dispatch (insert below) ====
         // ---- end batch4 B ----
