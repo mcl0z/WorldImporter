@@ -276,3 +276,9 @@ modern minecraft:endermite#main
 modern minecraft:blaze#main
 modern minecraft:ghast#main
 modern minecraft:magma_cube#main
+# ==== batch2 A layers (insert below) ====
+# ---- end batch2 A ----
+# ==== batch2 B layers (insert below) ====
+# ---- end batch2 B ----
+# ==== batch2 C layers (insert below) ====
+# ---- end batch2 C ----

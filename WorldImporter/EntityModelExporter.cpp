@@ -2603,6 +2603,18 @@ void RenderMagmaCube(Ctx& ctx, const NbtTagPtr& e) {
 }
 
 
+// ==== batch2 A renderers (insert below) ====
+
+// ---- end batch2 A ----
+
+// ==== batch2 B renderers (insert below) ====
+
+// ---- end batch2 B ----
+
+// ==== batch2 C renderers (insert below) ====
+
+// ---- end batch2 C ----
+
 // ---------- armor stand ----------
 // ArmorStandRenderer + ArmorStandModel(setupAnim) + 盔甲/手持/头部物品层
 void RenderArmorStand(Ctx& ctx, const NbtTagPtr& e) {
@@ -2879,6 +2891,12 @@ size_t Export(const std::string& name) {
         else if (id == "minecraft:blaze") RenderBlaze(ctx, e);
         else if (id == "minecraft:ghast") RenderGhast(ctx, e);
         else if (id == "minecraft:magma_cube") RenderMagmaCube(ctx, e);
+        // ==== batch2 A dispatch (insert below) ====
+        // ---- end batch2 A ----
+        // ==== batch2 B dispatch (insert below) ====
+        // ---- end batch2 B ----
+        // ==== batch2 C dispatch (insert below) ====
+        // ---- end batch2 C ----
         else if (id != "minecraft:painting") ctx.skippedEntities[id]++;  // 画由 PaintingExporter 导出
     });
     if (!ctx.skippedEntities.empty()) {
