@@ -305,3 +305,11 @@ modern minecraft:shulker#main
 legacy minecraft:witch#main
 modern minecraft:witch#main
 # ---- end batch2 C ----
+# ==== batch3 A layers (insert below) ====
+# ---- end batch3 A ----
+# ==== batch3 B layers (insert below) ====
+# ---- end batch3 B ----
+# ==== batch3 C layers (insert below) ====
+# ---- end batch3 C ----
+# ==== batch3 D layers (insert below) ====
+# ---- end batch3 D ----

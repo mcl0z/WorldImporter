@@ -2828,6 +2828,23 @@ void RenderWitch(Ctx& ctx, const NbtTagPtr& e) {
 
 // ---- end batch2 C ----
 
+// ==== batch3 A renderers (insert below) ====
+
+// ---- end batch3 A ----
+
+// ==== batch3 B renderers (insert below) ====
+
+// ---- end batch3 B ----
+
+// ==== batch3 C renderers (insert below) ====
+
+// ---- end batch3 C ----
+
+// ==== batch3 D renderers (insert below) ====
+
+// ---- end batch3 D ----
+
+
 // ---------- armor stand ----------
 // ArmorStandRenderer + ArmorStandModel(setupAnim) + 盔甲/手持/头部物品层
 void RenderArmorStand(Ctx& ctx, const NbtTagPtr& e) {
@@ -3120,6 +3137,14 @@ size_t Export(const std::string& name) {
         else if (id == "minecraft:shulker") RenderShulker(ctx, e);
         else if (id == "minecraft:witch") RenderWitch(ctx, e);
         // ---- end batch2 C ----
+        // ==== batch3 A dispatch (insert below) ====
+        // ---- end batch3 A ----
+        // ==== batch3 B dispatch (insert below) ====
+        // ---- end batch3 B ----
+        // ==== batch3 C dispatch (insert below) ====
+        // ---- end batch3 C ----
+        // ==== batch3 D dispatch (insert below) ====
+        // ---- end batch3 D ----
         else if (id != "minecraft:painting") ctx.skippedEntities[id]++;  // 画由 PaintingExporter 导出
     });
     if (!ctx.skippedEntities.empty()) {
