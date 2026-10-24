@@ -21,7 +21,9 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <locale>
 #include <map>
+#include <set>
 #include <sstream>
 #include <unordered_map>
 
@@ -63,9 +65,24 @@ struct Ctx {
     std::map<std::string, int> counters;
     std::map<std::string, int> exported;
     std::map<std::string, int> skippedItems;                    // 无法渲染的物品 (特殊渲染器等)
+    std::map<std::string, int> skippedEntities;                 // 没有模型的实体 id
     std::map<std::string, TintResult> tints;                    // 材质名 -> 非固定色 (并入 tint.json)
     std::map<std::string, std::string> tintedTex;               // rel+color -> 烘焙后的 png
     std::map<std::string, std::string> paletteTex;              // mask|key|pal -> 烘焙后的 png
+    std::set<std::pair<int, int>> blockChunks;                  // BlockName 载入的区块, 析构时释放
+
+    Ctx() = default;
+    Ctx(const Ctx&) = delete;
+    Ctx& operator=(const Ctx&) = delete;
+    ~Ctx() {
+        for (const auto& [cx, cz] : blockChunks) ClearSectionCacheForChunk(cx, cz);
+    }
+    // 实体所在位置的方块名; 同一区块只解析一次 (大量鱼时逐个载入/释放区块很慢)
+    std::string BlockName(int x, int y, int z) {
+        const int cx = x >> 4, cz = z >> 4;
+        if (blockChunks.insert({ cx, cz }).second) LoadAndCacheBlockData(cx, cz);
+        return GetBlockById(GetBlockId(x, y, z)).name;
+    }
 
     // 贴图写到 textures/<ns>/<path>.png, 返回相对路径; 不存在返回 ""
     std::string Texture(const std::string& ns, const std::string& path) {
@@ -2395,6 +2412,196 @@ void RenderSlime(Ctx& ctx, const NbtTagPtr& e) {
     }
 }
 
+// ---------- aquatic / small monsters / blaze / ghast / magma cube ----------
+// Poses are setupAnim at ageInTicks 0 with no target, like the other mobs.
+
+// LivingEntityRenderer.submit with the renderer's own setupRotations (rot) and scale() (rendererScale).
+EntityAffine MobBase(const Placement& p, const EntityAffine& rot, double rendererScale) {
+    using A = EntityAffine;
+    return A::T(p.x, p.y, p.z) * A::S(p.scale) * rot * A::S(-1.0, -1.0, 1.0) * A::S(rendererScale) * A::T(0.0, -1.501, 0.0);
+}
+EntityAffine BodyRot(const Placement& p) { return EntityAffine::RYDeg(180.0 - p.yaw); }
+
+void SetZRot(EntityModel& model, const char* part, float z) {
+    int i = model.Find(part); if (i < 0) return;
+    model.Pose(i)[5] = z;
+}
+
+// Entity.isInWater is not saved. Approximate it with the block at the entity's feet.
+bool InWater(Ctx& ctx, const Placement& p) {
+    try {
+        const std::string n = ctx.BlockName(static_cast<int>(std::floor(p.x)), static_cast<int>(std::floor(p.y + 0.1)),
+                                            static_cast<int>(std::floor(p.z)));
+        if (n.rfind("minecraft:water", 0) == 0 || n.rfind("minecraft:bubble_column", 0) == 0) return true;
+        if (n.find("waterlogged:true") != std::string::npos || n.find("waterlogged=true") != std::string::npos) return true;
+        return n.find("seagrass") != std::string::npos || n.find("kelp") != std::string::npos;
+    } catch (...) { return true; }
+}
+
+// CodRenderer / SalmonRenderer.setupRotations: on land the fish lies on its side.
+void RenderFish(Ctx& ctx, const NbtTagPtr& e, const std::string& id, const std::string& layer,
+                const std::string& texPath, double landX, double landY, double landZ) {
+    using A = EntityAffine;
+    const std::string fam = ctx.modern ? "modern" : "legacy";
+    EntityModel model(fam, layer);
+    if (!model.Valid()) return;
+    Placement pl = ReadPlacement(e);
+    A rot = BodyRot(pl);
+    if (!InWater(ctx, pl)) rot =rot * A::T(landX, landY, landZ) * A::RZDeg(90.0);
+    OutObject& obj = ctx.NewObject(id);
+    EmitTextured(ctx, obj, model, MobBase(pl, rot, 1.0), nullptr, "minecraft:" + texPath, ctx.Texture("minecraft", texPath));
+}
+void RenderCod(Ctx& ctx, const NbtTagPtr& e) {
+    RenderFish(ctx, e, "minecraft:cod", "minecraft:cod#main", "entity/fish/cod", 0.1, 0.1, -0.1);
+}
+// 26.x Salmon "type" small/medium/large picks the model. 1.21.1 has one size.
+void RenderSalmon(Ctx& ctx, const NbtTagPtr& e) {
+    std::string layer = "minecraft:salmon#main";
+    if (ctx.modern) {
+        const std::string type = Str(e, "type");
+        if (type == "small") layer = "minecraft:salmon_small#main";
+        else if (type == "large") layer = "minecraft:salmon_large#main";
+    }
+    RenderFish(ctx, e, "minecraft:salmon", layer, "entity/fish/salmon", 0.2, 0.1, 0.0);
+}
+
+// PufferfishRenderer: PuffState 0/1/2 -> small/medium/big. setupRotations bobs by cos(0)*0.08 first.
+void RenderPufferfish(Ctx& ctx, const NbtTagPtr& e) {
+    using A = EntityAffine;
+    const std::string fam = ctx.modern ? "modern" : "legacy";
+    const int puff = std::clamp(static_cast<int>(NumOr(e, "PuffState", 0)), 0, 2);
+    static const char* kLayers[] = { "minecraft:pufferfish_small#main", "minecraft:pufferfish_medium#main",
+                                     "minecraft:pufferfish_big#main" };
+    EntityModel model(fam, kLayers[puff]);
+    if (!model.Valid()) return;
+    // setupAnim: right fin zRot = -0.2 + 0.4 sin(0), left = 0.2 - 0.4 sin(0).
+    SetZRot(model, puff == 0 ? "right_fin" : "right_blue_fin", -0.2f);
+    SetZRot(model, puff == 0 ? "left_fin" : "left_blue_fin", 0.2f);
+    Placement pl = ReadPlacement(e);
+    const A rot = A::T(0.0, 0.08, 0.0) * BodyRot(pl);
+    const std::string texPath = "entity/fish/pufferfish";
+    OutObject& obj = ctx.NewObject("minecraft:pufferfish");
+    EmitTextured(ctx, obj, model, MobBase(pl, rot, 1.0), nullptr, "minecraft:" + texPath, ctx.Texture("minecraft", texPath));
+}
+
+// SquidRenderer.setupRotations replaces the living one. xBodyRot/zBodyRot and the tentacle angle are
+// not saved, so they stay 0. 26.x babies have their own layer and offsets; 1.21.1 squids have no babies.
+void RenderSquid(Ctx& ctx, const NbtTagPtr& e, bool glow) {
+    using A = EntityAffine;
+    const std::string fam = ctx.modern ? "modern" : "legacy";
+    const std::string kind = glow ? "glow_squid" : "squid";
+    const bool baby = ctx.modern && IsBaby(e);
+    EntityModel model(fam, MobLayer(ctx, kind, baby));
+    if (!model.Valid()) return;
+    Placement pl = ReadPlacement(e);
+    const A rot = A::T(0.0, baby ? 0.25 : 0.5, 0.0) * BodyRot(pl) * A::T(0.0, baby ? -0.6 : -1.2, 0.0);
+    const std::string texPath = "entity/squid/" + kind + (baby ? "_baby" : "");
+    OutObject& obj = ctx.NewObject("minecraft:" + kind);
+    EmitTextured(ctx, obj, model, MobBase(pl, rot, 1.0), nullptr, "minecraft:" + texPath, ctx.Texture("minecraft", texPath));
+}
+
+// DolphinModel.setupAnim: body follows the head pitch. Not moving, so the tail stays straight.
+void RenderDolphin(Ctx& ctx, const NbtTagPtr& e) {
+    const std::string fam = ctx.modern ? "modern" : "legacy";
+    const bool baby = ctx.modern && IsBaby(e);
+    EntityModel model(fam, MobLayer(ctx, "dolphin", baby));
+    if (!model.Valid()) return;
+    Placement pl = ReadPlacement(e);
+    SetXRot(model, "body", HeadPitch(pl));
+    const std::string texPath = baby ? "entity/dolphin/dolphin_baby" : PickTex({ "entity/dolphin/dolphin", "entity/dolphin" });
+    OutObject& obj = ctx.NewObject("minecraft:dolphin");
+    EmitTextured(ctx, obj, model, MobBase(pl, BodyRot(pl), 1.0), nullptr, "minecraft:" + texPath, ctx.Texture("minecraft", texPath));
+}
+
+// GuardianModel.setupAnim: head pitch; spikes and eye keep the baked rest pose (no attack target).
+// The elder is the same model at 2.35x: renderer scale in 1.21.1, baked into the 26.x root.
+void RenderGuardian(Ctx& ctx, const NbtTagPtr& e, bool elder) {
+    const std::string fam = ctx.modern ? "modern" : "legacy";
+    EntityModel model(fam, elder ? "minecraft:elder_guardian#main" : "minecraft:guardian#main");
+    if (!model.Valid()) return;
+    Placement pl = ReadPlacement(e);
+    ApplyHeadLook(model, pl);
+    const double scale = (elder && !ctx.modern) ? 2.35 : 1.0;
+    const std::string texPath = elder ? PickTex({ "entity/guardian/guardian_elder", "entity/guardian_elder" })
+                                      : PickTex({ "entity/guardian/guardian", "entity/guardian" });
+    OutObject& obj = ctx.NewObject(elder ? "minecraft:elder_guardian" : "minecraft:guardian");
+    EmitTextured(ctx, obj, model, MobBase(pl, BodyRot(pl), scale), nullptr, "minecraft:" + texPath, ctx.Texture("minecraft", texPath));
+}
+
+// SilverfishModel / EndermiteModel.setupAnim at age 0: segments sway sideways.
+void RenderSegmentedBug(Ctx& ctx, const NbtTagPtr& e, bool endermite) {
+    const std::string fam = ctx.modern ? "modern" : "legacy";
+    EntityModel model(fam, endermite ? "minecraft:endermite#main" : "minecraft:silverfish#main");
+    if (!model.Valid()) return;
+    const int segments = endermite ? 4 : 7;
+    const float rotK = endermite ? 0.01f : 0.05f, posK = endermite ? 0.1f : 0.2f;
+    std::vector<float> yRot(segments), x(segments);
+    for (int i = 0; i < segments; ++i) {
+        const float a = i * 0.15f * static_cast<float>(kPi);
+        const float d = static_cast<float>(std::abs(i - 2));
+        yRot[i] = std::cos(a) * static_cast<float>(kPi) * rotK * (1.0f + d);
+        x[i] = std::sin(a) * static_cast<float>(kPi) * posK * d;
+        const int p = model.Find("segment" + std::to_string(i));
+        if (p >= 0) { model.Pose(p)[0] = x[i]; model.Pose(p)[4] = yRot[i]; }
+    }
+    if (!endermite) {
+        // bodyLayers[0] follows segment 2 (rotation only), [1] segment 4, [2] segment 1.
+        const int follow[3] = { 2, 4, 1 };
+        for (int l = 0; l < 3; ++l) {
+            const int p = model.Find("layer" + std::to_string(l));
+            if (p < 0) continue;
+            model.Pose(p)[4] = yRot[follow[l]];
+            if (l > 0) model.Pose(p)[0] = x[follow[l]];
+        }
+    }
+    Placement pl = ReadPlacement(e);
+    const std::string kind = endermite ? "endermite" : "silverfish";
+    const std::string texPath = PickTex({ ("entity/" + kind + "/" + kind).c_str(), ("entity/" + kind).c_str() });
+    OutObject& obj = ctx.NewObject("minecraft:" + kind);
+    EmitTextured(ctx, obj, model, MobBase(pl, BodyRot(pl), 1.0), nullptr, "minecraft:" + texPath, ctx.Texture("minecraft", texPath));
+}
+
+// BlazeModel: the rods' age-0 positions are already the baked rest pose; only the head looks.
+void RenderBlaze(Ctx& ctx, const NbtTagPtr& e) {
+    const std::string fam = ctx.modern ? "modern" : "legacy";
+    EntityModel model(fam, "minecraft:blaze#main");
+    if (!model.Valid()) return;
+    Placement pl = ReadPlacement(e);
+    ApplyHeadLook(model, pl);
+    const std::string texPath = PickTex({ "entity/blaze/blaze", "entity/blaze" });
+    OutObject& obj = ctx.NewObject("minecraft:blaze");
+    EmitTextured(ctx, obj, model, MobBase(pl, BodyRot(pl), 1.0), nullptr, "minecraft:" + texPath, ctx.Texture("minecraft", texPath));
+}
+
+// GhastModel.animateTentacles at age 0. 1.21.1 renderer scale 4.5; 26.x bakes it into the root.
+// isCharging is synced data, not saved, so the normal face is used.
+void RenderGhast(Ctx& ctx, const NbtTagPtr& e) {
+    const std::string fam = ctx.modern ? "modern" : "legacy";
+    EntityModel model(fam, "minecraft:ghast#main");
+    if (!model.Valid()) return;
+    for (int i = 0; i < 9; ++i)
+        SetXRot(model, ("tentacle" + std::to_string(i)).c_str(), 0.2f * std::sin(static_cast<float>(i)) + 0.4f);
+    Placement pl = ReadPlacement(e);
+    const std::string texPath = "entity/ghast/ghast";
+    OutObject& obj = ctx.NewObject("minecraft:ghast");
+    EmitTextured(ctx, obj, model, MobBase(pl, BodyRot(pl), ctx.modern ? 1.0 : 4.5), nullptr,
+                 "minecraft:" + texPath, ctx.Texture("minecraft", texPath));
+}
+
+// MagmaCubeRenderer: scale(size) at squish 0, without the slime's 0.999 downscale. Size as for slimes.
+void RenderMagmaCube(Ctx& ctx, const NbtTagPtr& e) {
+    const std::string fam = ctx.modern ? "modern" : "legacy";
+    EntityModel model(fam, "minecraft:magma_cube#main");
+    if (!model.Valid()) return;
+    int size = 1;
+    if (getChildByName(e, "Size")) size = std::max(0, static_cast<int>(NumOr(e, "Size", 0))) + 1;
+    Placement pl = ReadPlacement(e);
+    const std::string texPath = "entity/slime/magmacube";
+    OutObject& obj = ctx.NewObject("minecraft:magma_cube");
+    EmitTextured(ctx, obj, model, MobBase(pl, BodyRot(pl), static_cast<double>(size)), nullptr,
+                 "minecraft:" + texPath, ctx.Texture("minecraft", texPath));
+}
+
 
 // ---------- armor stand ----------
 // ArmorStandRenderer + ArmorStandModel(setupAnim) + 盔甲/手持/头部物品层
@@ -2536,7 +2743,9 @@ fs::path Utf8Path(const std::string& s) { return fs::path(std::u8string(s.begin(
 
 void WriteFiles(const Ctx& ctx, const std::string& name) {
     const std::string dir = getExecutableDir();
+    // 全局 locale 是 en_US.UTF-8 (fileutils/GlobalCache), 不 imbue 的话数字会带千位分隔符 ("1,000")
     std::ofstream mtl(Utf8Path(dir + name + ".mtl"), std::ios::binary);
+    mtl.imbue(std::locale::classic());
     for (const auto& m : ctx.materials) {
         RegisterMaterialFullName(m.name);
         mtl << "newmtl " << BlenderSafeName(m.name) << "\n"
@@ -2545,6 +2754,7 @@ void WriteFiles(const Ctx& ctx, const std::string& name) {
             << "map_Kd " << m.texture << "\n\n";
     }
     std::ofstream obj(Utf8Path(dir + name + ".obj"), std::ios::binary);
+    obj.imbue(std::locale::classic());
     obj << "# WorldImporter entities\nmtllib " << name << ".mtl\n";
     obj << std::fixed;
     size_t vBase = 1, tBase = 1;
@@ -2656,7 +2866,26 @@ size_t Export(const std::string& name) {
         else if (id == "minecraft:turtle") RenderTurtle(ctx, e);
         else if (id == "minecraft:parrot") RenderParrot(ctx, e);
         else if (id == "minecraft:slime") RenderSlime(ctx, e);
+        else if (id == "minecraft:cod") RenderCod(ctx, e);
+        else if (id == "minecraft:salmon") RenderSalmon(ctx, e);
+        else if (id == "minecraft:pufferfish") RenderPufferfish(ctx, e);
+        else if (id == "minecraft:squid") RenderSquid(ctx, e, false);
+        else if (id == "minecraft:glow_squid") RenderSquid(ctx, e, true);
+        else if (id == "minecraft:dolphin") RenderDolphin(ctx, e);
+        else if (id == "minecraft:guardian") RenderGuardian(ctx, e, false);
+        else if (id == "minecraft:elder_guardian") RenderGuardian(ctx, e, true);
+        else if (id == "minecraft:silverfish") RenderSegmentedBug(ctx, e, false);
+        else if (id == "minecraft:endermite") RenderSegmentedBug(ctx, e, true);
+        else if (id == "minecraft:blaze") RenderBlaze(ctx, e);
+        else if (id == "minecraft:ghast") RenderGhast(ctx, e);
+        else if (id == "minecraft:magma_cube") RenderMagmaCube(ctx, e);
+        else if (id != "minecraft:painting") ctx.skippedEntities[id]++;  // 画由 PaintingExporter 导出
     });
+    if (!ctx.skippedEntities.empty()) {
+        std::cout << "[EntityModels] entities without model:";
+        for (const auto& [id, n] : ctx.skippedEntities) std::cout << ' ' << id << '=' << n;
+        std::cout << std::endl;
+    }
     if (ctx.objects.empty()) {
         std::cout << "[EntityModels] no supported entities (" << chunks << " entity chunks)" << std::endl;
         std::error_code ec;  // 不留上次导出的实体文件
