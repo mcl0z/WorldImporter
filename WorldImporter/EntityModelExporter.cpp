@@ -2842,6 +2842,55 @@ void RenderWitch(Ctx& ctx, const NbtTagPtr& e) {
 
 // ==== batch3 D renderers (insert below) ====
 
+// ---------- camel (batch3 D) ----------
+// CamelModel.setupAnim at rest: applyHeadRotation only (netHeadYaw 0 for NoAI, head pitch clamped to [-25, 45];
+// jumpCooldown is runtime, so no lift). Walk/sit/standup/dash keyframes use the dump rest pose.
+// 1.21.1: saddle + bridle visible when saddled, reins when saddled and ridden (CamelModel.setupAnim).
+// 26.x: camel#saddle layer (CamelSaddleModel) = saddle + bridle, reins only when ridden.
+// CamelRenderer's 0.7 is the shadow radius, so there is no renderer scale.
+void RenderCamel(Ctx& ctx, const NbtTagPtr& e) {
+    const std::string fam = ctx.modern ? "modern" : "legacy";
+    const bool baby = IsBaby(e);  // 26.x only; 1.21.1 has no camel baby model
+    EntityModel model(fam, MobLayer(ctx, "camel", baby));
+    if (!model.Valid()) return;
+    Placement pl = ReadPlacement(e);
+    const float headX = static_cast<float>(std::clamp(pl.pitch, -25.0, 45.0) * kPi / 180.0);
+    model.SetRot("head", headX, 0.0f, 0.0f);
+    const ItemStackInfo saddleItem = SaddleStack(e);
+    const bool saddled = !saddleItem.empty();
+    const bool ridden = HasPassengers(e);
+    if (!ctx.modern) {  // 1.21.1 body-model saddle parts (bridle/reins are children of head)
+        model.SetVisible("saddle", saddled);
+        model.SetVisible("bridle", saddled);
+        model.SetVisible("reins", saddled && ridden);
+    }
+    const EntityAffine base = LivingBase(pl, 1.0, 1.0);
+    OutObject& obj = ctx.NewObject("minecraft:camel");
+    const char* babyTex = (ctx.modern && baby) ? "entity/camel/camel_baby" : nullptr;
+    const std::string tex = PickTex({ babyTex, "entity/camel/camel" });
+    EmitTextured(ctx, obj, model, base, nullptr, "minecraft:" + tex, ctx.Texture("minecraft", tex));
+
+    // 26.x SimpleEquipmentLayer(camel_saddle) with CamelSaddleModel (adult geometry, not drawn for babies here).
+    // Only the saddle/bridle/reins parts are emitted, as for the horse saddle, to avoid the transparent body sheet.
+    if (ctx.modern && saddled && !baby) {
+        const std::string asset = saddleItem.equipAsset.empty() ? "minecraft:saddle" : saddleItem.equipAsset;
+        std::vector<ArmorTexLayer> layers = EquipmentTexLayers(saddleItem, asset, "camel_saddle");
+        if (layers.empty()) layers.push_back({ "minecraft", "entity/equipment/camel_saddle/saddle", -1 });
+        EntityModel saddle(fam, "minecraft:camel#saddle");
+        if (saddle.Valid()) {
+            saddle.SetRot("head", headX, 0.0f, 0.0f);
+            const int mat = ArmorMaterial(ctx, layers);
+            if (mat >= 0) {
+                saddle.Emit(obj.mesh, base, [&](int part) {
+                    const std::string& n = saddle.Name(part);
+                    return (n == "saddle" || n == "bridle" || (n == "reins" && ridden)) ? mat : -1;
+                }, nullptr);
+            }
+        }
+    }
+}
+
+
 // ---- end batch3 D ----
 
 
@@ -3144,6 +3193,7 @@ size_t Export(const std::string& name) {
         // ==== batch3 C dispatch (insert below) ====
         // ---- end batch3 C ----
         // ==== batch3 D dispatch (insert below) ====
+        else if (id == "minecraft:camel") RenderCamel(ctx, e);
         // ---- end batch3 D ----
         else if (id != "minecraft:painting") ctx.skippedEntities[id]++;  // 画由 PaintingExporter 导出
     });
