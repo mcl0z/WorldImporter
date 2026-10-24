@@ -300,4 +300,8 @@ legacy minecraft:phantom#main
 modern minecraft:phantom#main
 # ---- end batch2 B ----
 # ==== batch2 C layers (insert below) ====
+legacy minecraft:shulker#main
+modern minecraft:shulker#main
+legacy minecraft:witch#main
+modern minecraft:witch#main
 # ---- end batch2 C ----
