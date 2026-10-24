@@ -3382,6 +3382,48 @@ void RenderBoat(Ctx& ctx, const NbtTagPtr& e, const std::string& id, const std::
     const std::string tex = "entity/" + layer;
     EmitTextured(ctx, obj, model, base, nullptr, "minecraft:" + tex, ctx.Texture("minecraft", tex));
 }
+// ---------- minecarts (batch4 C) ----------
+// AbstractMinecartRenderer.submit at rest (no hurt, rails not followed): T(0, 0.375, 0) * RY(180 - yaw) * RZ(-pitch),
+// then the display block (scale 0.75, T(-0.5, (offset - 8) / 16, 0.5), RY 90) and the cart model with S(-1, -1, 1).
+// Rail-following orientation and the random per-entity jitter (+-0.002 block) are not reproduced.
+// Display block: DisplayState when present, otherwise the cart type's default block and offset. The block is drawn
+// through the block-in-entity item path (as CarriedBlockLayer does); block properties (furnace LIT, chest facing)
+// are not applied. Chest blocks have no item model (builtin/entity), so the chest contents are skipped.
+std::string MinecartDisplayBlock(const NbtTagPtr& e, const std::string& fallback) {
+    auto c = getChildByName(e, "DisplayState");
+    if (!c) return fallback;
+    std::string raw;
+    if (c->type == TagType::STRING) raw = getStringTag(c);
+    else if (c->type == TagType::COMPOUND) raw = Str(c, "Name");
+    else return fallback;
+    const size_t br = raw.find('[');
+    if (br != std::string::npos) raw = raw.substr(0, br);
+    if (raw.empty() || raw == "air" || raw == "minecraft:air") return {};
+    if (raw.find(':') == std::string::npos) raw = "minecraft:" + raw;
+    return raw;
+}
+
+void RenderMinecart(Ctx& ctx, const NbtTagPtr& e, const std::string& id, const std::string& layer,
+                    const std::string& defaultBlock, int defaultOffset) {
+    using A = EntityAffine;
+    EntityModel model(ctx.modern ? "modern" : "legacy", "minecraft:" + layer + "#main");
+    if (!model.Valid()) return;
+    Placement pl = ReadPlacement(e);
+    const std::string tex = ctx.modern ? "entity/minecart/minecart" : "entity/minecart";  // one texture for all carts
+    const A pre = A::T(pl.x, pl.y, pl.z) * A::T(0.0, 0.375, 0.0) * A::RYDeg(180.0 - pl.yaw) * A::RZDeg(-pl.pitch);
+    OutObject& obj = ctx.NewObject(id);
+    const std::string block = MinecartDisplayBlock(e, defaultBlock);
+    const int offset = static_cast<int>(NumOr(e, "DisplayOffset", defaultOffset));
+    if (!block.empty()) {
+        ItemStackInfo item;
+        item.id = block;
+        item.count = 1;
+        // ItemDisplay::None centres the block on the origin; T(0.5) moves it back to the block-corner origin used by the cart
+        const A m = pre * A::S(0.75) * A::T(-0.5, (offset - 8) / 16.0, 0.5) * A::RYDeg(90.0) * A::T(0.5, 0.5, 0.5);
+        AppendItem(ctx, obj, item, ItemDisplay::None, false, m);
+    }
+    EmitTextured(ctx, obj, model, pre * A::S(-1.0, -1.0, 1.0), nullptr, "minecraft:" + tex, ctx.Texture("minecraft", tex));
+}
 // ---- end batch4 C ----
 
 // ==== batch4 D renderers (insert below) ====
@@ -3740,6 +3782,13 @@ size_t Export(const std::string& name) {
         else if (ctx.modern && id == "minecraft:pale_oak_chest_boat") RenderBoat(ctx, e, id, "chest_boat/pale_oak");
         else if (ctx.modern && id == "minecraft:poplar_chest_boat") RenderBoat(ctx, e, id, "chest_boat/poplar");
         else if (id == "minecraft:bamboo_chest_raft") RenderBoat(ctx, e, id, "chest_boat/bamboo");
+        else if (id == "minecraft:minecart") RenderMinecart(ctx, e, id, "minecart", "", 6);
+        else if (id == "minecraft:chest_minecart") RenderMinecart(ctx, e, id, "chest_minecart", "minecraft:chest", 8);
+        else if (id == "minecraft:furnace_minecart") RenderMinecart(ctx, e, id, "furnace_minecart", "minecraft:furnace", 6);
+        else if (id == "minecraft:hopper_minecart") RenderMinecart(ctx, e, id, "hopper_minecart", "minecraft:hopper", 1);
+        else if (id == "minecraft:tnt_minecart") RenderMinecart(ctx, e, id, "tnt_minecart", "minecraft:tnt", 6);
+        else if (id == "minecraft:spawner_minecart") RenderMinecart(ctx, e, id, "spawner_minecart", "minecraft:spawner", 6);
+        else if (id == "minecraft:command_block_minecart") RenderMinecart(ctx, e, id, "command_block_minecart", "minecraft:command_block", 6);
         // ---- end batch4 C ----
         // ==== batch4 D dispatch (insert below) ====
         // ---- end batch4 D ----

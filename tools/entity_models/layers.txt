@@ -444,6 +444,20 @@ modern minecraft:boat/pale_oak#main
 modern minecraft:chest_boat/pale_oak#main
 modern minecraft:boat/poplar#main
 modern minecraft:chest_boat/poplar#main
+legacy minecraft:minecart#main
+legacy minecraft:chest_minecart#main
+legacy minecraft:furnace_minecart#main
+legacy minecraft:hopper_minecart#main
+legacy minecraft:tnt_minecart#main
+legacy minecraft:spawner_minecart#main
+legacy minecraft:command_block_minecart#main
+modern minecraft:minecart#main
+modern minecraft:chest_minecart#main
+modern minecraft:furnace_minecart#main
+modern minecraft:hopper_minecart#main
+modern minecraft:tnt_minecart#main
+modern minecraft:spawner_minecart#main
+modern minecraft:command_block_minecart#main
 # ---- end batch4 C ----
 # ==== batch4 D layers (insert below) ====
 # ---- end batch4 D ----
