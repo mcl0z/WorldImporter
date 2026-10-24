@@ -2907,6 +2907,119 @@ void RenderWanderingTrader(Ctx& ctx, const NbtTagPtr& e) {
 // ---- end batch3 A ----
 
 // ==== batch3 B renderers (insert below) ====
+// ---------- B: piglin family ----------
+// PiglinModel / ZombifiedPiglinModel at age 0, standing still, arm pose DEFAULT (PiglinArmPose is not saved):
+// ears keep their static angle plus the idle wobble cos(0)*0.08, so left = -ang - 0.08, right = ang + 0.08,
+// ang = 30 deg adult, 5 deg for the 26.x baby layer (1.21.1 has no baby layer, so babies keep 30 deg there).
+// Piglin / brute arms: HumanoidModel idle. Zombified piglin arms: animateZombieArms, raised at -pi/2.25,
+// or -pi/1.5 while angry (AngerTime / anger_end_time, read by IsAngry).
+void BPiglinPose(EntityModel& model, bool modernBaby, bool zombified, bool angry) {
+    const float pi = static_cast<float>(kPi);
+    const float ang = static_cast<float>((modernBaby ? 5.0 : 30.0) * kPi / 180.0);
+    model.SetRot("left_ear", 0.0f, 0.0f, -ang - 0.08f);
+    model.SetRot("right_ear", 0.0f, 0.0f, ang + 0.08f);
+    if (!zombified) {
+        PoseSkeletonIdle(model);
+        return;
+    }
+    const float armX = angry ? -pi / 1.5f : -pi / 2.25f;
+    model.SetRot("right_arm", armX, -0.1f, 0.05f);
+    model.SetRot("left_arm", armX, 0.1f, -0.05f);
+    model.SetRot("right_leg", 0.0f, 0.005f, 0.005f);
+    model.SetRot("left_leg", 0.0f, -0.005f, -0.005f);
+}
+
+// Shared piglin path. Legacy babies have no layer and use the zombie-style legacy baby scaling.
+// 26.x babies use <kind>_baby#main and the piglin_baby / zombified_piglin_baby texture.
+// Held items are not drawn; armor and the worn head item follow the zombie path.
+void BRenderPiglinCommon(Ctx& ctx, const NbtTagPtr& e, const std::string& kind, const std::string& adultTex,
+                         const std::string& babyTex, bool zombified) {
+    const std::string fam = ctx.modern ? "modern" : "legacy";
+    const bool baby = IsBaby(e);
+    bool modernBaby = false;
+    std::string layer = "minecraft:" + kind + "#main";
+    if (ctx.modern && baby) {
+        const std::string babyLayer = "minecraft:" + kind + "_baby#main";
+        if (EntityModel::Exists(fam, babyLayer)) {
+            layer = babyLayer;
+            modernBaby = true;
+        }
+    }
+    EntityModel model(fam, layer);
+    if (!model.Valid()) return;
+    Placement pl = ReadPlacement(e);
+    ApplyHeadLook(model, pl);
+    BPiglinPose(model, modernBaby, zombified, zombified && IsAngry(e));
+    const double eye = 1.74 * (baby ? 0.5 : 1.0);
+    EntityAffine base = LivingBase(pl, eye, 1.0);
+    TopPre pre;
+    if (!ctx.modern && baby) pre = LegacyBabyPre(model);
+    const bool young = ctx.modern ? modernBaby : baby;
+    const std::string texPath = (modernBaby && !babyTex.empty()) ? babyTex : adultTex;
+    OutObject& obj = ctx.NewObject("minecraft:" + kind);
+    EmitTextured(ctx, obj, model, base, pre, "minecraft:" + texPath, ctx.Texture("minecraft", texPath));
+    Equipment eq = ReadEquipment(e);
+    RenderArmor(ctx, obj, "minecraft:" + kind, model, eq, base, pre, young, false);
+    RenderHeadItem(ctx, obj, model, eq, base, young, false, 0.0);
+}
+
+void RenderPiglin(Ctx& ctx, const NbtTagPtr& e) {
+    BRenderPiglinCommon(ctx, e, "piglin", "entity/piglin/piglin", "entity/piglin/piglin_baby", false);
+}
+
+// Brute: same adult model (no baby layer), brute texture.
+void RenderPiglinBrute(Ctx& ctx, const NbtTagPtr& e) {
+    BRenderPiglinCommon(ctx, e, "piglin_brute", "entity/piglin/piglin_brute", "", false);
+}
+
+// Zombified piglin: zombie-style arms (see BPiglinPose), the zombified_piglin textures.
+void RenderZombifiedPiglin(Ctx& ctx, const NbtTagPtr& e) {
+    BRenderPiglinCommon(ctx, e, "zombified_piglin", "entity/piglin/zombified_piglin",
+                        "entity/piglin/zombified_piglin_baby", true);
+}
+
+// BatModel at animation time 0: BatAnimation.BAT_RESTING (BatFlags bit0) or BAT_FLYING, same keyframes in
+// 1.21.1 and 26.3. The keyframe values are offsets on the dump's rest pose (posVec negates y).
+// Resting head yaw is not saved, so it stays 0. Bats have no head pitch, and the 0.25 in the renderer is the
+// shadow radius, so the scale is 1.0.
+// GiantMobRenderer: the zombie model at scale 6 with the zombie texture. The legacy family applies the 6 as the
+// renderer scale; 26.x already has it in the giant layer root, so the renderer scale stays 1.
+void RenderGiant(Ctx& ctx, const NbtTagPtr& e) {
+    RenderHumanoidMob(ctx, e, "giant", "entity/zombie/zombie", 10.44, true, 6.0);
+}
+
+void RenderBat(Ctx& ctx, const NbtTagPtr& e) {
+    const std::string fam = ctx.modern ? "modern" : "legacy";
+    EntityModel model(fam, "minecraft:bat#main");
+    if (!model.Valid()) return;
+    Placement pl = ReadPlacement(e);
+    const float pi = static_cast<float>(kPi);
+    const float deg = static_cast<float>(kPi / 180.0);
+    const bool resting = (static_cast<int>(NumOr(e, "BatFlags", 0)) & 1) != 0;
+    if (resting) {
+        model.AddRot("head", pi, 0.0f, 0.0f);
+        AddPos(model, "head", 0.0f, -0.5f, 0.0f);
+        model.AddRot("body", pi, 0.0f, 0.0f);
+        AddPos(model, "body", 0.0f, -0.5f, 0.0f);
+        model.AddRot("right_wing", 0.0f, -10.0f * deg, 0.0f);
+        AddPos(model, "right_wing", 0.0f, 0.0f, 1.0f);
+        model.AddRot("right_wing_tip", 0.0f, -120.0f * deg, 0.0f);
+        model.AddRot("left_wing", 0.0f, 10.0f * deg, 0.0f);
+        AddPos(model, "left_wing", 0.0f, 0.0f, 1.0f);
+        model.AddRot("left_wing_tip", 0.0f, 120.0f * deg, 0.0f);
+    } else {
+        model.AddRot("body", 40.0f * deg, 0.0f, 0.0f);
+        model.AddRot("feet", 10.0f * deg, 0.0f, 0.0f);
+        model.AddRot("right_wing", 0.0f, 85.0f * deg, 0.0f);
+        model.AddRot("right_wing_tip", 0.0f, 10.5f * deg, 0.0f);
+        model.AddRot("left_wing", 0.0f, -85.0f * deg, 0.0f);
+        model.AddRot("left_wing_tip", 0.0f, -10.5f * deg, 0.0f);
+    }
+    const std::string texPath = PickTex({ "entity/bat/bat", "entity/bat" });
+    OutObject& obj = ctx.NewObject("minecraft:bat");
+    EmitTextured(ctx, obj, model, MobBase(pl, BodyRot(pl), 1.0), nullptr, "minecraft:" + texPath,
+                 ctx.Texture("minecraft", texPath));
+}
 
 // ---- end batch3 B ----
 
@@ -3219,6 +3332,11 @@ size_t Export(const std::string& name) {
         else if (id == "minecraft:wandering_trader") RenderWanderingTrader(ctx, e);
         // ---- end batch3 A ----
         // ==== batch3 B dispatch (insert below) ====
+        else if (id == "minecraft:piglin") RenderPiglin(ctx, e);
+        else if (id == "minecraft:piglin_brute") RenderPiglinBrute(ctx, e);
+        else if (id == "minecraft:zombified_piglin") RenderZombifiedPiglin(ctx, e);
+        else if (id == "minecraft:bat") RenderBat(ctx, e);
+        else if (id == "minecraft:giant") RenderGiant(ctx, e);
         // ---- end batch3 B ----
         // ==== batch3 C dispatch (insert below) ====
         // ---- end batch3 C ----

@@ -318,6 +318,50 @@ legacy minecraft:wandering_trader#main
 modern minecraft:wandering_trader#main
 # ---- end batch3 A ----
 # ==== batch3 B layers (insert below) ====
+legacy minecraft:piglin#main
+legacy minecraft:piglin#inner_armor
+legacy minecraft:piglin#outer_armor
+modern minecraft:piglin#main
+modern minecraft:piglin_baby#main
+modern minecraft:piglin#helmet
+modern minecraft:piglin#chestplate
+modern minecraft:piglin#leggings
+modern minecraft:piglin#boots
+modern minecraft:piglin_baby#helmet
+modern minecraft:piglin_baby#chestplate
+modern minecraft:piglin_baby#leggings
+modern minecraft:piglin_baby#boots
+legacy minecraft:piglin_brute#main
+legacy minecraft:piglin_brute#inner_armor
+legacy minecraft:piglin_brute#outer_armor
+modern minecraft:piglin_brute#main
+modern minecraft:piglin_brute#helmet
+modern minecraft:piglin_brute#chestplate
+modern minecraft:piglin_brute#leggings
+modern minecraft:piglin_brute#boots
+legacy minecraft:zombified_piglin#main
+legacy minecraft:zombified_piglin#inner_armor
+legacy minecraft:zombified_piglin#outer_armor
+modern minecraft:zombified_piglin#main
+modern minecraft:zombified_piglin_baby#main
+modern minecraft:zombified_piglin#helmet
+modern minecraft:zombified_piglin#chestplate
+modern minecraft:zombified_piglin#leggings
+modern minecraft:zombified_piglin#boots
+modern minecraft:zombified_piglin_baby#helmet
+modern minecraft:zombified_piglin_baby#chestplate
+modern minecraft:zombified_piglin_baby#leggings
+modern minecraft:zombified_piglin_baby#boots
+legacy minecraft:bat#main
+modern minecraft:bat#main
+legacy minecraft:giant#main
+legacy minecraft:giant#inner_armor
+legacy minecraft:giant#outer_armor
+modern minecraft:giant#main
+modern minecraft:giant#helmet
+modern minecraft:giant#chestplate
+modern minecraft:giant#leggings
+modern minecraft:giant#boots
 # ---- end batch3 B ----
 # ==== batch3 C layers (insert below) ====
 # ---- end batch3 C ----
