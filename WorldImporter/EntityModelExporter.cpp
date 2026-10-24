@@ -3389,6 +3389,27 @@ void RenderHappyGhast(Ctx& ctx, const NbtTagPtr& e) {
     }
     harness.Emit(obj.mesh, base, [mat](int) { return mat; }, nullptr);
 }
+
+// ---------- copper_golem (batch4 B, 26.x only) ----------
+// CopperGolemModel.setupAnim at rest: head pitch from the look, yaw 0. Walk, idle and interaction keyframes are not
+// applied, so the dump rest pose is used. The state (IDLE/STAR/SITTING/RUNNING) is runtime and only changes the
+// held-item pose, so the standing model is used. weather_state picks the body and eyes texture.
+// The eyes layer is drawn with the full model and the eyes texture (vanilla COPPER_GOLEM_EYES is an empty layer).
+// The antenna block, held items and the head layer are not drawn. CopperGolemRenderer's 0.5 is the shadow radius.
+void RenderCopperGolem(Ctx& ctx, const NbtTagPtr& e) {
+    EntityModel model(ctx.modern ? "modern" : "legacy", "minecraft:copper_golem#main");
+    if (!model.Valid()) return;  // 1.21.1 has no copper golem
+    Placement pl = ReadPlacement(e);
+    ApplyHeadLook(model, pl);
+    const EntityAffine base = LivingBase(pl, 1.0, 1.0);
+    const std::string weather = Str(e, "weather_state");  // WeatheringCopper.WeatherState serialized name
+    const std::string suffix = (weather == "exposed" || weather == "weathered" || weather == "oxidized") ? "_" + weather : "";
+    OutObject& obj = ctx.NewObject("minecraft:copper_golem");
+    const std::string tex = "entity/copper_golem/copper_golem" + suffix;
+    EmitTextured(ctx, obj, model, base, nullptr, "minecraft:" + tex, ctx.Texture("minecraft", tex));
+    const std::string eyes = "entity/copper_golem/copper_golem_eyes" + suffix;
+    EmitTextured(ctx, obj, model, base, nullptr, "minecraft:" + eyes, ctx.Texture("minecraft", eyes));
+}
 // ---- end batch4 B ----
 
 // ==== batch4 C renderers (insert below) ====
@@ -3727,6 +3748,7 @@ size_t Export(const std::string& name) {
         // ---- end batch4 A ----
         // ==== batch4 B dispatch (insert below) ====
         else if (id == "minecraft:happy_ghast") RenderHappyGhast(ctx, e);
+        else if (id == "minecraft:copper_golem") RenderCopperGolem(ctx, e);
         // ---- end batch4 B ----
         // ==== batch4 C dispatch (insert below) ====
         // ---- end batch4 C ----
