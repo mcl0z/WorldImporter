@@ -2838,6 +2838,24 @@ void RenderWitch(Ctx& ctx, const NbtTagPtr& e) {
 
 // ==== batch3 C renderers (insert below) ====
 
+// ---- batch3 C: frog ----
+// FrogModel.setupAnim: 关键帧 (跳跃/叫/舌头/游泳/行走) 在没有启动时不改姿态, 静止就是烘焙姿态。
+// croaking_body 只在叫动画中可见, 静止时隐藏。头部不做朝向 (原版 setupAnim 不读 head)。
+// 贴图按 variant (temperate/warm/cold): 26.x entity/frog/frog_<v>, 1.21.1 entity/frog/<v>_frog。
+void RenderFrog(Ctx& ctx, const NbtTagPtr& e) {
+    const std::string fam = ctx.modern ? "modern" : "legacy";
+    EntityModel model(fam, "minecraft:frog#main");
+    if (!model.Valid()) return;
+    Placement pl = ReadPlacement(e);
+    model.SetVisible("croaking_body", false);
+    const std::string v = ClimateVariant(e);
+    std::string tex = ctx.modern ? "entity/frog/frog_" + v : "entity/frog/" + v + "_frog";
+    const std::string alt = ctx.modern ? "entity/frog/" + v + "_frog" : "entity/frog/frog_" + v;
+    if (!TextureExists("minecraft", tex) && TextureExists("minecraft", alt)) tex = alt;
+    OutObject& obj = ctx.NewObject("minecraft:frog");
+    EmitTextured(ctx, obj, model, LivingBase(pl, 0.3, 1.0), nullptr, "minecraft:" + tex, ctx.Texture("minecraft", tex));
+}
+// ---- end batch3 C frog ----
 // ---- end batch3 C ----
 
 // ==== batch3 D renderers (insert below) ====
@@ -3142,6 +3160,7 @@ size_t Export(const std::string& name) {
         // ==== batch3 B dispatch (insert below) ====
         // ---- end batch3 B ----
         // ==== batch3 C dispatch (insert below) ====
+        else if (id == "minecraft:frog") RenderFrog(ctx, e);
         // ---- end batch3 C ----
         // ==== batch3 D dispatch (insert below) ====
         // ---- end batch3 D ----

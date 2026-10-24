@@ -310,6 +310,8 @@ modern minecraft:witch#main
 # ==== batch3 B layers (insert below) ====
 # ---- end batch3 B ----
 # ==== batch3 C layers (insert below) ====
+legacy minecraft:frog#main
+modern minecraft:frog#main
 # ---- end batch3 C ----
 # ==== batch3 D layers (insert below) ====
 # ---- end batch3 D ----
