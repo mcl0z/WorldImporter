@@ -3346,6 +3346,32 @@ void RenderCamel(Ctx& ctx, const NbtTagPtr& e) {
 
 // ==== batch4 A renderers (insert below) ====
 
+// ---------- wither (batch4 A) ----------
+// WitherBossModel at age 0 (the ribcage/tail sway is cos(0) = 1): ribcage.xRot = 0.115 pi, tail.xRot = 0.365 pi, and the
+// tail pivot follows the ribcage. Head rotations are not saved; the center head takes the entity pitch and yaw 0 (facing
+// the body, as for other mobs). The side heads' xHeadRots/yHeadRots are runtime state, so they stay at the bake pose.
+// WitherBossRenderer: scale 2.0, shrinking by Invul/220 * 0.5 while invulnerable; texture swaps on Invul. The armor
+// overlay (EnergySwirlLayer, UV-scrolled, drawn when powered) is not drawn, as for the creeper charge layer.
+void RenderWither(Ctx& ctx, const NbtTagPtr& e) {
+    const std::string fam = ctx.modern ? "modern" : "legacy";
+    EntityModel model(fam, "minecraft:wither#main");
+    if (!model.Valid()) return;
+    Placement pl = ReadPlacement(e);
+    const int invul = static_cast<int>(NumOr(e, "Invul", 0));
+    const float rendererScale = invul > 0 ? 2.0f - invul / 220.0f * 0.5f : 2.0f;
+    const float ribcageX = (0.065f + 0.05f) * kPi;
+    const float tailX = (0.265f + 0.1f) * kPi;
+    model.SetRot("ribcage", ribcageX, 0.0f, 0.0f);
+    model.SetPose("tail", -2.0f, 6.9f + std::cos(ribcageX) * 10.0f, -0.5f + std::sin(ribcageX) * 10.0f);
+    model.SetRot("tail", tailX, 0.0f, 0.0f);
+    ApplyHeadLook(model, pl, "center_head");
+    const EntityAffine base = LivingBase(pl, 1.0, rendererScale);  // eye height only matters for beds
+    const bool invulnerable = invul > 0 && (invul > 80 || invul / 5 % 2 != 1);
+    OutObject& obj = ctx.NewObject("minecraft:wither");
+    const std::string tex = invulnerable ? "entity/wither/wither_invulnerable" : "entity/wither/wither";
+    EmitTextured(ctx, obj, model, base, nullptr, "minecraft:" + tex, ctx.Texture("minecraft", tex));
+}
+
 // ---------- end crystal (batch4 A) ----------
 // Axis-angle -> Euler angles in ModelPart's ZYX order (R = Rz * Ry * Rx). Vanilla composes these as quaternions.
 void AxisAngleToEulerZYX(double rad, double ax, double ay, double az, float& x, float& y, float& z) {
@@ -3718,6 +3744,7 @@ size_t Export(const std::string& name) {
         else if (id == "minecraft:camel") RenderCamel(ctx, e);
         // ---- end batch3 D ----
         // ==== batch4 A dispatch (insert below) ====
+        else if (id == "minecraft:wither") RenderWither(ctx, e);
         else if (id == "minecraft:end_crystal") RenderEndCrystal(ctx, e);
         // ---- end batch4 A ----
         // ==== batch4 B dispatch (insert below) ====
