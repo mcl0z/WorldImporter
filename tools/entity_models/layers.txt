@@ -404,6 +404,46 @@ modern minecraft:camel#saddle
 # ==== batch4 B layers (insert below) ====
 # ---- end batch4 B ----
 # ==== batch4 C layers (insert below) ====
+legacy minecraft:boat/acacia#main
+legacy minecraft:chest_boat/acacia#main
+legacy minecraft:boat/birch#main
+legacy minecraft:chest_boat/birch#main
+legacy minecraft:boat/cherry#main
+legacy minecraft:chest_boat/cherry#main
+legacy minecraft:boat/dark_oak#main
+legacy minecraft:chest_boat/dark_oak#main
+legacy minecraft:boat/jungle#main
+legacy minecraft:chest_boat/jungle#main
+legacy minecraft:boat/mangrove#main
+legacy minecraft:chest_boat/mangrove#main
+legacy minecraft:boat/oak#main
+legacy minecraft:chest_boat/oak#main
+legacy minecraft:boat/spruce#main
+legacy minecraft:chest_boat/spruce#main
+legacy minecraft:boat/bamboo#main
+legacy minecraft:chest_boat/bamboo#main
+modern minecraft:boat/acacia#main
+modern minecraft:chest_boat/acacia#main
+modern minecraft:boat/birch#main
+modern minecraft:chest_boat/birch#main
+modern minecraft:boat/cherry#main
+modern minecraft:chest_boat/cherry#main
+modern minecraft:boat/dark_oak#main
+modern minecraft:chest_boat/dark_oak#main
+modern minecraft:boat/jungle#main
+modern minecraft:chest_boat/jungle#main
+modern minecraft:boat/mangrove#main
+modern minecraft:chest_boat/mangrove#main
+modern minecraft:boat/oak#main
+modern minecraft:chest_boat/oak#main
+modern minecraft:boat/spruce#main
+modern minecraft:chest_boat/spruce#main
+modern minecraft:boat/bamboo#main
+modern minecraft:chest_boat/bamboo#main
+modern minecraft:boat/pale_oak#main
+modern minecraft:chest_boat/pale_oak#main
+modern minecraft:boat/poplar#main
+modern minecraft:chest_boat/poplar#main
 # ---- end batch4 C ----
 # ==== batch4 D layers (insert below) ====
 # ---- end batch4 D ----

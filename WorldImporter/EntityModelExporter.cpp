@@ -3351,6 +3351,37 @@ void RenderCamel(Ctx& ctx, const NbtTagPtr& e) {
 // ---- end batch4 B ----
 
 // ==== batch4 C renderers (insert below) ====
+// ---------- boats and rafts (batch4 C) ----------
+// AbstractBoatRenderer.submit at rest (no hurt, no bubble): T(0, 0.375, 0) * RY(180 - yaw) * S(-1, -1, 1) * RY(90).
+// Paddles at rest: AbstractBoatModel.setupAnim with rowing time 0 (AbstractBoat.getRowingTime is 0 unless paddling):
+// xRot = lerp(0.5, -60deg, -15deg), yRot = lerp((sin 1 + 1) / 2, -45deg, 45deg); the right paddle uses 180deg - yRot.
+// Paddle z rotation stays at the baked value. Rafts share the paddle code (RaftModel extends AbstractBoatModel).
+// The water patch (BoatRenderer.submitTypeAdditions, outside water only) is not exported.
+void BoatPaddlesRest(EntityModel& model) {
+    const float xRot = static_cast<float>(-kPi / 3 + 0.5 * (kPi / 4));
+    const float yRot = static_cast<float>(-kPi / 4 + (std::sin(1.0) + 1.0) / 2.0 * (kPi / 2));
+    const char* names[2] = { "left_paddle", "right_paddle" };
+    for (int side = 0; side < 2; ++side) {
+        const int i = model.Find(names[side]);
+        if (i < 0) continue;
+        model.Pose(i)[3] = xRot;
+        model.Pose(i)[4] = side == 0 ? yRot : static_cast<float>(kPi) - yRot;
+    }
+}
+
+// layer = "boat/<wood>" or "chest_boat/<wood>" (raft types use the raft geometry under the same layer name)
+void RenderBoat(Ctx& ctx, const NbtTagPtr& e, const std::string& id, const std::string& layer) {
+    using A = EntityAffine;
+    EntityModel model(ctx.modern ? "modern" : "legacy", "minecraft:" + layer + "#main");
+    if (!model.Valid()) return;
+    Placement pl = ReadPlacement(e);
+    BoatPaddlesRest(model);
+    const A base = A::T(pl.x, pl.y, pl.z) * A::T(0.0, 0.375, 0.0) * A::RYDeg(180.0 - pl.yaw) *
+                   A::S(-1.0, -1.0, 1.0) * A::RYDeg(90.0);
+    OutObject& obj = ctx.NewObject(id);
+    const std::string tex = "entity/" + layer;
+    EmitTextured(ctx, obj, model, base, nullptr, "minecraft:" + tex, ctx.Texture("minecraft", tex));
+}
 // ---- end batch4 C ----
 
 // ==== batch4 D renderers (insert below) ====
@@ -3687,6 +3718,28 @@ size_t Export(const std::string& name) {
         // ==== batch4 B dispatch (insert below) ====
         // ---- end batch4 B ----
         // ==== batch4 C dispatch (insert below) ====
+        else if (id == "minecraft:oak_boat") RenderBoat(ctx, e, id, "boat/oak");
+        else if (id == "minecraft:spruce_boat") RenderBoat(ctx, e, id, "boat/spruce");
+        else if (id == "minecraft:birch_boat") RenderBoat(ctx, e, id, "boat/birch");
+        else if (id == "minecraft:jungle_boat") RenderBoat(ctx, e, id, "boat/jungle");
+        else if (id == "minecraft:acacia_boat") RenderBoat(ctx, e, id, "boat/acacia");
+        else if (id == "minecraft:dark_oak_boat") RenderBoat(ctx, e, id, "boat/dark_oak");
+        else if (id == "minecraft:mangrove_boat") RenderBoat(ctx, e, id, "boat/mangrove");
+        else if (id == "minecraft:cherry_boat") RenderBoat(ctx, e, id, "boat/cherry");
+        else if (ctx.modern && id == "minecraft:pale_oak_boat") RenderBoat(ctx, e, id, "boat/pale_oak");
+        else if (ctx.modern && id == "minecraft:poplar_boat") RenderBoat(ctx, e, id, "boat/poplar");
+        else if (id == "minecraft:bamboo_raft") RenderBoat(ctx, e, id, "boat/bamboo");
+        else if (id == "minecraft:oak_chest_boat") RenderBoat(ctx, e, id, "chest_boat/oak");
+        else if (id == "minecraft:spruce_chest_boat") RenderBoat(ctx, e, id, "chest_boat/spruce");
+        else if (id == "minecraft:birch_chest_boat") RenderBoat(ctx, e, id, "chest_boat/birch");
+        else if (id == "minecraft:jungle_chest_boat") RenderBoat(ctx, e, id, "chest_boat/jungle");
+        else if (id == "minecraft:acacia_chest_boat") RenderBoat(ctx, e, id, "chest_boat/acacia");
+        else if (id == "minecraft:dark_oak_chest_boat") RenderBoat(ctx, e, id, "chest_boat/dark_oak");
+        else if (id == "minecraft:mangrove_chest_boat") RenderBoat(ctx, e, id, "chest_boat/mangrove");
+        else if (id == "minecraft:cherry_chest_boat") RenderBoat(ctx, e, id, "chest_boat/cherry");
+        else if (ctx.modern && id == "minecraft:pale_oak_chest_boat") RenderBoat(ctx, e, id, "chest_boat/pale_oak");
+        else if (ctx.modern && id == "minecraft:poplar_chest_boat") RenderBoat(ctx, e, id, "chest_boat/poplar");
+        else if (id == "minecraft:bamboo_chest_raft") RenderBoat(ctx, e, id, "chest_boat/bamboo");
         // ---- end batch4 C ----
         // ==== batch4 D dispatch (insert below) ====
         // ---- end batch4 D ----
