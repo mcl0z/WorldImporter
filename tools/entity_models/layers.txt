@@ -308,6 +308,8 @@ modern minecraft:witch#main
 # ==== batch3 A layers (insert below) ====
 legacy minecraft:pillager#main
 modern minecraft:pillager#main
+legacy minecraft:vindicator#main
+modern minecraft:vindicator#main
 # ---- end batch3 A ----
 # ==== batch3 B layers (insert below) ====
 # ---- end batch3 B ----

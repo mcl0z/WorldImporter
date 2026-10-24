@@ -2872,6 +2872,11 @@ void RenderPillager(Ctx& ctx, const NbtTagPtr& e) {
                   crossbow ? IllagerArms::CrossbowHold : IllagerArms::Neutral, false, "entity/illager/pillager");
 }
 
+// VindicatorRenderer: 默认 CROSSED (非攻击状态, 攻击状态不在 NBT 里)
+void RenderVindicator(Ctx& ctx, const NbtTagPtr& e) {
+    RenderIllager(ctx, e, "vindicator", "minecraft:vindicator", IllagerArms::Crossed, false, "entity/illager/vindicator");
+}
+
 // ---- end batch3 A ----
 
 // ==== batch3 B renderers (insert below) ====
@@ -3181,6 +3186,7 @@ size_t Export(const std::string& name) {
         // ---- end batch2 C ----
         // ==== batch3 A dispatch (insert below) ====
         else if (id == "minecraft:pillager") RenderPillager(ctx, e);
+        else if (id == "minecraft:vindicator") RenderVindicator(ctx, e);
         // ---- end batch3 A ----
         // ==== batch3 B dispatch (insert below) ====
         // ---- end batch3 B ----
