@@ -406,6 +406,8 @@ modern minecraft:camel#saddle
 # ==== batch4 C layers (insert below) ====
 # ---- end batch4 C ----
 # ==== batch4 D layers (insert below) ====
+legacy minecraft:llama_spit#main
+modern minecraft:llama_spit#main
 legacy minecraft:wither_skull#main
 modern minecraft:wither_skull#main
 # ---- end batch4 D ----

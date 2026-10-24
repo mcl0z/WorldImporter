@@ -3354,6 +3354,19 @@ void RenderCamel(Ctx& ctx, const NbtTagPtr& e) {
 // ---- end batch4 C ----
 
 // ==== batch4 D renderers (insert below) ====
+// ---------- llama spit (batch4 D) ----------
+// LlamaSpitRenderer: translate(0, 0.15, 0), then yaw-90 and pitch from Rotation. The model has no animation.
+void RenderLlamaSpit(Ctx& ctx, const NbtTagPtr& e) {
+    using A = EntityAffine;
+    EntityModel model(ctx.modern ? "modern" : "legacy", "minecraft:llama_spit#main");
+    if (!model.Valid()) return;
+    Placement pl = ReadPlacement(e);
+    const A base = A::T(pl.x, pl.y, pl.z) * A::T(0.0, 0.15, 0.0) * A::RYDeg(pl.yaw - 90.0) * A::RZDeg(pl.pitch);
+    const std::string tex = PickTex({ "entity/llama/llama_spit", "entity/llama/spit" });
+    OutObject& obj = ctx.NewObject("minecraft:llama_spit");
+    EmitTextured(ctx, obj, model, base, nullptr, "minecraft:" + tex, ctx.Texture("minecraft", tex));
+}
+
 // ---------- wither skull (batch4 D) ----------
 // WitherSkullRenderer: SkullModel head takes the entity yaw/pitch (Rotation), animationPos is 0.
 // The blue (invulnerable) skull is the "dangerous" NBT flag. Drawn at the entity position after scale(-1,-1,1).
@@ -3705,6 +3718,7 @@ size_t Export(const std::string& name) {
         // ==== batch4 C dispatch (insert below) ====
         // ---- end batch4 C ----
         // ==== batch4 D dispatch (insert below) ====
+        else if (id == "minecraft:llama_spit") RenderLlamaSpit(ctx, e);
         else if (id == "minecraft:wither_skull") RenderWitherSkull(ctx, e);
         // ---- end batch4 D ----
         // ==== batch4 E dispatch (insert below) ====
