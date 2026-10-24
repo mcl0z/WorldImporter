@@ -2609,6 +2609,18 @@ void RenderMagmaCube(Ctx& ctx, const NbtTagPtr& e) {
 
 // ==== batch2 B renderers (insert below) ====
 
+// TadpoleModel.setupAnim: tail yRot = -amp*0.25*sin(0.3*age). At age 0 that is 0, so the baked pose stands.
+// TadpoleRenderer's 0.14 is the shadow radius, not a scale, so only the living base applies.
+void RenderTadpole(Ctx& ctx, const NbtTagPtr& e) {
+    const std::string fam = ctx.modern ? "modern" : "legacy";
+    EntityModel model(fam, "minecraft:tadpole#main");
+    if (!model.Valid()) return;
+    Placement pl = ReadPlacement(e);
+    const std::string texPath = "entity/tadpole/tadpole";
+    OutObject& obj = ctx.NewObject("minecraft:tadpole");
+    EmitTextured(ctx, obj, model, MobBase(pl, BodyRot(pl), 1.0), nullptr, "minecraft:" + texPath, ctx.Texture("minecraft", texPath));
+}
+
 // ---- end batch2 B ----
 
 // ==== batch2 C renderers (insert below) ====
@@ -2894,6 +2906,7 @@ size_t Export(const std::string& name) {
         // ==== batch2 A dispatch (insert below) ====
         // ---- end batch2 A ----
         // ==== batch2 B dispatch (insert below) ====
+        else if (id == "minecraft:tadpole") RenderTadpole(ctx, e);
         // ---- end batch2 B ----
         // ==== batch2 C dispatch (insert below) ====
         // ---- end batch2 C ----
