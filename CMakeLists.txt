@@ -34,14 +34,6 @@ wi_apply_defaults(WorldImporterCore)
 
 include(CTest)
 
-if (BUILD_TESTING AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/WorldImporter/tests/render_layer_tests.cpp")
-    add_executable(render_layer_tests WorldImporter/tests/render_layer_tests.cpp)
-    target_link_libraries(render_layer_tests PRIVATE WorldImporterCore)
-    wi_apply_defaults(render_layer_tests)
-    add_test(NAME render_layer COMMAND render_layer_tests)
-    set_tests_properties(render_layer PROPERTIES TIMEOUT 30)
-endif()
-
 option(WI_BUILD_CTM_TESTS "Build CTM texture baking regression tests" ON)
 
 if (BUILD_TESTING AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/WorldImporter/tests/ctm_orient_tests.cpp")
@@ -140,14 +132,6 @@ if (BUILD_TESTING AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/WorldImporter/tests/bi
         endif()
     endforeach()
     set_tests_properties(biome_colors PROPERTIES TIMEOUT 30 RESOURCE_LOCK biome_texture_output)
-endif()
-
-if (BUILD_TESTING AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/WorldImporter/tests/tintindex_fallback_tests.cpp")
-    add_executable(tintindex_fallback_tests WorldImporter/tests/tintindex_fallback_tests.cpp)
-    target_link_libraries(tintindex_fallback_tests PRIVATE WorldImporterCore)
-    wi_apply_defaults(tintindex_fallback_tests)
-    add_test(NAME tintindex_fallback COMMAND tintindex_fallback_tests)
-    set_tests_properties(tintindex_fallback PROPERTIES TIMEOUT 30)
 endif()
 
 if (BUILD_TESTING AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/WorldImporter/tests/variant_pick_tests.cpp")

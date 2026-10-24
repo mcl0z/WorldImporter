@@ -2,7 +2,9 @@
 #include <algorithm>
 #include <cassert>
 #include <chrono>
+#include <cstdio>
 #include <fstream>
+#include <set>
 #include <sstream>
 #include <locale>
 #include <limits>
@@ -83,6 +85,48 @@ std::string getExecutableDir() {
         std::cerr << "获取可执行文件目录失败: " << e.what() << std::endl;
         return fs::current_path().string() + "/"; // 失败时返回当前目录
     }
+}
+
+namespace {
+// 材质名规则：<命名空间>:<方块>#<贴图键>~<贴图名>[@<tint 后缀>]
+// "~" 是"贴图名"的分隔符，所以截断标记不能再用 "~" 当前缀，改用名字里不会出现的 "!"。
+uint32_t Fnv1a32(const std::string& text) {
+    uint32_t hash = 2166136261u;
+    for (unsigned char c : text) {
+        hash ^= c;
+        hash *= 16777619u;
+    }
+    return hash;
+}
+
+// 按 UTF-8 字符边界截到不超过 maxBytes 字节（避免切出半个汉字/emoji）。
+std::string Utf8Prefix(const std::string& text, size_t maxBytes) {
+    if (text.size() <= maxBytes) return text;
+    size_t cut = maxBytes;
+    while (cut > 0 && (static_cast<unsigned char>(text[cut]) & 0xC0) == 0x80) --cut;
+    return text.substr(0, cut);
+}
+} // namespace
+
+// Blender 材质名上限 63 字节，超长会被 Blender 静默截断，tint.json / overlay.json /
+// doubleSided.json 的键就对不上。截断规则（与插件侧帧存储配合）：
+//   1) 完整保留第一个 "~" 之前的部分（<命名空间>:<方块>#<贴图键>），分类器靠它认方块；
+//   2) 把后面的贴图名整段换成 "~!<8 位哈希>"，哈希由完整名算出，tint 变体不会撞；
+//   3) 头部自己也超长（极罕见）时才按 UTF-8 边界切头部。
+// "!" 是截断标记：现有材质名只用到 ": # ~ @ / _ . -"，不会误认成贴图名。
+std::string BlenderSafeName(const std::string& n) {
+    if (n.size() <= 63) return n;
+
+    char hash[9];
+    std::snprintf(hash, sizeof(hash), "%08X", Fnv1a32(n));
+
+    const size_t tilde = n.find('~');
+    const std::string head = (tilde == std::string::npos) ? std::string() : n.substr(0, tilde);
+    // 后缀 "~!" + 8 位哈希 = 10 字节，头部最多留 53 字节。
+    if (!head.empty() && head.size() <= 53) {
+        return head + "~!" + hash;
+    }
+    return Utf8Prefix(n, 53) + "~!" + hash;
 }
 
 // 快速整数转字符串(正数版)
@@ -243,7 +287,7 @@ void createObjFileViaMemoryMapped(const ModelData& data, const std::string& objN
     for (size_t matIndex = 0; matIndex < materialGroups.size(); ++matIndex) {
         const auto& faces = materialGroups[matIndex];
         if (faces.empty()) continue;
-        appendFormatted("usemtl %s\n", data.materials[matIndex].name.c_str());
+        appendFormatted("usemtl %s\n", BlenderSafeName(data.materials[matIndex].name).c_str());
         for (const size_t faceIdx : faces) {
             ensureSpace(faceSpace); // "f " + four positive int/int pairs with spaces + '\n'
             memcpy(ptr, "f ", 2);
@@ -377,7 +421,7 @@ void createObjFile(const ModelData& data, const std::string& objName, const std:
         const auto& faces = materialGroups[matIndex];
         if (faces.empty()) continue;
 
-        oss << "usemtl " << data.materials[matIndex].name << "\n";
+        oss << "usemtl " << BlenderSafeName(data.materials[matIndex].name) << "\n";
         for (const size_t faceIdx : faces) {
             oss << "f ";
             for (int i = 0; i < 4; ++i) {
@@ -408,9 +452,10 @@ void CreateSharedMtlFile(std::unordered_map<std::string, std::string> uniqueMate
     if (mtlFile.is_open()) {
         for (const auto& uM : uniqueMaterials) {
             const std::string& textureName = uM.first;
+            RegisterMaterialFullName(textureName);
             std::string texturePath = uM.second;
 
-            mtlFile << "newmtl " << textureName << "\n";
+            mtlFile << "newmtl " << BlenderSafeName(textureName) << "\n";
 
             // 处理材质类型
             if (texturePath == "None") {
@@ -521,7 +566,7 @@ void CreateTintJsonFile(const std::unordered_map<std::string, TintResult>& uniqu
                 value["color"] = std::move(color);
             }
         }
-        root[entry.first] = std::move(value);
+        root[BlenderSafeName(entry.first)] = std::move(value);
     }
 
     std::string path = getExecutableDir() + "tint.json";
@@ -533,6 +578,100 @@ void CreateTintJsonFile(const std::unordered_map<std::string, TintResult>& uniqu
     else {
         std::cerr << "Failed to create tint.json: " << path << std::endl;
     }
+}
+
+// ---------- materials.json：Blender 可见名 -> 完整材质名 ----------
+// Blender 材质名超过 63 字节会被截断，截断后名字里的贴图名/尾部信息就丢了。
+// 这里把"被截断的那些"记下来，插件导入时按可见名查回原名（用于分类，且存进节点帧）。
+namespace {
+    std::mutex g_materialFullNameMutex;
+    std::unordered_map<std::string, std::string> g_materialFullNames;
+}
+
+void RegisterMaterialFullName(const std::string& fullName) {
+    const std::string safeName = BlenderSafeName(fullName);
+    if (safeName == fullName) return; // 没被截断就不需要记
+    std::lock_guard<std::mutex> lock(g_materialFullNameMutex);
+    g_materialFullNames.emplace(safeName, fullName);
+}
+
+// 输出 materials.json（{可见名: 完整名}）。实体导出在区域导出之后跑，这里读旧文件合并，
+// 避免两次写出互相覆盖。
+void WriteMaterialsJson() {
+    std::unordered_map<std::string, std::string> names;
+    {
+        std::lock_guard<std::mutex> lock(g_materialFullNameMutex);
+        names = g_materialFullNames;
+    }
+    if (names.empty()) return;
+
+    const std::string path = getExecutableDir() + "materials.json";
+    nlohmann::json root = nlohmann::json::object();
+    {
+        std::ifstream in(path, std::ios::binary);
+        if (in) {
+            try { in >> root; } catch (...) { root = nlohmann::json::object(); }
+        }
+    }
+    if (!root.is_object()) root = nlohmann::json::object();
+    for (const auto& entry : names) root[entry.first] = entry.second;
+
+    std::ofstream out(path, std::ios::binary);
+    if (out.is_open()) {
+        out << root.dump(2);
+        std::cout << "■ materials.json: " << root.size() << " 个超长材质名映射" << std::endl;
+    }
+    else {
+        std::cerr << "Failed to create materials.json: " << path << std::endl;
+    }
+}
+
+// tint 诊断：tint.json 里写出的群系色型，必须都有对应的 biomeTex 图；
+// 缺图时 Blender 侧拿不到颜色，只会得到白色（表现就是树叶发灰）。
+void CheckBiomeTexCoverage(const std::unordered_map<std::string, TintResult>& uniqueTints,
+                           const ModelData* mergedModel) {
+    if (!config.useBiomeColors) return; // 关掉群系色时这些 kind 本来就不写进 tint.json
+
+    std::set<int> needed;
+    auto addTint = [&needed](const TintResult& tint) {
+        if (tint.on() && tint.kind != TintKind::Fixed) needed.insert(static_cast<int>(tint.kind));
+    };
+    for (const auto& entry : uniqueTints) addTint(entry.second);
+    if (mergedModel != nullptr) {
+        for (const auto& material : mergedModel->materials) addTint(material.tint);
+    }
+    if (needed.empty()) return;
+
+    auto fileName = [](TintKind kind) -> const char* {
+        switch (kind) {
+        case TintKind::Grass: return "grass.png";
+        case TintKind::Foliage: return "foliage.png";
+        case TintKind::DryFoliage: return "dry_foliage.png";
+        case TintKind::Water: return "water.png";
+        case TintKind::WaterFog: return "waterFog.png";
+        case TintKind::Fog: return "fog.png";
+        case TintKind::Sky: return "sky.png";
+        default: return nullptr;
+        }
+    };
+
+    const std::string dir = getExecutableDir() + "biomeTex/";
+    std::vector<std::string> missing;
+    for (const int kind : needed) {
+        const char* file = fileName(static_cast<TintKind>(kind));
+        if (file == nullptr) continue;
+        std::error_code error;
+        if (!std::filesystem::exists(dir + file, error)) missing.push_back(file);
+    }
+
+    if (missing.empty()) {
+        std::cout << "■ tint 诊断 | 群系色型 " << needed.size() << " 种, biomeTex 齐全" << std::endl;
+        return;
+    }
+    std::cerr << "⚠ tint 诊断 | biomeTex 缺图(" << missing.size() << "/" << needed.size() << "):";
+    for (const auto& file : missing) std::cerr << " " << file;
+    std::cerr << "\n    → 对应材质在 Blender 里取不到群系色（会发白/发灰），请检查群系数据是否导出成功"
+              << std::endl;
 }
 
 // ---------- overlay.json：base 材质 -> 叠加层序列 ----------
@@ -602,7 +741,7 @@ void CreateOverlayJsonFile() {
                 }
                 list.push_back(std::move(value));
             }
-            root[entry.first] = std::move(list);
+            root[BlenderSafeName(entry.first)] = std::move(list);
         }
     }
 
@@ -646,7 +785,8 @@ namespace {
 }
 
 void RegisterDoubleSidedMaterial(const Material& material) {
-    const std::string base = StripTintSuffix(material.name);
+    // 先按 Blender 可见名截断，再剥 @tint 后缀，保证与插件 material_base_name() 的取值一致。
+    const std::string base = StripTintSuffix(BlenderSafeName(material.name));
     if (base.empty()) return;
     std::lock_guard<std::mutex> lock(g_doubleSidedMutex);
     g_doubleSidedMaterials.insert(base);
@@ -692,9 +832,10 @@ void createMtlFile(const ModelData& data, const std::string& mtlFileName) {
     if (mtlFile.is_open()) {
         for (size_t i = 0; i < data.materials.size(); ++i) {
             const std::string& textureName = data.materials[i].name;
+            RegisterMaterialFullName(textureName);
             std::string texturePath = data.materials[i].texturePath;
 
-            mtlFile << "newmtl " << textureName << "\n";
+            mtlFile << "newmtl " << BlenderSafeName(textureName) << "\n";
 
             // 处理材质类型
             if (texturePath == "None") {

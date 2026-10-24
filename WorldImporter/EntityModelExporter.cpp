@@ -362,16 +362,8 @@ ArmorInfo ArmorOf(const ItemStackInfo& item) {
     return a;
 }
 
-// Blender 材质名最长 63 字节, 超长会被截断, overlay.json / tint.json 就对不上。
-// 超长时保留前 54 字节 + "~" + 全名 FNV-1a 的 8 位十六进制; 不超长原样返回。
-std::string BlenderSafeName(const std::string& n) {
-    if (n.size() <= 63) return n;
-    uint32_t h = 2166136261u;
-    for (unsigned char c : n) { h ^= c; h *= 16777619u; }
-    char buf[10];
-    std::snprintf(buf, sizeof(buf), "~%08X", h);
-    return n.substr(0, 54) + buf;
-}
+// Blender 材质名 63 字节安全化统一在 objExporter.cpp / objExporter.h（BlenderSafeName），
+// 这里直接复用，保证实体与方块两条导出路径的材质名口径一致。
 void RegisterEntityOverlay(const std::string& baseName, const std::vector<OverlayLayerInfo>& overlays) {
     RegisterOverlaySequence(BlenderSafeName(baseName), overlays);
 }
@@ -2546,6 +2538,7 @@ void WriteFiles(const Ctx& ctx, const std::string& name) {
     const std::string dir = getExecutableDir();
     std::ofstream mtl(Utf8Path(dir + name + ".mtl"), std::ios::binary);
     for (const auto& m : ctx.materials) {
+        RegisterMaterialFullName(m.name);
         mtl << "newmtl " << BlenderSafeName(m.name) << "\n"
             << "Ns 90.000000\nKd 1.000000 1.000000 1.000000\nKs 0.000000 0.000000 0.000000\n"
             << "Ke 0.000000 0.000000 0.000000\nNi 1.500000\nillum 1\n"
@@ -2675,6 +2668,7 @@ size_t Export(const std::string& name) {
     std::map<std::string, TintResult> safeTints;
     for (const auto& [k, v] : ctx.tints) safeTints[BlenderSafeName(k)] = v;
     MergeTintJson(safeTints);
+    WriteMaterialsJson();     // 区域导出已写过一次；这里读旧文件合并实体材质名
     CreateOverlayJsonFile();  // 区域导出已写过一次; 补上实体叠加层后重写
     std::cout << "[EntityModels] " << ctx.objects.size() << " entities (" << (ctx.modern ? "modern" : "legacy")
               << " models), " << ctx.materials.size() << " materials ->" << name << ".obj:";
