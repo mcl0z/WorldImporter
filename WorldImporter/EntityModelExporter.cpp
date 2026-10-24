@@ -2908,6 +2908,12 @@ void RenderZombifiedPiglin(Ctx& ctx, const NbtTagPtr& e) {
 // 1.21.1 and 26.3. The keyframe values are offsets on the dump's rest pose (posVec negates y).
 // Resting head yaw is not saved, so it stays 0. Bats have no head pitch, and the 0.25 in the renderer is the
 // shadow radius, so the scale is 1.0.
+// GiantMobRenderer: the zombie model at scale 6 with the zombie texture. The legacy family applies the 6 as the
+// renderer scale; 26.x already has it in the giant layer root, so the renderer scale stays 1.
+void RenderGiant(Ctx& ctx, const NbtTagPtr& e) {
+    RenderHumanoidMob(ctx, e, "giant", "entity/zombie/zombie", 10.44, true, 6.0);
+}
+
 void RenderBat(Ctx& ctx, const NbtTagPtr& e) {
     const std::string fam = ctx.modern ? "modern" : "legacy";
     EntityModel model(fam, "minecraft:bat#main");
@@ -3251,6 +3257,7 @@ size_t Export(const std::string& name) {
         else if (id == "minecraft:piglin_brute") RenderPiglinBrute(ctx, e);
         else if (id == "minecraft:zombified_piglin") RenderZombifiedPiglin(ctx, e);
         else if (id == "minecraft:bat") RenderBat(ctx, e);
+        else if (id == "minecraft:giant") RenderGiant(ctx, e);
         // ---- end batch3 B ----
         // ==== batch3 C dispatch (insert below) ====
         // ---- end batch3 C ----

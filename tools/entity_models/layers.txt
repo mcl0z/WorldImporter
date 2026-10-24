@@ -344,6 +344,14 @@ modern minecraft:zombified_piglin_baby#leggings
 modern minecraft:zombified_piglin_baby#boots
 legacy minecraft:bat#main
 modern minecraft:bat#main
+legacy minecraft:giant#main
+legacy minecraft:giant#inner_armor
+legacy minecraft:giant#outer_armor
+modern minecraft:giant#main
+modern minecraft:giant#helmet
+modern minecraft:giant#chestplate
+modern minecraft:giant#leggings
+modern minecraft:giant#boots
 # ---- end batch3 B ----
 # ==== batch3 C layers (insert below) ====
 # ---- end batch3 C ----
