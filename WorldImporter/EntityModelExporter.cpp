@@ -2842,6 +2842,22 @@ void RenderWitch(Ctx& ctx, const NbtTagPtr& e) {
 
 // ==== batch3 D renderers (insert below) ====
 
+// ---------- creaking (batch3 D, 26.x only) ----------
+// CreakingModel.setupAnim at rest: head.xRot = pitch, head.yRot = 0. The walk step has no effect at speed 0.
+// The eyes glow comes from runtime state (isActive / tearing down), which is not saved, so the eyes layer is not drawn.
+// CreakingRenderer's 0.6 is the shadow radius.
+void RenderCreaking(Ctx& ctx, const NbtTagPtr& e) {
+    EntityModel model(ctx.modern ? "modern" : "legacy", "minecraft:creaking#main");  // 1.21.1 has no creaking
+    if (!model.Valid()) return;
+    Placement pl = ReadPlacement(e);
+    ApplyHeadLook(model, pl);
+    const EntityAffine base = LivingBase(pl, 1.0, 1.0);
+    OutObject& obj = ctx.NewObject("minecraft:creaking");
+    const std::string tex = "entity/creaking/creaking";
+    EmitTextured(ctx, obj, model, base, nullptr, "minecraft:" + tex, ctx.Texture("minecraft", tex));
+}
+
+
 // Emit only the listed parts' own polys (a child part is skipped unless listed). Visibility is not used,
 // because Emit hides children of hidden parents.
 void BatchD_EmitParts(Ctx& ctx, OutObject& obj, EntityModel& model, const EntityAffine& base,
@@ -3297,6 +3313,7 @@ size_t Export(const std::string& name) {
         // ==== batch3 C dispatch (insert below) ====
         // ---- end batch3 C ----
         // ==== batch3 D dispatch (insert below) ====
+        else if (id == "minecraft:creaking") RenderCreaking(ctx, e);
         else if (id == "minecraft:warden") RenderWarden(ctx, e);
         else if (id == "minecraft:breeze") RenderBreeze(ctx, e);
         else if (id == "minecraft:sniffer") RenderSniffer(ctx, e);
