@@ -2882,6 +2882,11 @@ void RenderEvoker(Ctx& ctx, const NbtTagPtr& e) {
     RenderIllager(ctx, e, "evoker", "minecraft:evoker", IllagerArms::Crossed, false, "entity/illager/evoker");
 }
 
+// IllusionerRenderer: hat 可见; 默认 CROSSED. 只画本体 (isInvisible 的镜像分身不画)
+void RenderIllusioner(Ctx& ctx, const NbtTagPtr& e) {
+    RenderIllager(ctx, e, "illusioner", "minecraft:illusioner", IllagerArms::Crossed, true, "entity/illager/illusioner");
+}
+
 // ---- end batch3 A ----
 
 // ==== batch3 B renderers (insert below) ====
@@ -3193,6 +3198,7 @@ size_t Export(const std::string& name) {
         else if (id == "minecraft:pillager") RenderPillager(ctx, e);
         else if (id == "minecraft:vindicator") RenderVindicator(ctx, e);
         else if (id == "minecraft:evoker") RenderEvoker(ctx, e);
+        else if (id == "minecraft:illusioner") RenderIllusioner(ctx, e);
         // ---- end batch3 A ----
         // ==== batch3 B dispatch (insert below) ====
         // ---- end batch3 B ----

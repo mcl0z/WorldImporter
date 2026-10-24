@@ -312,6 +312,8 @@ legacy minecraft:vindicator#main
 modern minecraft:vindicator#main
 legacy minecraft:evoker#main
 modern minecraft:evoker#main
+legacy minecraft:illusioner#main
+modern minecraft:illusioner#main
 # ---- end batch3 A ----
 # ==== batch3 B layers (insert below) ====
 # ---- end batch3 B ----
