@@ -79,6 +79,7 @@ struct Config {
     // Samples past the preloaded chunk ring are clamped back into the export rect.
     int biomeBlendRadius;
     VariantSeedMode variantSeedMode; // 加权变体的挑选方式(默认 Game=与游戏一致且可复现)
+    bool plantOffset; // 原版 OffsetType 植物随机位移(草/花/蕨等); 关掉后植物都待在格子中心
     bool importEntities; // 导出区域内生物/实体元数据
     bool exportEntityModels; // 导出区域内生物的几何模型(entities.obj/.mtl, 村民层走 overlay.json)
 
@@ -136,6 +137,7 @@ struct Config {
         useBiomeColors(true),
         biomeBlendRadius(2),
         variantSeedMode(VariantSeedMode::Game),
+        plantOffset(true),
         importEntities(false),
         exportEntityModels(true),
 

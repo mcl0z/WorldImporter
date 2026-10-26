@@ -84,6 +84,8 @@ Config LoadConfig(const std::string& configFile) {
                !j["useRandomBlockModels"].get<bool>()) {
         config.variantSeedMode = VariantSeedMode::First;
     }
+    // 原版 OffsetType 植物随机位移(草/花/蕨等); 关掉后植物都回到格子中心
+    config.plantOffset = j.value("plantOffset", config.plantOffset);
     config.importEntities = j.value("importEntities", config.importEntities);
     config.exportEntityModels = j.value("exportEntityModels", config.exportEntityModels);
     

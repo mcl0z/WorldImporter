@@ -37,6 +37,7 @@
     "useBiomeColors": true,
     "downloadPlayerSkins": true,
     "variantSeedMode": "game",
+    "plantOffset": true,
     "useUnderwaterLOD": false,
     "useGreedyMesh": true,
     "isLODAutoCenter": true,
