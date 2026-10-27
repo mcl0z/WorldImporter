@@ -21,6 +21,8 @@
     "lightBlockSize": 0.05,
     "allowDoubleFace": false,
     "doubleSidedGeometry": true,
+    "mergeSameDoubleSided": false,
+    "mergeAllDoubleSided": false,
     "doubleSidedFaceOffset": 0.0005,
     "overlayLayerStep": 0.0005,
     "ctmPrefixMatchTiles": true,

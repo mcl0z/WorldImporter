@@ -47,6 +47,10 @@ Config LoadConfig(const std::string& configFile) {
     config.allowDoubleFace = j.value("allowDoubleFace", config.allowDoubleFace);
     // 是否生成几何双面: 零厚度贴片保留正反两面(关掉则朝向相反的重合面只留一张)
     config.doubleSidedGeometry = j.value("doubleSidedGeometry", config.doubleSidedGeometry);
+    // 只合并"同材质且 UV 一一对应"的双面对(镜像 UV 的对保留两张面, 否则背面会变镜像)
+    config.mergeSameDoubleSided = j.value("mergeSameDoubleSided", config.mergeSameDoubleSided);
+    // 更激进: 同贴图 + UV 四角相同就合并(镜像对也合并, 接受一面变镜像)
+    config.mergeAllDoubleSided = j.value("mergeAllDoubleSided", config.mergeAllDoubleSided);
     // 几何双面的反面外移量(米): 0 = 严格共面只换索引; 上限 0.05 避免看得出错位
     config.doubleSidedFaceOffset = std::clamp(j.value("doubleSidedFaceOffset", config.doubleSidedFaceOffset), 0.0f, 0.05f);
     // 叠加层外移步长: 过小会在 Eevee 下 z-fighting, 过大在近景会看到层间错位

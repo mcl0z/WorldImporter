@@ -780,6 +780,10 @@ namespace {
     std::mutex g_doubleSidedMutex;
     // 基础材质全名 -> 是否已登记(用 set 去重, 同一 tint 变体只留一条)
     std::unordered_set<std::string> g_doubleSidedMaterials;
+    // 基础材质全名 -> 各类 UV 关系的对数: [0]=Same [1]=Mirror [2]=Other
+    std::unordered_map<std::string, std::array<unsigned long long, 3>> g_doubleSidedPairKinds;
+    // 基础材质全名 -> 实际合并掉的 Same 对数
+    std::unordered_map<std::string, unsigned long long> g_doubleSidedMergedPairs;
     // 分组路径下每个分组都会调一次写出函数, 用这个标记保证只有第一次真正落盘
     bool g_doubleSidedWritten = false;
 }
@@ -792,24 +796,70 @@ void RegisterDoubleSidedMaterial(const Material& material) {
     g_doubleSidedMaterials.insert(base);
 }
 
-// 输出 doubleSided.json：纯数组，元素为使用了双面几何的材质基础全名。
-// 供 Blender 侧按材质名决定是否关闭背面剔除(与 Defs.material_base_name() 口径一致)。
+void RegisterDoubleSidedPairKind(const Material& material, DoubleSidedPairKind kind, bool merged) {
+    const std::string base = StripTintSuffix(BlenderSafeName(material.name));
+    if (base.empty()) return;
+    std::lock_guard<std::mutex> lock(g_doubleSidedMutex);
+    if (merged) {
+        ++g_doubleSidedMergedPairs[base];
+        return;
+    }
+    const size_t idx = static_cast<size_t>(kind);
+    if (idx < 3) ++g_doubleSidedPairKinds[base][idx];
+}
+
+// 输出 doubleSided.json（对象格式，兼容旧插件的数组时代读取）：
+//   materials   : 使用了双面几何的材质基础全名数组；
+//   samePairs   : 材质 -> 同材质且 UV 一一对应（可安全合并）的对数；
+//   mirrorPairs : 材质 -> 同材质但 UV 镜像（两面各自正常，不能合并）的对数；
+//   otherPairs  : 材质 -> 材质/UV 区域不同的对数；
+//   mergedPairs : 材质 -> 本次实际合并掉的 Same 对数（开关关闭时为空）。
+// 供 Blender 侧决定是否关闭背面剔除，同时让插件端知道哪些材质是同向/镜像双面。
 // 注意: 分组路径下每个分组都会调用一次, 所以整体只落盘一次(以第一次的清单为准)。
 void CreateDoubleSidedJsonFile() {
     // 先按顺序取走并清空累加器, 再把结果写出(避免长时间持锁)
     std::vector<std::string> names;
+    std::unordered_map<std::string, std::array<unsigned long long, 3>> kinds;
+    std::unordered_map<std::string, unsigned long long> merged;
     {
         std::lock_guard<std::mutex> lock(g_doubleSidedMutex);
         if (g_doubleSidedWritten) return;
         g_doubleSidedWritten = true;
         names.assign(g_doubleSidedMaterials.begin(), g_doubleSidedMaterials.end());
+        kinds = g_doubleSidedPairKinds;
+        merged = g_doubleSidedMergedPairs;
         g_doubleSidedMaterials.clear();
+        g_doubleSidedPairKinds.clear();
+        g_doubleSidedMergedPairs.clear();
     }
     // 排序让输出稳定, 便于跨次导出比对
     std::sort(names.begin(), names.end());
 
-    nlohmann::json root = nlohmann::json::array();
-    for (const auto& name : names) root.push_back(name);
+    nlohmann::json root = nlohmann::json::object();
+    root["materials"] = nlohmann::json::array();
+    for (const auto& name : names) root["materials"].push_back(name);
+
+    const char* kindKeys[3] = { "samePairs", "mirrorPairs", "otherPairs" };
+    for (int ki = 0; ki < 3; ++ki) {
+        nlohmann::json table = nlohmann::json::object();
+        std::vector<std::string> matNames;
+        for (const auto& entry : kinds) {
+            if (entry.second[static_cast<size_t>(ki)] > 0) matNames.push_back(entry.first);
+        }
+        std::sort(matNames.begin(), matNames.end());
+        for (const auto& name : matNames) table[name] = kinds[name][static_cast<size_t>(ki)];
+        root[kindKeys[ki]] = std::move(table);
+    }
+    {
+        nlohmann::json table = nlohmann::json::object();
+        std::vector<std::string> matNames;
+        for (const auto& entry : merged) {
+            if (entry.second > 0) matNames.push_back(entry.first);
+        }
+        std::sort(matNames.begin(), matNames.end());
+        for (const auto& name : matNames) table[name] = merged[name];
+        root["mergedPairs"] = std::move(table);
+    }
 
     const std::string path = getExecutableDir() + "doubleSided.json";
     std::ofstream file(path, std::ios::binary);
