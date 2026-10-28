@@ -2524,20 +2524,127 @@ struct FaceVertexSetHash {
         return h;
     }
 };
+
+// 取面 4 个角的 UV；索引越界（无贴图/损坏数据）时返回 false。
+bool GetFaceUvQuad(const ModelData& model, const Face& face,
+    std::array<std::array<float, 2>, 4>& uv)
+{
+    for (int k = 0; k < 4; ++k) {
+        const int idx = face.uvIndices[k];
+        if (idx < 0 || static_cast<size_t>(idx) * 2 + 1 >= model.uvCoordinates.size()) return false;
+        uv[k][0] = model.uvCoordinates[static_cast<size_t>(idx) * 2];
+        uv[k][1] = model.uvCoordinates[static_cast<size_t>(idx) * 2 + 1];
+    }
+    return true;
+}
+
+// 判断一对共面正反面的 UV 关系。Same 才能安全合并：两面世界 UV 同向，
+// 删掉一张后剩下一张走双面渲染，从背面看到的镜像与原背面那张完全一致。
+DoubleSidedPairKind ClassifyDoubleSidedPair(const ModelData& model, const Face& a, const Face& b)
+{
+    // 材质必须完全一致（贴图、tint 变体、类型都算），否则合并会丢贴图/颜色。
+    if (a.materialIndex < 0 || a.materialIndex != b.materialIndex) return DoubleSidedPairKind::Other;
+    if (a.tintIndex != b.tintIndex) return DoubleSidedPairKind::Other;
+
+    std::array<std::array<float, 2>, 4> ua{}, ub{};
+    if (!GetFaceUvQuad(model, a, ua) || !GetFaceUvQuad(model, b, ub)) {
+        return DoubleSidedPairKind::Other;
+    }
+
+    // 把 b 的 UV 按"同一顶点"对齐到 a 的角序上。
+    std::array<std::array<float, 2>, 4> aligned{};
+    for (int k = 0; k < 4; ++k) {
+        int match = -1;
+        for (int j = 0; j < 4; ++j) {
+            if (b.vertexIndices[j] == a.vertexIndices[k]) { match = j; break; }
+        }
+        if (match < 0) return DoubleSidedPairKind::Other;
+        aligned[k] = ub[match];
+    }
+
+    constexpr float eps = 1e-5f;
+    const auto equal = [eps](const std::array<float, 2>& x, const std::array<float, 2>& y) {
+        return std::fabs(x[0] - y[0]) <= eps && std::fabs(x[1] - y[1]) <= eps;
+    };
+
+    bool same = true;
+    for (int k = 0; k < 4 && same; ++k) same = equal(ua[k], aligned[k]);
+    if (same) return DoubleSidedPairKind::Same;
+
+    // 绕序相反 + 同一组 UV 四角 => 两面是同贴图区域的镜像关系（u 翻/v 翻/对角翻都可能）。
+    // 用四角值的多重集判断，比枚举排列更耐受 rotation/flip 带来的角序变化。
+    std::array<std::array<float, 2>, 4> sa = ua, sb = aligned;
+    const auto byUv = [](const std::array<float, 2>& x, const std::array<float, 2>& y) {
+        if (x[0] != y[0]) return x[0] < y[0];
+        return x[1] < y[1];
+    };
+    std::sort(sa.begin(), sa.end(), byUv);
+    std::sort(sb.begin(), sb.end(), byUv);
+    bool mirror = true;
+    for (int k = 0; k < 4 && mirror; ++k) mirror = equal(sa[k], sb[k]);
+    return mirror ? DoubleSidedPairKind::Mirror : DoubleSidedPairKind::Other;
+}
+
+// 两面的 UV 四角值是否构成同一个多重集（忽略方向/旋转），供"同贴图就合并"模式使用。
+bool UvQuadsHaveSameCorners(const ModelData& model, const Face& a, const Face& b)
+{
+    std::array<std::array<float, 2>, 4> ua{}, ub{};
+    if (!GetFaceUvQuad(model, a, ua) || !GetFaceUvQuad(model, b, ub)) return false;
+    const auto byUv = [](const std::array<float, 2>& x, const std::array<float, 2>& y) {
+        if (x[0] != y[0]) return x[0] < y[0];
+        return x[1] < y[1];
+    };
+    std::sort(ua.begin(), ua.end(), byUv);
+    std::sort(ub.begin(), ub.end(), byUv);
+    constexpr float eps = 1e-5f;
+    for (int k = 0; k < 4; ++k) {
+        if (std::fabs(ua[k][0] - ub[k][0]) > eps ||
+            std::fabs(ua[k][1] - ub[k][1]) > eps) return false;
+    }
+    return true;
+}
+
+// "同贴图就合并"模式的判定：贴图路径与材质类型一致、面级 tint 一致、UV 四角值相同。
+// 不要求材质索引相同（模组里同一张贴图可能有多个材质名），也不要求 UV 方向一致。
+bool PairSharesSameTextureAndUv(const ModelData& model, const Face& a, const Face& b)
+{
+    if (a.materialIndex < 0 || b.materialIndex < 0) return false;
+    if (static_cast<size_t>(a.materialIndex) >= model.materials.size() ||
+        static_cast<size_t>(b.materialIndex) >= model.materials.size()) return false;
+    const Material& ma = model.materials[a.materialIndex];
+    const Material& mb = model.materials[b.materialIndex];
+    if (ma.texturePath.empty() || ma.texturePath != mb.texturePath) return false;
+    if (ma.type != mb.type) return false;
+    if (ma.tint != mb.tint) return false;
+    if (a.tintIndex != b.tintIndex) return false;
+    return UvQuadsHaveSameCorners(model, a, b);
+}
 }
 
 size_t SeparateCoincidentFaces(ModelData& model) {
     if (model.faces.size() < 2) return 0;
     const float offset = config.doubleSidedFaceOffset;
+    // 合并开关：只在"几何双面"开启时才有意义（关闭时解析阶段已经把重合对删成一张）。
+    const bool mergeSame = config.doubleSidedGeometry && config.mergeSameDoubleSided;
+    const bool mergeAll = config.doubleSidedGeometry && config.mergeAllDoubleSided;
     // 按材质(剥掉 @tint 后缀的基础名)累计面数: 分离出的重合面数 == 总面数 时该材质
     // 整个都是双面几何, 否则说明它还用在实心几何上, 整材质剔除会漏光, 需要告警。
     std::unordered_map<std::string, size_t> totalFacesMap;
     std::unordered_map<std::string, size_t> bothSidedFacesMap;
     totalFacesMap.reserve(model.materials.size() * 2 + 1);
-    std::unordered_map<FaceVertexSet, int, FaceVertexSetHash> seen;
+
+    // 每个顶点组记录组内第一个双面几何面，用于配对（避免把相邻方块的接触面当成双面几何）。
+    struct SeenInfo {
+        int firstBothSided = -1;
+        bool paired = false;   // 该组已经配对过一对，避免重复统计/再次合并
+    };
+    std::unordered_map<FaceVertexSet, SeenInfo, FaceVertexSetHash> seen;
     seen.reserve(model.faces.size());
+    std::vector<char> removeMask(model.faces.size(), 0);
     size_t separated = 0;
-    for (auto& face : model.faces) {
+    size_t mergedFaces = 0;
+    for (size_t fi = 0; fi < model.faces.size(); ++fi) {
+        Face& face = model.faces[fi];
         // 与下方分离流程共用一次遍历: 每个面都先计入总数
         const std::string materialBaseName =
             (face.materialIndex >= 0 && static_cast<size_t>(face.materialIndex) < model.materials.size())
@@ -2548,7 +2655,58 @@ size_t SeparateCoincidentFaces(ModelData& model) {
         FaceVertexSet key;
         for (int k = 0; k < 4; ++k) key.v[k] = face.vertexIndices[k];
         std::sort(key.v, key.v + 4);
-        if (seen.emplace(key, 1).second) continue;   // 这组顶点第一次出现
+
+        auto seenIt = seen.find(key);
+        if (seenIt == seen.end()) {
+            SeenInfo info;
+            if (face.bothSided) info.firstBothSided = static_cast<int>(fi);
+            seen.emplace(key, info);
+            continue;   // 这组顶点第一次出现
+        }
+        SeenInfo& info = seenIt->second;
+
+        // 双面几何配对：同组第一个双面面 + 当前双面面。分类统计与合并开关无关，
+        // 这样 doubleSided.json 始终能告诉插件端 Same/Mirror 各有多少对。
+        if (face.bothSided && info.firstBothSided >= 0 &&
+            info.firstBothSided != static_cast<int>(fi) && !info.paired) {
+            const Face& partner = model.faces[info.firstBothSided];
+            const DoubleSidedPairKind kind = ClassifyDoubleSidedPair(model, partner, face);
+            info.paired = true;
+            // 两面都要登记材质（Classify 返回 Other 时两面材质可能不同），
+            // 一对双面几何共 2 面，下面"实心几何混用"的告警才能和 totalFacesMap 同口径。
+            const auto registerPairFace = [&](const Face& f) {
+                if (f.materialIndex < 0 ||
+                    static_cast<size_t>(f.materialIndex) >= model.materials.size()) return;
+                const std::string base = StripTintSuffix(model.materials[f.materialIndex].name);
+                if (base.empty()) return;
+                ++bothSidedFacesMap[base];
+                RegisterDoubleSidedMaterial(model.materials[f.materialIndex]);
+            };
+            registerPairFace(partner);
+            registerPairFace(face);
+            if (!materialBaseName.empty()) {
+                RegisterDoubleSidedPairKind(model.materials[face.materialIndex], kind, false);
+            }
+            // 合并条件：
+            //  - Same 模式只合并 UV 一一对应的对（视觉等价）；
+            //  - All 模式连同贴图的镜像对也合并（接受一面变镜像）。
+            bool canMerge = mergeSame && kind == DoubleSidedPairKind::Same;
+            if (!canMerge && mergeAll) canMerge = PairSharesSameTextureAndUv(model, partner, face);
+            if (canMerge) {
+                // 删掉当前面，保留 partner（firstBothSided）；剩一张靠背面剔除显示双面。
+                removeMask[fi] = 1;
+                ++mergedFaces;
+                if (partner.materialIndex >= 0 &&
+                    static_cast<size_t>(partner.materialIndex) < model.materials.size()) {
+                    RegisterDoubleSidedPairKind(model.materials[partner.materialIndex], kind, true);
+                }
+                continue;   // 合并掉的面不再分离
+            }
+        }
+        else if (face.bothSided && info.firstBothSided < 0) {
+            // 组里第一个双面面本身是重复面（首面是相邻方块的实心接触面）：记为配对基准。
+            info.firstBothSided = static_cast<int>(fi);
+        }
 
         float p[4][3];
         bool valid = true;
@@ -2596,13 +2754,8 @@ size_t SeparateCoincidentFaces(ModelData& model) {
             model.vertices.push_back(p[0][2]);
             face.vertexIndices[0] = newIndex;
         }
-        // 这一面确实被分离(复制了顶点)。只有带 bothSided 标记的才是真·双面几何：
-        // 零厚度贴片显式定义的正反两面。相邻实心方块的接触面同样会走到这里，但它们
-        // 不是双面几何，收录进 doubleSided.json 会让 Blender 侧误开背面剔除。
-        if (face.bothSided && !materialBaseName.empty()) {
-            ++bothSidedFacesMap[materialBaseName];
-            RegisterDoubleSidedMaterial(model.materials[face.materialIndex]);
-        }
+        // 双面几何的统计与材质登记已在配对时完成（一对 2 面）；这里只累计被分离的面数。
+        // 相邻实心方块的接触面同样会走到这里，但它们没有 bothSided 标记，不会进 doubleSided.json。
         ++separated;
     }
 
@@ -2637,6 +2790,17 @@ size_t SeparateCoincidentFaces(ModelData& model) {
             diagFile.flush();
         }
     }
+    // 合并掉的面从面表里移除（合并的两面共用同一组顶点，不会留下孤立顶点）。
+    if (mergedFaces > 0) {
+        std::vector<Face> kept;
+        kept.reserve(model.faces.size() - mergedFaces);
+        for (size_t i = 0; i < model.faces.size(); ++i) {
+            if (!removeMask[i]) kept.push_back(std::move(model.faces[i]));
+        }
+        model.faces = std::move(kept);
+        std::cout << "双面几何合并: " << mergedFaces << " 张 Same 反面已并掉" << std::endl;
+    }
+
     return separated;
 }
 

@@ -417,10 +417,13 @@ void ChunkGenerator::ProcessBlockForModel(ModelData& chunkModel, int x, int y, i
             static const ModelData bellBody = SpecialBlock::GenerateBlockEntityModel("minecraft:bell");
             if (!bellBody.faces.empty()) MergeModelsDirectly(blockModel, bellBody);
         }
+        // 原版 OffsetType 随机位移(草/花/蕨等)。含水方块的模型在流体分支里平移过,
+        // 这里只处理非流体分支, 免得位移叠两层。
+        ApplyVanillaPlantOffset(blockModel, ns, blockName, x, z);
     }
 
-    // Player heads: swap the shared Steve material for the profile skin before
-    // position offset. All faces of the skull model use that one material.
+    // Player heads: swap the shared Steve material for the profile skin.
+    // All faces of the skull model use that one material.
     if (ns == "minecraft" && blockEntityNbt) {
         std::string headId = blockName;
         size_t br = headId.find('[');
@@ -454,7 +457,6 @@ void ChunkGenerator::ProcessBlockForModel(ModelData& chunkModel, int x, int y, i
                 }
             }
         }
-        ApplyVanillaPlantOffset(blockModel, ns, blockName, x, z);
     }
 
     // Create depot / ejector / belt: held and transported items appended to the block model.

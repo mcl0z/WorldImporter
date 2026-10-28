@@ -491,6 +491,78 @@ static bool VariantKeyAgrees(const std::string& variantKey,
     return true;
 }
 
+// ---------- 树叶的自然枯萎（distance / persistent）不参与求值 ----------
+// 动画用不到枯萎，但资源包常按这两个属性拆 variant：匹配条件里没有它们时
+// 要么落空，要么落到"枯萎/透明"的那一档，看起来就是树叶整片消失。
+// 这里把这两个属性从两边都忽略掉，再按"最不枯萎"的偏好挑一个固定 variant。
+
+// 取 variant 键里某个属性的值，没有则返回空串
+static std::string VariantPairValue(const std::string& variantKey, const std::string& name) {
+    size_t i = 0;
+    while (i <= variantKey.size()) {
+        size_t comma = variantKey.find(',', i);
+        size_t end = (comma == std::string::npos) ? variantKey.size() : comma;
+        const std::string pair = variantKey.substr(i, end - i);
+        const size_t eq = pair.find('=');
+        if (eq != std::string::npos && pair.substr(0, eq) == name) return pair.substr(eq + 1);
+        if (comma == std::string::npos) break;
+        i = comma + 1;
+    }
+    return {};
+}
+
+// 去掉 variant 键里的 distance / persistent 两段，其余原样保留
+static std::string StripLeafDecayPairs(const std::string& variantKey) {
+    std::string out;
+    size_t i = 0;
+    while (i <= variantKey.size()) {
+        size_t comma = variantKey.find(',', i);
+        size_t end = (comma == std::string::npos) ? variantKey.size() : comma;
+        const std::string pair = variantKey.substr(i, end - i);
+        const size_t eq = pair.find('=');
+        const std::string name = (eq == std::string::npos) ? pair : pair.substr(0, eq);
+        if (name != "distance" && name != "persistent") {
+            if (!out.empty()) out += ",";
+            out += pair;
+        }
+        if (comma == std::string::npos) break;
+        i = comma + 1;
+    }
+    return out;
+}
+
+// 挑一个树叶 variant：忽略枯萎属性后匹配；命中多个时优先
+// persistent=true（玩家放置、永不枯萎），其次 distance 最小（离树干最近、最不透明）。
+// 找到时写入 outKey 并返回 true。注意 vanilla 的 variant 键就是空串，所以不能用
+// 空串表示"没找到"。
+static bool SelectLeafVariant(const nlohmann::json& variants,
+    const std::unordered_map<std::string, std::string>& conditionMap,
+    std::string& outKey) {
+    bool found = false;
+    int bestRank = 3;        // 0=persistent=true, 1=有 distance, 2=其它
+    int bestDistance = 1 << 20;
+    for (auto& variant : variants.items()) {
+        const std::string key = variant.key();
+        if (!VariantKeyMatches(StripLeafDecayPairs(key), conditionMap)) continue;
+        const std::string persistent = VariantPairValue(key, "persistent");
+        const std::string distanceText = VariantPairValue(key, "distance");
+        int distance = 1 << 20;
+        if (!distanceText.empty()) {
+            try { distance = std::stoi(distanceText); } catch (...) { distance = 1 << 20; }
+        }
+        int rank = 2;
+        if (persistent == "true") rank = 0;
+        else if (distance < (1 << 20)) rank = 1;
+        if (!found || rank < bestRank || (rank == bestRank && distance < bestDistance)) {
+            outKey = key;
+            bestRank = rank;
+            bestDistance = distance;
+            found = true;
+        }
+    }
+    return found;
+}
+
 void ProcessBlockstate(const std::string& namespaceName, const std::vector<std::string>& blockIds) {
     for (const auto& blockId : blockIds) {
         // 解析 blockId 和条件
@@ -521,11 +593,25 @@ void ProcessBlockstate(const std::string& namespaceName, const std::vector<std::
 
         // 处理 variants
         if (blockstateJson.contains("variants")) {
+            // 树叶：distance / persistent（自然枯萎）不做求值，忽略这两个属性后固定挑一个
+            // "最不枯萎"的 variant。资源包按枯萎程度拆 variant 时（条件里没有这两个属性），
+            // 否则会匹配落空或者选中透明/枯萎的那一档，树叶看起来就整片消失了。
+            const bool isLeaves = blockstateName.find("leaves") != std::string::npos;
+            bool leafChosen = false;
+            std::string leafKey;
+            if (isLeaves) {
+                leafChosen = SelectLeafVariant(blockstateJson["variants"], blockConditions, leafKey);
+                if (!leafChosen && !blockstateJson["variants"].empty()) {
+                    // 连忽略枯萎都匹配不到：退回第一个 variant，至少别整个消失
+                    leafKey = blockstateJson["variants"].begin().key();
+                    leafChosen = true;
+                }
+            }
             // 存档里的状态可能缺少属性(旧版本保存、模组后来新增属性),
             // 游戏读取时缺的属性取默认值。没有完全匹配的 variant 时,
             // 取第一个在已有属性上都一致的 variant,避免方块整个消失。
             std::string fallbackKey;
-            if (!condition.empty()) {
+            if (!isLeaves && !condition.empty()) {
                 bool anyMatch = false;
                 for (auto& variant : blockstateJson["variants"].items()) {
                     if (VariantKeyMatches(variant.key(), blockConditions)) { anyMatch = true; break; }
@@ -538,8 +624,14 @@ void ProcessBlockstate(const std::string& namespaceName, const std::vector<std::
             }
             for (auto& variant : blockstateJson["variants"].items()) {
                 std::string variantKey = variant.key();
-                bool matched = condition.empty() || VariantKeyMatches(variantKey, blockConditions)
-                    || (!fallbackKey.empty() && variantKey == fallbackKey);
+                bool matched;
+                if (isLeaves) {
+                    matched = (leafChosen && variantKey == leafKey);
+                }
+                else {
+                    matched = condition.empty() || VariantKeyMatches(variantKey, blockConditions)
+                        || (!fallbackKey.empty() && variantKey == fallbackKey);
+                }
 
                 // 判断条件:variant 的所有键值对需存在于 condition 中
                 if (matched) {

@@ -1,6 +1,7 @@
 #include "plantoffset.h"
 
 #include "blockposseed.h"
+#include "config.h"
 #include "model.h"
 
 #include <string>
@@ -91,6 +92,7 @@ bool VanillaPlantOffset(std::string_view blockId, int x, int z,
 
 void ApplyVanillaPlantOffset(ModelData& model, std::string_view ns,
                              std::string_view blockId, int x, int z) {
+    if (!config.plantOffset) return; // 开关关掉时植物都待在格子中心
     if (ns != "minecraft" || model.vertices.empty()) return;
     double ox = 0.0;
     double oy = 0.0;

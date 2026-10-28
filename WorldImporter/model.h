@@ -254,6 +254,14 @@ size_t GetModMaterialReuseCount();
 // Blender 里是不同的材质，但双面几何清单只需要基础名一条。
 std::string StripTintSuffix(const std::string& name);
 
+// 一对共面正反面的 UV 关系，决定能否安全合并成一张面：
+//   Same  : 同材质且按顶点一一对应——两面世界 UV 同向，合并后从背面看到的镜像
+//           与保留两张面时完全一致，可安全合并；
+//   Mirror: 同材质但 UV 镜像（模型里最常见的双面写法，两面从左到右都正常），
+//           合并会让一面变成镜像，不能合并；
+//   Other : 材质或 UV 区域不同，同样不能合并。
+enum class DoubleSidedPairKind : uint8_t { Same = 0, Mirror = 1, Other = 2 };
+
 // Blender 的网格校验会把"顶点索引集合完全相同"的多边形当成重复面删除（不看绕序），
 // 导致共面正反两面导入后只剩一张。这里给每组重合面里第二张及以后的面复制一个顶点
 // （坐标不变、仅索引不同），让 Blender 保留双面几何。return: 被处理的面数
@@ -262,6 +270,10 @@ size_t SeparateCoincidentFaces(ModelData& model);
 // 登记一个使用了双面几何的材质（内部剥掉 @ 后缀后按材质名去重，多线程安全）。
 // 供 SeparateCoincidentFaces 命中重合面时调用，结果由 CreateDoubleSidedJsonFile 写出。
 void RegisterDoubleSidedMaterial(const Material& material);
+
+// 登记一对双面几何的 UV 关系（Same/Mirror/Other），供 doubleSided.json 输出分类统计。
+// merged=true 表示这一对实际被合并成一张面（only for Same）。多线程安全。
+void RegisterDoubleSidedPairKind(const Material& material, DoubleSidedPairKind kind, bool merged);
 
 // 取贴图路径的文件名部分并去掉扩展名（textures/minecraft/block/oak_log.png -> oak_log）
 std::string MaterialTextureBasename(const std::string& texturePath);
