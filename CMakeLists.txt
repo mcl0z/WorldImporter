@@ -142,6 +142,14 @@ if (BUILD_TESTING AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/WorldImporter/tests/va
     set_tests_properties(variant_pick PROPERTIES TIMEOUT 30)
 endif()
 
+if (BUILD_TESTING AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/WorldImporter/tests/double_sided_merge_tests.cpp")
+    add_executable(double_sided_merge_tests WorldImporter/tests/double_sided_merge_tests.cpp)
+    target_link_libraries(double_sided_merge_tests PRIVATE WorldImporterCore)
+    wi_apply_defaults(double_sided_merge_tests)
+    add_test(NAME double_sided_merge COMMAND double_sided_merge_tests)
+    set_tests_properties(double_sided_merge PROPERTIES TIMEOUT 30)
+endif()
+
 if (BUILD_TESTING AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/WorldImporter/tests/plant_offset_tests.cpp")
     add_executable(plant_offset_tests WorldImporter/tests/plant_offset_tests.cpp)
     target_link_libraries(plant_offset_tests PRIVATE WorldImporterCore)

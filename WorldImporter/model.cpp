@@ -2615,6 +2615,7 @@ bool PairSharesSameTextureAndUv(const ModelData& model, const Face& a, const Fac
     const Material& mb = model.materials[b.materialIndex];
     if (ma.texturePath.empty() || ma.texturePath != mb.texturePath) return false;
     if (ma.type != mb.type) return false;
+    if (ma.tint != mb.tint) return false;
     if (a.tintIndex != b.tintIndex) return false;
     return UvQuadsHaveSameCorners(model, a, b);
 }
