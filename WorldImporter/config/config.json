@@ -22,7 +22,7 @@
     "allowDoubleFace": false,
     "doubleSidedGeometry": true,
     "mergeSameDoubleSided": false,
-    "mergeAllDoubleSided": false,
+    "mergeMirrorDoubleSided": false,
     "doubleSidedFaceOffset": 0.0005,
     "overlayLayerStep": 0.0005,
     "ctmPrefixMatchTiles": true,
