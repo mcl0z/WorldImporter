@@ -57,9 +57,9 @@ struct Config {
     // 只合并"同材质且 UV 一一对应"的正反两面（世界 UV 同向，从背面看与保留两张面等价）;
     // 镜像 UV 的对（两面从左到右都正常）不能合并，否则背面会变成镜像文字。
     bool mergeSameDoubleSided;
-    // 更激进: 只要两面同贴图且 UV 四角相同就合并（不管 UV 方向，镜像对也合并）。
+    // 只合并"同贴图但 UV 方向不同"的对（镜像）：同向的对由 mergeSameDoubleSided 控制。
     // 合并后一面会变成镜像，接受"看起来的效果"损失时使用。
-    bool mergeAllDoubleSided;
+    bool mergeMirrorDoubleSided;
     float doubleSidedFaceOffset; //几何双面里反面沿法线的外移量(米): 0=严格共面只换索引, 需大于该坐标处 float 精度
     float overlayLayerStep; //共面外移步长(米): 叠加层逐层外移 + 薄片贴边沿法线外推, 避免 Blender 下 z-fighting
     bool ctmPrefixMatchTiles; //matchTiles 以 '_' 结尾时是否再做前缀族匹配(默认开=保持既有行为; 关掉只保留剥掉下划线后的精确匹配)
@@ -126,7 +126,7 @@ struct Config {
         mergeModTextures(true),
         doubleSidedGeometry(true),
         mergeSameDoubleSided(false),
-        mergeAllDoubleSided(false),
+        mergeMirrorDoubleSided(false),
         doubleSidedFaceOffset(0.0005f),
         isLODAutoCenter(true),
         LODCenterX(0),

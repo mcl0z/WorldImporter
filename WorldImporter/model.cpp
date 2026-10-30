@@ -2626,7 +2626,7 @@ size_t SeparateCoincidentFaces(ModelData& model) {
     const float offset = config.doubleSidedFaceOffset;
     // 合并开关：只在"几何双面"开启时才有意义（关闭时解析阶段已经把重合对删成一张）。
     const bool mergeSame = config.doubleSidedGeometry && config.mergeSameDoubleSided;
-    const bool mergeAll = config.doubleSidedGeometry && config.mergeAllDoubleSided;
+    const bool mergeMirror = config.doubleSidedGeometry && config.mergeMirrorDoubleSided;
     // 按材质(剥掉 @tint 后缀的基础名)累计面数: 分离出的重合面数 == 总面数 时该材质
     // 整个都是双面几何, 否则说明它还用在实心几何上, 整材质剔除会漏光, 需要告警。
     std::unordered_map<std::string, size_t> totalFacesMap;
@@ -2689,9 +2689,12 @@ size_t SeparateCoincidentFaces(ModelData& model) {
             }
             // 合并条件：
             //  - Same 模式只合并 UV 一一对应的对（视觉等价）；
-            //  - All 模式连同贴图的镜像对也合并（接受一面变镜像）。
+            //  - Mirror 模式只合并同贴图但方向不同的对（接受一面变镜像），不包含同向。
             bool canMerge = mergeSame && kind == DoubleSidedPairKind::Same;
-            if (!canMerge && mergeAll) canMerge = PairSharesSameTextureAndUv(model, partner, face);
+            if (!canMerge && mergeMirror) {
+                canMerge = kind != DoubleSidedPairKind::Same &&
+                           PairSharesSameTextureAndUv(model, partner, face);
+            }
             if (canMerge) {
                 // 删掉当前面，保留 partner（firstBothSided）；剩一张靠背面剔除显示双面。
                 removeMask[fi] = 1;

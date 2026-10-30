@@ -53,16 +53,17 @@ void checkMergeModes() {
     expectFaces(makePair(true, false), 2, "same mode must keep mirrored UV");
     expectFaces(makePair(false), 2, "same mode must keep different materials");
     config.mergeSameDoubleSided = false;
-    config.mergeAllDoubleSided = true;
-    expectFaces(makePair(true, false), 1, "all mode may merge mirrored UV");
-    expectFaces(makePair(false), 1, "all mode may merge equivalent materials");
+    config.mergeMirrorDoubleSided = true;
+    expectFaces(makePair(true, true), 2, "mirror mode must keep same-direction pairs");
+    expectFaces(makePair(true, false), 1, "mirror mode may merge mirrored UV");
+    expectFaces(makePair(false), 1, "mirror mode may merge equivalent materials");
     config.doubleSidedGeometry = false;
     expectFaces(makePair(false), 2, "merge flags require double-sided geometry");
 }
 
 void checkTintProtection() {
     config = Config{};
-    config.mergeAllDoubleSided = true;
+    config.mergeMirrorDoubleSided = true;
     // CTM can lock different resolved tints onto the same texture while the
     // per-face tintIndex on both sides is -1.
     auto fixed = makePair(false);
